@@ -85,10 +85,6 @@ write_files:
       gh auth setup-git
       echo "GitHub CLI: authenticated"
 
-      # Git config
-      git config --global user.name "lobboss"
-      git config --global user.email "lobboss@lobmob.swarm"
-
       # Authenticate doctl
       doctl auth init -t "$DO_TOKEN"
       echo "doctl: authenticated"
@@ -211,8 +207,7 @@ write_files:
       WG_IP=$WG_IP
       ENVEOF
 
-      # Signal that cloud-init is done, awaiting secrets
-      touch /etc/lobmob/.cloud-init-done
+      # Signal awaiting secrets
       touch /etc/lobmob/.awaiting-secrets
 
       USERDATA
@@ -250,14 +245,9 @@ write_files:
 
       # Wait for cloud-init to finish
       echo "Waiting for cloud-init to complete on lobster..."
-      for i in $(seq 1 60); do
-        if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
-          "test -f /etc/lobmob/.cloud-init-done" 2>/dev/null; then
-          echo "Cloud-init: done"
-          break
-        fi
-        sleep 10
-      done
+      ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+        "cloud-init status --wait" 2>/dev/null || true
+      echo "Cloud-init: done"
 
       # Push secrets to lobster via SSH over WireGuard
       echo "Pushing secrets to lobster via SSH..."
@@ -480,5 +470,3 @@ runcmd:
   # PR review cron -- every 2 minutes
   - echo "*/2 * * * * root /usr/local/bin/lobmob-review-prs >> /var/log/lobmob-pr-review.log 2>&1" >> /etc/crontab
 
-  # Signal cloud-init complete
-  - touch /etc/lobmob/.cloud-init-done

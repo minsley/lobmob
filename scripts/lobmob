@@ -57,6 +57,8 @@ EOF
 
 # --- Helpers ---
 
+portable_sed_i() { if [[ "$OSTYPE" == "darwin"* ]]; then sed -i '' "$@"; else sed -i "$@"; fi; }
+
 load_secrets() {
   if [ ! -f "$SECRETS_FILE" ]; then
     err "secrets.env not found at $SECRETS_FILE"
@@ -89,17 +91,13 @@ ensure_ssh_key() {
     if [ -n "$CURRENT_SSH_PATH" ] && [ "$CURRENT_SSH_PATH" != "$EXPECTED_SSH_PATH" ]; then
       warn "terraform.tfvars has ssh_pub_key_path=\"$CURRENT_SSH_PATH\""
       log "Updating to \"$EXPECTED_SSH_PATH\""
-      if [[ "$OSTYPE" == "darwin"* ]]; then
-        sed -i '' "s|ssh_pub_key_path.*|ssh_pub_key_path      = \"$EXPECTED_SSH_PATH\"|" "$INFRA_DIR/terraform.tfvars"
-      else
-        sed -i "s|ssh_pub_key_path.*|ssh_pub_key_path      = \"$EXPECTED_SSH_PATH\"|" "$INFRA_DIR/terraform.tfvars"
-      fi
+      portable_sed_i "s|ssh_pub_key_path.*|ssh_pub_key_path      = \"$EXPECTED_SSH_PATH\"|" "$INFRA_DIR/terraform.tfvars"
     fi
   fi
 }
 
 get_lobboss_ip() {
-  cd "$INFRA_DIR" && terraform output -raw lobboss_ip 2>/dev/null
+  terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
 }
 
 get_lobboss_id() {
@@ -153,6 +151,31 @@ wait_for_cloud_init() {
   return 1
 }
 
+_seed_vault() {
+  local REPO="$1"
+  local TMPDIR
+  TMPDIR=$(mktemp -d)
+  gh repo clone "$REPO" "$TMPDIR" 2>/dev/null || true
+  if [ ! -d "$TMPDIR/.git" ]; then
+    rm -rf "$TMPDIR"
+    return 1
+  fi
+  cp -r "$PROJECT_DIR/vault-seed/"* "$TMPDIR/" 2>/dev/null || true
+  cp -r "$PROJECT_DIR/vault-seed/".obsidian "$TMPDIR/" 2>/dev/null || true
+  cp -r "$PROJECT_DIR/vault-seed/".gitattributes "$TMPDIR/" 2>/dev/null || true
+  cd "$TMPDIR"
+  git add -A
+  git commit -m "Seed vault structure" 2>/dev/null || true
+  mkdir -p 040-fleet/lobboss-skills 040-fleet/lobster-skills
+  cp -r "$PROJECT_DIR/skills/lobboss/"* 040-fleet/lobboss-skills/ 2>/dev/null || true
+  cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/ 2>/dev/null || true
+  git add -A
+  git commit -m "Add OpenClaw skills for fleet distribution" 2>/dev/null || true
+  git push origin main 2>/dev/null || git push -u origin main 2>/dev/null || true
+  rm -rf "$TMPDIR"
+  cd "$PROJECT_DIR"
+}
+
 # --- Commands ---
 
 cmd_bootstrap() {
@@ -163,7 +186,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 1: Preflight checks ──────────────────────────────────────────
-  log "Step 1/12 — Checking prerequisites"
+  log "Step 1/10 — Checking prerequisites"
   echo ""
 
   # Map CLI binary names to package names per package manager
@@ -271,9 +294,8 @@ cmd_bootstrap() {
                     | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
                   ;;
                 doctl)
-                  log "  Installing doctl from GitHub release..."
-                  curl -sL https://github.com/digitalocean/doctl/releases/latest/download/doctl-1.104.0-linux-amd64.tar.gz \
-                    | sudo tar -xzv -C /usr/local/bin
+                  log "  Installing doctl via snap..."
+                  sudo snap install doctl
                   ;;
               esac
             done
@@ -320,7 +342,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 2: DigitalOcean ──────────────────────────────────────────────
-  log "Step 2/12 — DigitalOcean"
+  log "Step 2/10 — DigitalOcean"
   echo "  Create an API token at: https://cloud.digitalocean.com/account/api/tokens"
   echo "  Scopes: read + write"
   echo ""
@@ -347,7 +369,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 3: GitHub ────────────────────────────────────────────────────
-  log "Step 3/12 — GitHub"
+  log "Step 3/10 — GitHub"
   echo ""
   read -rp "  Vault repo (org/name) [lobmob-vault]: " BS_VAULT_REPO
   BS_VAULT_REPO="${BS_VAULT_REPO:-lobmob-vault}"
@@ -362,24 +384,8 @@ cmd_bootstrap() {
       || echo -e "  ${YELLOW}!${NC} Repo may already exist — continuing"
 
     # Seed the vault
-    BS_TMPDIR=$(mktemp -d)
-    gh repo clone "$BS_VAULT_REPO" "$BS_TMPDIR" 2>/dev/null || true
-    if [ -d "$BS_TMPDIR/.git" ]; then
-      cp -r "$PROJECT_DIR/vault-seed/"* "$BS_TMPDIR/" 2>/dev/null || true
-      cp -r "$PROJECT_DIR/vault-seed/".obsidian "$BS_TMPDIR/" 2>/dev/null || true
-      cp -r "$PROJECT_DIR/vault-seed/".gitattributes "$BS_TMPDIR/" 2>/dev/null || true
-      cd "$BS_TMPDIR"
-      git add -A
-      git commit -m "Seed vault structure" 2>/dev/null || true
-      mkdir -p 040-fleet/lobboss-skills 040-fleet/lobster-skills
-      cp -r "$PROJECT_DIR/skills/lobboss/"* 040-fleet/lobboss-skills/ 2>/dev/null || true
-      cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/ 2>/dev/null || true
-      git add -A
-      git commit -m "Add OpenClaw skills for fleet distribution" 2>/dev/null || true
-      git push origin main 2>/dev/null || git push -u origin main 2>/dev/null || true
+    if _seed_vault "$BS_VAULT_REPO"; then
       echo -e "  ${GREEN}✓${NC} Vault seeded"
-      rm -rf "$BS_TMPDIR"
-      cd "$PROJECT_DIR"
     fi
     echo ""
   fi
@@ -426,7 +432,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 4: Discord ──────────────────────────────────────────────────
-  log "Step 4/12 — Discord"
+  log "Step 4/10 — Discord"
   echo "  Create a bot at: https://discord.com/developers/applications"
   echo "  Enable MESSAGE CONTENT intent. Invite bot to your server."
   echo "  Create channels: #task-queue, #swarm-control, #results, #swarm-logs"
@@ -438,7 +444,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 5: Anthropic ────────────────────────────────────────────────
-  log "Step 5/12 — Anthropic"
+  log "Step 5/10 — Anthropic"
   echo "  Get an API key at: https://console.anthropic.com/settings/keys"
   echo ""
   read -rsp "  Anthropic API key: " BS_ANTHROPIC_KEY; echo ""
@@ -448,7 +454,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 6: SSH key ──────────────────────────────────────────────────
-  log "Step 6/12 — SSH key"
+  log "Step 6/10 — SSH key"
   echo "  lobmob uses a dedicated keypair at $LOBMOB_SSH_KEY"
   if [ -f "$LOBMOB_SSH_KEY" ]; then
     echo -e "  ${GREEN}✓${NC} Key already exists"
@@ -460,7 +466,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 7: Optional overrides ───────────────────────────────────────
-  log "Step 7/12 — Droplet sizing"
+  log "Step 7/10 — Droplet sizing"
   echo "  Defaults: lobboss s-2vcpu-4gb (\$24/mo), lobster s-1vcpu-2gb (\$12/mo)"
   read -rp "  Customize sizes? [y/N]: " BS_CUSTOM_SIZES
   BS_CUSTOM_SIZES="${BS_CUSTOM_SIZES:-N}"
@@ -476,14 +482,14 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 8: WireGuard keys ──────────────────────────────────────────
-  log "Step 8/12 — Generating WireGuard keys"
+  log "Step 8/10 — Generating WireGuard keys"
   BS_WG_PRIVKEY=$(wg genkey)
   BS_WG_PUBKEY=$(echo "$BS_WG_PRIVKEY" | wg pubkey)
   echo -e "  ${GREEN}✓${NC} Keypair generated"
   echo ""
 
   # ── Step 9: Write config files ──────────────────────────────────────
-  log "Step 9/12 — Writing config files"
+  log "Step 9/10 — Writing config files"
 
   # Check for existing files
   if [ -f "$SECRETS_FILE" ]; then
@@ -535,47 +541,18 @@ SECRETSEOF
   fi
   echo ""
 
-  # ── Step 10: Terraform init + plan ──────────────────────────────────
-  log "Step 10/12 — Terraform init"
+  # ── Step 10: Terraform init + deploy ─────────────────────────────
+  log "Step 10/10 — Terraform init"
   export DIGITALOCEAN_TOKEN="$BS_DO_TOKEN"
   cd "$INFRA_DIR" && terraform init
   echo ""
-
-  log "Step 11/12 — Terraform plan"
-  terraform plan -out=tfplan
-  echo ""
-
-  read -rp "$(echo -e "${YELLOW}Deploy now?${NC} [Y/n]: ")" BS_DEPLOY_NOW
-  BS_DEPLOY_NOW="${BS_DEPLOY_NOW:-Y}"
-  if [[ ! "$BS_DEPLOY_NOW" =~ ^[Yy]$ ]]; then
-    log "Config saved. Run 'lobmob deploy' when ready."
-    return
-  fi
-
-  # ── Step 11/12: Deploy ──────────────────────────────────────────────
-  echo ""
-  terraform apply tfplan
-  LOBBOSS_IP=$(terraform output -raw lobboss_ip)
-  log "Lobboss droplet created at $LOBBOSS_IP"
-
-  wait_for_ssh "$LOBBOSS_IP"
-  wait_for_cloud_init "$LOBBOSS_IP"
-
-  # ── Step 12: Provision secrets ──────────────────────────────────────
-  log "Step 12/12 — Provisioning secrets"
-
-  # Source the written secrets for cmd_provision_secrets_to
-  set -a; source "$SECRETS_FILE"; set +a
-  export DIGITALOCEAN_TOKEN="$DO_TOKEN"
-
-  cmd_provision_secrets_to "$LOBBOSS_IP"
+  log "Handing off to deploy..."
+  cmd_deploy
 
   echo ""
   echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
   echo -e "${CYAN}║           lobmob is live!                ║${NC}"
   echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
-  echo ""
-  log "Lobboss running at $LOBBOSS_IP"
   echo ""
   echo "  Next steps:"
   echo "    lobmob ssh-lobboss        SSH into lobboss"
@@ -597,11 +574,7 @@ cmd_init() {
   # Create terraform.tfvars if missing
   if [ ! -f "$INFRA_DIR/terraform.tfvars" ]; then
     cp "$INFRA_DIR/terraform.tfvars.example" "$INFRA_DIR/terraform.tfvars"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "s|wg_lobboss_public_key.*|wg_lobboss_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
-    else
-      sed -i "s|wg_lobboss_public_key.*|wg_lobboss_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
-    fi
+    portable_sed_i "s|wg_lobboss_public_key.*|wg_lobboss_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
     log "Created infra/terraform.tfvars — fill in vault_repo"
   else
     warn "terraform.tfvars already exists — public key: $WG_PUBKEY"
@@ -610,11 +583,7 @@ cmd_init() {
   # Create secrets.env if missing
   if [ ! -f "$SECRETS_FILE" ]; then
     cp "$PROJECT_DIR/secrets.env.example" "$SECRETS_FILE"
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "s|^WG_LOBBOSS_PRIVATE_KEY=.*|WG_LOBBOSS_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
-    else
-      sed -i "s|^WG_LOBBOSS_PRIVATE_KEY=.*|WG_LOBBOSS_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
-    fi
+    portable_sed_i "s|^WG_LOBBOSS_PRIVATE_KEY=.*|WG_LOBBOSS_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
     log "Created secrets.env — fill in your tokens"
     warn "The WG private key has been written to secrets.env"
     warn "NEVER commit secrets.env to git"
@@ -674,7 +643,6 @@ cmd_provision_secrets() {
 
 cmd_provision_secrets_to() {
   local HOST="$1"
-  load_secrets
 
   log "Pushing secrets to $HOST..."
 
@@ -790,26 +758,7 @@ cmd_vault_init() {
   fi
 
   gh repo create "$VAULT_REPO" --private --description "lobmob swarm Obsidian vault"
-
-  TMPDIR=$(mktemp -d)
-  gh repo clone "$VAULT_REPO" "$TMPDIR"
-  cp -r "$PROJECT_DIR/vault-seed/"* "$TMPDIR/"
-  cp -r "$PROJECT_DIR/vault-seed/".obsidian "$TMPDIR/" 2>/dev/null || true
-  cp -r "$PROJECT_DIR/vault-seed/".gitattributes "$TMPDIR/" 2>/dev/null || true
-
-  cd "$TMPDIR"
-  git add -A
-  git commit -m "Seed vault structure"
-  git push origin main
-
-  mkdir -p 040-fleet/lobboss-skills 040-fleet/lobster-skills
-  cp -r "$PROJECT_DIR/skills/lobboss/"* 040-fleet/lobboss-skills/
-  cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/
-  git add -A
-  git commit -m "Add OpenClaw skills for fleet distribution"
-  git push origin main
-
-  rm -rf "$TMPDIR"
+  _seed_vault "$VAULT_REPO"
   log "Vault repo created: $VAULT_REPO"
 }
 
