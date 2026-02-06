@@ -13,8 +13,8 @@ Two config files are used:
 | `secrets.env` | All secrets (API tokens, private keys) | No (gitignored) |
 
 The `lobmob deploy` command creates infrastructure via Terraform (secret-free),
-then pushes secrets to the manager via SSH. Workers receive secrets from the
-manager via SSH over WireGuard — never via cloud-init.
+then pushes secrets to the lobboss via SSH. Lobsters receive secrets from the
+lobboss via SSH over WireGuard — never via cloud-init.
 
 ---
 
@@ -38,7 +38,7 @@ manager via SSH over WireGuard — never via cloud-init.
 ### Region Selection
 - [ ] Choose a region for your swarm (e.g. `nyc3`, `sfo3`, `ams3`, `fra1`)
   - Pick one close to you for lower SSH latency
-  - All droplets (manager + workers) will be in this region
+  - All droplets (lobboss + lobsters) will be in this region
   - Set as `region` in `terraform.tfvars`
 
 ---
@@ -98,9 +98,9 @@ manager via SSH over WireGuard — never via cloud-init.
 - [ ] Create a Discord server (or use existing)
 - [ ] Create four text channels:
   - `#task-queue` — where humans post work requests
-  - `#swarm-control` — manager-worker coordination
-  - `#results` — workers post PR announcements
-  - `#swarm-logs` — manager posts fleet events
+  - `#swarm-control` — lobboss-lobster coordination
+  - `#results` — lobsters post PR announcements
+  - `#swarm-logs` — lobboss posts fleet events
 - [ ] Invite the bot to the server:
   - Developer Portal → OAuth2 → URL Generator
   - Scopes: `bot`
@@ -166,7 +166,7 @@ chmod +x scripts/lobmob
 ```
 
 This will:
-1. Generate WireGuard manager keypair
+1. Generate WireGuard lobboss keypair
 2. Create `infra/terraform.tfvars` with the WG public key (fill in `vault_repo`)
 3. Create `secrets.env` with the WG private key (fill in all tokens)
 4. Run `terraform init`
@@ -177,7 +177,7 @@ This will:
 
 Before deploying, verify:
 
-- [ ] `infra/terraform.tfvars` has `vault_repo` and `wg_manager_public_key` set
+- [ ] `infra/terraform.tfvars` has `vault_repo` and `wg_lobboss_public_key` set
 - [ ] `secrets.env` has all 6 values filled (no placeholders)
 - [ ] `gh auth status` succeeds
 - [ ] Discord bot is in the server and channels exist
@@ -192,4 +192,4 @@ The deploy command will:
 3. Wait for SSH connectivity
 4. Wait for cloud-init to complete
 5. Push secrets via SSH
-6. Run the provision script on the manager
+6. Run the provision script on the lobboss

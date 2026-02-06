@@ -6,13 +6,13 @@ description: Write files to the vault on your task branch
 # Vault Write
 
 All writes happen on your task branch, never directly on main. Your changes
-reach main only after the manager merges your PR.
+reach main only after the lobboss merges your PR.
 
 ## Setup (once per task)
 ```bash
 cd /opt/vault
 git checkout main && git pull origin main
-git checkout -b "worker-${WORKER_ID}/task-${TASK_ID}"
+git checkout -b "lobster-${LOBSTER_ID}/task-${TASK_ID}"
 ```
 
 ## Writing Files
@@ -23,7 +23,7 @@ git checkout -b "worker-${WORKER_ID}/task-${TASK_ID}"
 cat > /opt/vault/030-knowledge/topics/<name>.md <<'EOF'
 ---
 created: <ISO date>
-author: worker-${WORKER_ID}
+author: lobster-${LOBSTER_ID}
 task: ${TASK_ID}
 tags: [<relevant>, <tags>]
 ---
@@ -43,7 +43,7 @@ mkdir -p /opt/vault/030-knowledge/assets/<topic>/
 
 ### Work Log
 ```bash
-cat >> /opt/vault/020-logs/workers/${WORKER_ID}/$(date +%Y-%m-%d).md <<EOF
+cat >> /opt/vault/020-logs/lobsters/${LOBSTER_ID}/$(date +%Y-%m-%d).md <<EOF
 
 ## $(date +%H:%M) — <activity>
 <description of what you did>
@@ -60,14 +60,14 @@ EOF
 ```bash
 cd /opt/vault
 git add -A
-git commit -m "[worker-${WORKER_ID}] <short description>"
+git commit -m "[lobster-${LOBSTER_ID}] <short description>"
 ```
 
 You can make multiple commits on your branch. The PR will include all of them.
 
 ## Pushing
 ```bash
-git push origin "worker-${WORKER_ID}/task-${TASK_ID}"
+git push origin "lobster-${LOBSTER_ID}/task-${TASK_ID}"
 ```
 
 If you've already created a PR, pushing updates it automatically.
@@ -76,4 +76,4 @@ If you've already created a PR, pushing updates it automatically.
 - Never force-push
 - Never commit secrets, API keys, or credentials
 - Keep files in the correct vault directories
-- Use descriptive commit messages prefixed with your worker ID
+- Use descriptive commit messages prefixed with your lobster ID

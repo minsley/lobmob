@@ -35,8 +35,8 @@ tags: []
 - [ ] <Criterion 1>
 - [ ] <Criterion 2>
 
-## Worker Notes
-_To be filled by assigned worker_
+## Lobster Notes
+_To be filled by assigned lobster_
 
 ## Result
 _Pending_
@@ -46,23 +46,23 @@ _Pending_
    ```bash
    cd /opt/vault
    git add "010-tasks/active/<task-id>.md"
-   git commit -m "[manager] Create task <task-id>"
+   git commit -m "[lobboss] Create task <task-id>"
    git push origin main
    ```
 
 ## Assigning a Task
 
-1. Choose a worker — prefer idle workers, or spawn a new one if needed
+1. Choose a lobster -- prefer idle lobsters, or spawn a new one if needed
 2. Update the task frontmatter:
    ```yaml
    status: active
-   assigned_to: worker-<id>
+   assigned_to: lobster-<id>
    assigned_at: <ISO timestamp>
    ```
 3. Commit and push to main
 4. Post in **#swarm-control**:
    ```
-   @worker-<id> TASK: <task-id>
+   @lobster-<id> TASK: <task-id>
    Title: <title>
    File: 010-tasks/active/<task-id>.md
    Pull main for full details.
@@ -70,14 +70,14 @@ _Pending_
 
 ## Completing a Task (via PR)
 
-You do NOT move the task file yourself. The worker will:
+You do NOT move the task file yourself. The lobster will:
 1. Update the task file with results
 2. Open a PR from their branch
 3. Announce in **#results** with the PR link
 
 Your job after the PR is merged (via the `review-prs` skill):
 1. Verify the task file has `status: completed` and `completed_at` set
-2. Move it to `010-tasks/completed/` if the worker didn't:
+2. Move it to `010-tasks/completed/` if the lobster didn't:
    ```bash
    git mv "010-tasks/active/<task-id>.md" "010-tasks/completed/<task-id>.md"
    ```
@@ -85,9 +85,9 @@ Your job after the PR is merged (via the `review-prs` skill):
 
 ## Failing a Task
 
-If a worker reports failure or times out:
+If a lobster reports failure or times out:
 1. Update the task frontmatter: `status: failed`
-2. Add failure notes under `## Worker Notes`
+2. Add failure notes under `## Lobster Notes`
 3. Move to `010-tasks/failed/`
 4. Close any orphaned PR for that task:
    ```bash

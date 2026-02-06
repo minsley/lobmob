@@ -10,7 +10,7 @@ When you have completed a task, use this skill to deliver your results.
 ## Prerequisites
 - All result files written to `/opt/vault/` in the correct locations
 - Task file frontmatter updated with `status: completed` and `completed_at`
-- Work log entry appended to `020-logs/workers/<your-worker-id>/<date>.md`
+- Work log entry appended to `020-logs/lobsters/<your-lobster-id>/<date>.md`
 
 ## Steps
 
@@ -18,28 +18,28 @@ When you have completed a task, use this skill to deliver your results.
 ```bash
 cd /opt/vault
 git checkout main && git pull origin main
-git checkout -b "worker-${WORKER_ID}/task-${TASK_ID}"
+git checkout -b "lobster-${LOBSTER_ID}/task-${TASK_ID}"
 ```
 
 ### 2. Write your deliverables
 
 Place files according to the vault structure:
-- **Task file update**: `010-tasks/active/<task-id>.md` — update frontmatter, fill in Worker Notes and Result sections
+- **Task file update**: `010-tasks/active/<task-id>.md` — update frontmatter, fill in Lobster Notes and Result sections
 - **Results**: `030-knowledge/topics/<descriptive-name>.md`
 - **Assets**: `030-knowledge/assets/<topic>/` for images, screenshots, data files
-- **Work log**: `020-logs/workers/<your-id>/<date>.md`
+- **Work log**: `020-logs/lobsters/<your-id>/<date>.md`
 
 Use Obsidian `[[wikilinks]]` to connect your results to existing vault pages.
 
 ### 3. Commit
 ```bash
 git add -A
-git commit -m "[worker-${WORKER_ID}] Complete task-${TASK_ID}: <short title>"
+git commit -m "[lobster-${LOBSTER_ID}] Complete task-${TASK_ID}: <short title>"
 ```
 
 ### 4. Push your branch
 ```bash
-git push origin "worker-${WORKER_ID}/task-${TASK_ID}"
+git push origin "lobster-${LOBSTER_ID}/task-${TASK_ID}"
 ```
 
 ### 5. Create the PR
@@ -49,7 +49,7 @@ PR_URL=$(gh pr create \
   --body "$(cat <<'PRBODY'
 ## Task
 - **ID**: ${TASK_ID}
-- **Worker**: worker-${WORKER_ID}
+- **Lobster**: lobster-${LOBSTER_ID}
 - **Completed**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 ## Results Summary
@@ -66,7 +66,7 @@ PR_URL=$(gh pr create \
 PRBODY
 )" \
   --base main \
-  --head "worker-${WORKER_ID}/task-${TASK_ID}" 2>&1 | tail -1)
+  --head "lobster-${LOBSTER_ID}/task-${TASK_ID}" 2>&1 | tail -1)
 
 PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
 ```
@@ -78,8 +78,8 @@ Post to **#results**:
 Task Complete: ${TASK_ID}
 
 PR: ${PR_URL}
-Results: https://github.com/<org>/<repo>/blob/worker-${WORKER_ID}/task-${TASK_ID}/<main-results-file>
-Work log: https://github.com/<org>/<repo>/blob/worker-${WORKER_ID}/task-${TASK_ID}/020-logs/workers/${WORKER_ID}/<date>.md
+Results: https://github.com/<org>/<repo>/blob/lobster-${LOBSTER_ID}/task-${TASK_ID}/<main-results-file>
+Work log: https://github.com/<org>/<repo>/blob/lobster-${LOBSTER_ID}/task-${TASK_ID}/020-logs/lobsters/${LOBSTER_ID}/<date>.md
 
 Summary: <2-3 sentence description of what was accomplished>
 
@@ -93,7 +93,7 @@ https://github.com/<org>/<repo>/blob/<branch>/<path>
 
 ### 7. Wait for review
 
-The manager will review your PR. If changes are requested:
+The lobboss will review your PR. If changes are requested:
 1. Read the PR comment or Discord message explaining what to fix
 2. Make the changes in `/opt/vault/`
 3. Commit and push to the same branch (the PR updates automatically)
@@ -104,7 +104,7 @@ The manager will review your PR. If changes are requested:
 If you cannot complete the task:
 1. Still create the PR with whatever partial results you have
 2. Set `status: failed` in the task frontmatter
-3. Document what went wrong in the Worker Notes section
+3. Document what went wrong in the Lobster Notes section
 4. Post to **#results** with `FAIL` prefix:
    ```
    FAIL: ${TASK_ID}

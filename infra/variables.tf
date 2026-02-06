@@ -9,13 +9,13 @@ variable "region" {
 }
 
 variable "manager_size" {
-  description = "Droplet size for the manager node"
+  description = "Droplet size for the lobboss node"
   type        = string
   default     = "s-2vcpu-4gb"
 }
 
 variable "worker_size" {
-  description = "Droplet size for worker nodes"
+  description = "Droplet size for lobster nodes"
   type        = string
   default     = "s-1vcpu-2gb"
 }
@@ -31,8 +31,8 @@ variable "vault_repo" {
   type        = string
 }
 
-variable "wg_manager_public_key" {
-  description = "WireGuard public key for manager (not secret — used in worker configs)"
+variable "wg_lobboss_public_key" {
+  description = "WireGuard public key for lobboss (not secret — used in lobster configs)"
   type        = string
 }
 

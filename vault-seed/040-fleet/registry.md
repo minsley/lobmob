@@ -4,25 +4,25 @@ updated:
 
 # Fleet Registry
 
-Active workers in the lobmob swarm. Updated by the manager agent.
+Active lobsters in the lobmob swarm. Updated by lobboss.
 
-## Manager
+## Lobboss
 | Field | Value |
 |---|---|
-| droplet | lobmob-manager |
+| droplet | lobmob-lobboss |
 | wg_ip | 10.0.0.1 |
 | role | coordinator |
 | status | online |
 
-## Workers
+## Lobsters
 
-<!-- Manager adds entries here when workers are spawned -->
+<!-- Lobboss adds entries here when lobsters are spawned -->
 <!-- Format:
-### worker-<id>
+### lobster-<id>
 | Field | Value |
 |---|---|
 | droplet_id | |
-| droplet_name | lobmob-worker-<id> |
+| droplet_name | lobster-<id> |
 | public_ip | |
 | wg_ip | 10.0.0.N |
 | wg_pubkey | |

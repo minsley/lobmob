@@ -1,5 +1,5 @@
 ---
-worker: {{title}}
+lobster: {{title}}
 date: {{date:YYYY-MM-DD}}
 droplet_id:
 wireguard_ip:

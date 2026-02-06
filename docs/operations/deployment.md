@@ -35,7 +35,7 @@ This generates WireGuard keys and creates two config files:
 This creates the GitHub repo and seeds it with the vault structure from
 `vault-seed/`.
 
-## Step 3: Deploy the Manager
+## Step 3: Deploy the Lobboss
 
 ```bash
 ./scripts/lobmob deploy
@@ -51,15 +51,15 @@ This runs a fully automated sequence:
    - `/etc/lobmob/secrets.env` (API tokens)
    - `/root/.ssh/vault_key` (deploy key)
    - `/etc/wireguard/wg0.conf` (WG private key)
-7. Runs `lobmob-provision` on the manager (authenticates gh, doctl, clones vault, configures OpenClaw)
+7. Runs `lobmob-provision` on the lobboss (authenticates gh, doctl, clones vault, configures OpenClaw)
 
 **No secrets ever appear in Terraform state or cloud-init user_data.**
 
 ## Step 4: Verify
 
 ```bash
-./scripts/lobmob ssh-manager
-# On the manager:
+./scripts/lobmob ssh-lobboss
+# On the lobboss:
 wg show wg0          # WireGuard interface up
 gh auth status        # GitHub authenticated
 doctl account get     # DO API working
@@ -71,9 +71,9 @@ cat /etc/lobmob/.awaiting-secrets  # Should not exist (file removed after provis
 
 1. Invite the bot to your Discord server (if not done during setup)
 2. Create channels: `#task-queue`, `#swarm-control`, `#results`, `#swarm-logs`
-3. Configure OpenClaw channel bindings in `/root/.openclaw/config.json` on the manager
+3. Configure OpenClaw channel bindings in `/root/.openclaw/config.json` on the lobboss
 
-## Step 6: Test a Worker
+## Step 6: Test a Lobster
 
 ```bash
 ./scripts/lobmob spawn test01
@@ -81,13 +81,13 @@ cat /etc/lobmob/.awaiting-secrets  # Should not exist (file removed after provis
 ```
 
 The spawn process:
-1. Manager creates a droplet with secret-free cloud-init (WireGuard + packages)
+1. Lobboss creates a droplet with secret-free cloud-init (WireGuard + packages)
 2. Waits for WireGuard connectivity over the mesh
 3. Waits for cloud-init to complete
-4. SSHes into the worker over WireGuard to push secrets
+4. SSHes into the lobster over WireGuard to push secrets
 5. Authenticates gh, clones vault, configures OpenClaw
 
-Verify the worker appears in WireGuard peers, responds to ping, and joins Discord.
+Verify the lobster appears in WireGuard peers, responds to ping, and joins Discord.
 
 ## Re-Provisioning Secrets
 
@@ -97,7 +97,7 @@ After rotating tokens or API keys, update `secrets.env` and re-push:
 ./scripts/lobmob provision-secrets
 ```
 
-This SSHes into the manager and re-runs the full provision flow. Workers will
+This SSHes into the lobboss and re-runs the full provision flow. Lobsters will
 need to be respawned to pick up new secrets.
 
 ## Tearing Down
@@ -106,4 +106,4 @@ need to be respawned to pick up new secrets.
 ./scripts/lobmob destroy
 ```
 
-This destroys all workers first, then the manager, VPC, and firewalls.
+This destroys all lobsters first, then the lobboss, VPC, and firewalls.

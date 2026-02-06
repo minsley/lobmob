@@ -24,27 +24,27 @@ Usage: lobmob <command> [options]
 
 Infrastructure:
   init                Generate WireGuard keys and prepare config files
-  deploy              Deploy manager via Terraform + provision secrets via SSH
-  provision-secrets   Re-push secrets to the manager (e.g. after key rotation)
+  deploy              Deploy lobboss via Terraform + provision secrets via SSH
+  provision-secrets   Re-push secrets to lobboss (e.g. after key rotation)
   destroy             Tear down all infrastructure
 
 Fleet Management:
-  spawn [id]          Spawn a new worker (SSH into manager to run)
-  teardown <id>       Destroy a specific worker
-  teardown-all        Destroy all worker droplets
+  spawn [id]          Spawn a new lobster (SSH into lobboss to run)
+  teardown <id>       Destroy a specific lobster
+  teardown-all        Destroy all lobster droplets
   status              Show fleet status (droplets, WG peers, open PRs)
-  cleanup [hours]     Destroy workers older than N hours (default: 2)
+  cleanup [hours]     Destroy lobsters older than N hours (default: 2)
 
 Vault:
   vault-init          Initialize the Obsidian vault GitHub repo
   vault-sync          Pull latest vault to local machine
 
 SSH:
-  ssh-manager         SSH into the manager droplet
-  ssh-worker <id>     SSH into a worker via manager (WG tunnel)
+  ssh-lobboss         SSH into the lobboss droplet
+  ssh-lobster <id>    SSH into a lobster via lobboss (WG tunnel)
 
 Utilities:
-  logs                Tail manager cloud-init logs
+  logs                Tail lobboss cloud-init logs
   prs                 List open PRs on the vault repo
 EOF
 }
@@ -65,8 +65,8 @@ load_secrets() {
   export DIGITALOCEAN_TOKEN="$DO_TOKEN"
 }
 
-get_manager_ip() {
-  cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null
+get_lobboss_ip() {
+  cd "$INFRA_DIR" && terraform output -raw lobboss_ip 2>/dev/null
 }
 
 wait_for_ssh() {
@@ -109,7 +109,7 @@ wait_for_cloud_init() {
 # --- Commands ---
 
 cmd_init() {
-  log "Generating WireGuard keypair for manager..."
+  log "Generating WireGuard keypair for lobboss..."
   WG_PRIVKEY=$(wg genkey 2>/dev/null || { err "wg not found — install wireguard-tools"; exit 1; })
   WG_PUBKEY=$(echo "$WG_PRIVKEY" | wg pubkey)
 
@@ -119,9 +119,9 @@ cmd_init() {
   if [ ! -f "$INFRA_DIR/terraform.tfvars" ]; then
     cp "$INFRA_DIR/terraform.tfvars.example" "$INFRA_DIR/terraform.tfvars"
     if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "s|wg_manager_public_key.*|wg_manager_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
+      sed -i '' "s|wg_lobboss_public_key.*|wg_lobboss_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
     else
-      sed -i "s|wg_manager_public_key.*|wg_manager_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
+      sed -i "s|wg_lobboss_public_key.*|wg_lobboss_public_key = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
     fi
     log "Created infra/terraform.tfvars — fill in vault_repo"
   else
@@ -132,15 +132,15 @@ cmd_init() {
   if [ ! -f "$SECRETS_FILE" ]; then
     cp "$PROJECT_DIR/secrets.env.example" "$SECRETS_FILE"
     if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "s|^WG_MANAGER_PRIVATE_KEY=.*|WG_MANAGER_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
+      sed -i '' "s|^WG_LOBBOSS_PRIVATE_KEY=.*|WG_LOBBOSS_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
     else
-      sed -i "s|^WG_MANAGER_PRIVATE_KEY=.*|WG_MANAGER_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
+      sed -i "s|^WG_LOBBOSS_PRIVATE_KEY=.*|WG_LOBBOSS_PRIVATE_KEY=$WG_PRIVKEY|" "$SECRETS_FILE"
     fi
     log "Created secrets.env — fill in your tokens"
     warn "The WG private key has been written to secrets.env"
     warn "NEVER commit secrets.env to git"
   else
-    warn "secrets.env already exists — WG private key: (set WG_MANAGER_PRIVATE_KEY manually)"
+    warn "secrets.env already exists — WG private key: (set WG_LOBBOSS_PRIVATE_KEY manually)"
     echo "  $WG_PRIVKEY"
   fi
 
@@ -155,7 +155,7 @@ cmd_init() {
 cmd_deploy() {
   load_secrets
 
-  log "Deploying manager via Terraform..."
+  log "Deploying lobboss via Terraform..."
   cd "$INFRA_DIR"
   terraform plan -out=tfplan
   echo ""
@@ -166,31 +166,31 @@ cmd_deploy() {
   fi
 
   terraform apply tfplan
-  MANAGER_IP=$(terraform output -raw manager_ip)
-  log "Manager droplet created at $MANAGER_IP"
+  LOBBOSS_IP=$(terraform output -raw lobboss_ip)
+  log "Lobboss droplet created at $LOBBOSS_IP"
 
   # Wait for SSH and cloud-init
-  wait_for_ssh "$MANAGER_IP"
-  wait_for_cloud_init "$MANAGER_IP"
+  wait_for_ssh "$LOBBOSS_IP"
+  wait_for_cloud_init "$LOBBOSS_IP"
 
   # Push secrets
   log "Provisioning secrets via SSH..."
-  cmd_provision_secrets_to "$MANAGER_IP"
+  cmd_provision_secrets_to "$LOBBOSS_IP"
 
   log ""
-  log "Manager fully deployed and provisioned at $MANAGER_IP"
-  log "  SSH:    lobmob ssh-manager"
+  log "Lobboss fully deployed and provisioned at $LOBBOSS_IP"
+  log "  SSH:    lobmob ssh-lobboss"
   log "  Status: lobmob status"
 }
 
 cmd_provision_secrets() {
   load_secrets
-  MANAGER_IP=$(get_manager_ip)
-  if [ -z "$MANAGER_IP" ]; then
-    err "Manager not deployed. Run: lobmob deploy"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed. Run: lobmob deploy"
     exit 1
   fi
-  cmd_provision_secrets_to "$MANAGER_IP"
+  cmd_provision_secrets_to "$LOBBOSS_IP"
 }
 
 cmd_provision_secrets_to() {
@@ -216,7 +216,7 @@ EOF
   # 3. Push WireGuard private key into config
   ssh "root@$HOST" bash <<WGSETUP
     if [ -f /etc/wireguard/wg0.conf.template ]; then
-      sed "s|__WG_PRIVATE_KEY__|$WG_MANAGER_PRIVATE_KEY|" \
+      sed "s|__WG_PRIVATE_KEY__|$WG_LOBBOSS_PRIVATE_KEY|" \
         /etc/wireguard/wg0.conf.template > /etc/wireguard/wg0.conf
       chmod 600 /etc/wireguard/wg0.conf
       rm /etc/wireguard/wg0.conf.template
@@ -224,7 +224,7 @@ EOF
 WGSETUP
   log "  WireGuard key: pushed"
 
-  # 4. Run the provision script on the manager
+  # 4. Run the provision script on lobboss
   log "Running provision script..."
   ssh "root@$HOST" "/usr/local/bin/lobmob-provision"
 
@@ -232,7 +232,7 @@ WGSETUP
 }
 
 cmd_destroy() {
-  warn "This will destroy ALL lobmob infrastructure (manager + VPC + firewalls)"
+  warn "This will destroy ALL lobmob infrastructure (lobboss + VPC + firewalls)"
   read -rp "Are you sure? [y/N] " confirm
   if [[ "$confirm" =~ ^[Yy]$ ]]; then
     cmd_teardown_all 2>/dev/null || true
@@ -243,60 +243,60 @@ cmd_destroy() {
 }
 
 cmd_spawn() {
-  MANAGER_IP=$(get_manager_ip)
-  if [ -z "$MANAGER_IP" ]; then
-    err "Manager not deployed. Run: lobmob deploy"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed. Run: lobmob deploy"
     exit 1
   fi
 
-  WORKER_ID="${1:-$(openssl rand -hex 4)}"
-  log "Spawning worker-$WORKER_ID via manager..."
-  ssh "root@$MANAGER_IP" "lobmob-spawn-worker $WORKER_ID"
+  LOBSTER_ID="${1:-$(openssl rand -hex 4)}"
+  log "Spawning lobster-$LOBSTER_ID via lobboss..."
+  ssh "root@$LOBBOSS_IP" "lobmob-spawn-lobster $LOBSTER_ID"
 }
 
 cmd_teardown() {
   if [ -z "${1:-}" ]; then
-    err "Usage: lobmob teardown <worker-name>"
+    err "Usage: lobmob teardown <lobster-name>"
     exit 1
   fi
-  MANAGER_IP=$(get_manager_ip)
-  log "Tearing down $1 via manager..."
-  ssh "root@$MANAGER_IP" "lobmob-teardown-worker $1"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  log "Tearing down $1 via lobboss..."
+  ssh "root@$LOBBOSS_IP" "lobmob-teardown-lobster $1"
 }
 
 cmd_teardown_all() {
-  MANAGER_IP=$(get_manager_ip)
-  if [ -z "$MANAGER_IP" ]; then
-    warn "Manager not reachable — attempting direct API teardown"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    warn "Lobboss not reachable — attempting direct API teardown"
     load_secrets 2>/dev/null || true
     if [ -n "${DO_TOKEN:-}" ]; then
-      curl -s -X DELETE "https://api.digitalocean.com/v2/droplets?tag_name=lobmob-worker" \
+      curl -s -X DELETE "https://api.digitalocean.com/v2/droplets?tag_name=lobmob-lobster" \
         -H "Authorization: Bearer $DO_TOKEN"
-      log "Sent bulk delete for all lobmob-worker tagged droplets"
+      log "Sent bulk delete for all lobmob-lobster tagged droplets"
     else
       err "No DO token available"
     fi
     return
   fi
 
-  log "Destroying all workers via manager..."
-  ssh "root@$MANAGER_IP" 'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$WORKER_TAG" --force' || true
-  log "All workers destroyed"
+  log "Destroying all lobsters via lobboss..."
+  ssh "root@$LOBBOSS_IP" 'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$LOBSTER_TAG" --force' || true
+  log "All lobsters destroyed"
 }
 
 cmd_status() {
-  MANAGER_IP=$(get_manager_ip)
-  if [ -z "$MANAGER_IP" ]; then
-    err "Manager not deployed"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed"
     exit 1
   fi
-  ssh "root@$MANAGER_IP" "lobmob-fleet-status"
+  ssh "root@$LOBBOSS_IP" "lobmob-fleet-status"
 }
 
 cmd_cleanup() {
   HOURS="${1:-2}"
-  MANAGER_IP=$(get_manager_ip)
-  ssh "root@$MANAGER_IP" "lobmob-cleanup $HOURS"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  ssh "root@$LOBBOSS_IP" "lobmob-cleanup $HOURS"
 }
 
 cmd_vault_init() {
@@ -323,9 +323,9 @@ cmd_vault_init() {
   git commit -m "Seed vault structure"
   git push origin main
 
-  mkdir -p 040-fleet/manager-skills 040-fleet/worker-skills
-  cp -r "$PROJECT_DIR/skills/manager/"* 040-fleet/manager-skills/
-  cp -r "$PROJECT_DIR/skills/worker/"* 040-fleet/worker-skills/
+  mkdir -p 040-fleet/lobboss-skills 040-fleet/lobster-skills
+  cp -r "$PROJECT_DIR/skills/lobboss/"* 040-fleet/lobboss-skills/
+  cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/
   git add -A
   git commit -m "Add OpenClaw skills for fleet distribution"
   git push origin main
@@ -344,29 +344,29 @@ cmd_vault_sync() {
   log "Vault synced to $PROJECT_DIR/vault-local/"
 }
 
-cmd_ssh_manager() {
-  MANAGER_IP=$(get_manager_ip)
-  log "Connecting to manager at $MANAGER_IP..."
-  ssh "root@$MANAGER_IP"
+cmd_ssh_lobboss() {
+  LOBBOSS_IP=$(get_lobboss_ip)
+  log "Connecting to lobboss at $LOBBOSS_IP..."
+  ssh "root@$LOBBOSS_IP"
 }
 
-cmd_ssh_worker() {
+cmd_ssh_lobster() {
   if [ -z "${1:-}" ]; then
-    err "Usage: lobmob ssh-worker <wireguard-ip or worker-id>"
+    err "Usage: lobmob ssh-lobster <wireguard-ip or lobster-id>"
     exit 1
   fi
-  MANAGER_IP=$(get_manager_ip)
+  LOBBOSS_IP=$(get_lobboss_ip)
   TARGET="$1"
   if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    TARGET=$(ssh "root@$MANAGER_IP" "grep '$TARGET' /opt/vault/040-fleet/registry.md | grep -oP 'wg_ip: \K\S+'" 2>/dev/null || echo "$TARGET")
+    TARGET=$(ssh "root@$LOBBOSS_IP" "grep '$TARGET' /opt/vault/040-fleet/registry.md | grep -oP 'wg_ip: \K\S+'" 2>/dev/null || echo "$TARGET")
   fi
-  log "Connecting to worker at $TARGET via manager tunnel..."
-  ssh -o ProxyJump="root@$MANAGER_IP" "root@$TARGET"
+  log "Connecting to lobster at $TARGET via lobboss tunnel..."
+  ssh -o ProxyJump="root@$LOBBOSS_IP" "root@$TARGET"
 }
 
 cmd_logs() {
-  MANAGER_IP=$(get_manager_ip)
-  ssh "root@$MANAGER_IP" "tail -100f /var/log/cloud-init-output.log"
+  LOBBOSS_IP=$(get_lobboss_ip)
+  ssh "root@$LOBBOSS_IP" "tail -100f /var/log/cloud-init-output.log"
 }
 
 cmd_prs() {
@@ -395,8 +395,8 @@ case "$COMMAND" in
   cleanup)             cmd_cleanup "$@" ;;
   vault-init)          cmd_vault_init ;;
   vault-sync)          cmd_vault_sync ;;
-  ssh-manager)         cmd_ssh_manager ;;
-  ssh-worker)          cmd_ssh_worker "$@" ;;
+  ssh-lobboss)         cmd_ssh_lobboss ;;
+  ssh-lobster)         cmd_ssh_lobster "$@" ;;
   logs)                cmd_logs ;;
   prs)                 cmd_prs ;;
   help|--help|-h)      usage ;;

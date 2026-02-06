@@ -14,17 +14,17 @@ lobmob-vault/
 │   ├── completed/             # Successfully finished tasks
 │   └── failed/                # Tasks that couldn't be completed
 ├── 020-logs/
-│   ├── manager/               # Daily manager logs (YYYY-MM-DD.md)
-│   └── workers/
-│       └── <worker-id>/       # Per-worker daily logs
+│   ├── lobboss/               # Daily lobboss logs (YYYY-MM-DD.md)
+│   └── lobsters/
+│       └── <lobster-id>/      # Per-lobster daily logs
 ├── 030-knowledge/
 │   ├── topics/                # Research results, documentation
 │   └── assets/                # Images, screenshots (Git LFS)
 └── 040-fleet/
-    ├── registry.md            # Live worker registry
+    ├── registry.md            # Live lobster registry
     ├── config.md              # Swarm configuration
-    ├── manager-skills/        # OpenClaw skills distributed to manager
-    └── worker-skills/         # OpenClaw skills distributed to workers
+    ├── lobboss-skills/        # OpenClaw skills distributed to lobboss
+    └── lobster-skills/        # OpenClaw skills distributed to lobsters
 ```
 
 ## Conventions
@@ -48,13 +48,13 @@ Referenced from markdown: `![[assets/<topic>/image.png]]`
 
 ## Who Writes Where
 
-| Path | Manager | Worker | Human |
+| Path | Lobboss | Lobster | Human |
 |---|---|---|---|
 | `000-inbox/` | | via PR | via PR |
 | `010-tasks/active/` | direct to main | via PR | |
 | `010-tasks/completed/` | direct to main | via PR | |
 | `010-tasks/failed/` | direct to main | | |
-| `020-logs/manager/` | direct to main | | |
-| `020-logs/workers/<id>/` | | via PR | |
+| `020-logs/lobboss/` | direct to main | | |
+| `020-logs/lobsters/<id>/` | | via PR | |
 | `030-knowledge/` | | via PR | via PR |
 | `040-fleet/` | direct to main | | |

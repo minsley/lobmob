@@ -5,38 +5,38 @@
 | Channel | Who writes | Purpose |
 |---|---|---|
 | #task-queue | Humans, external systems | Post work requests |
-| #swarm-control | Manager, workers | Task assignment and coordination |
-| #results | Workers | PR announcements with summaries |
-| #swarm-logs | Manager | Fleet events, merge confirmations |
+| #swarm-control | Lobboss, lobsters | Task assignment and coordination |
+| #results | Lobsters | PR announcements with summaries |
+| #swarm-logs | Lobboss | Fleet events, merge confirmations |
 
 ## Message Formats
 
-### Task Assignment (manager → #swarm-control)
+### Task Assignment (lobboss → #swarm-control)
 ```
-@worker-<id> TASK: <task-id>
+@lobster-<id> TASK: <task-id>
 Title: <title>
 File: 010-tasks/active/<task-id>.md
 Pull main for full details.
 ```
 
-### Task Acknowledgment (worker → #swarm-control)
+### Task Acknowledgment (lobster → #swarm-control)
 ```
-ACK <task-id> worker-<id>
+ACK <task-id> lobster-<id>
 ```
 
-### PR Announcement (worker → #results)
+### PR Announcement (lobster → #results)
 ```
 Task Complete: <task-id>
 
 PR: <github PR url>
 Results: <github blob url to main results file>
-Work log: <github blob url to worker log>
+Work log: <github blob url to lobster log>
 
 Summary: <2-3 sentences>
 Diff: +<lines> across <N> files
 ```
 
-### Task Failure (worker → #results)
+### Task Failure (lobster → #results)
 ```
 FAIL: <task-id>
 
@@ -45,33 +45,33 @@ Reason: <what went wrong>
 Partial results included in PR.
 ```
 
-### PR Revision Request (manager → #swarm-control)
+### PR Revision Request (lobboss → #swarm-control)
 ```
-@worker-<id> PR #<number> needs revision: <brief reason>.
+@lobster-<id> PR #<number> needs revision: <brief reason>.
 Please fix and push to your branch.
 ```
 
-### Merge Confirmation (manager → #swarm-logs)
+### Merge Confirmation (lobboss → #swarm-logs)
 ```
-Merged PR #<number> (<task-id>) from <worker-id>. Branch cleaned up.
+Merged PR #<number> (<task-id>) from <lobster-id>. Branch cleaned up.
 ```
 
-### Fleet Status (manager → #swarm-logs)
+### Fleet Status (lobboss → #swarm-logs)
 ```
 Fleet Status @ HH:MM
-Workers: N active, M healthy
+Lobsters: N active, M healthy
 Tasks: X queued, Y active, Z completed today
 Open PRs: N
 ```
 
-### Worker Online (worker → #swarm-control)
+### Lobster Online (lobster → #swarm-control)
 ```
-Worker <worker-id> online at <wireguard_ip>.
+Lobster <lobster-id> online at <wireguard_ip>.
 Ready for task assignment.
 ```
 
-### Worker Idle (worker → #swarm-control)
+### Lobster Idle (lobster → #swarm-control)
 ```
-Worker <worker-id> idle for 30+ minutes. No pending tasks.
+Lobster <lobster-id> idle for 30+ minutes. No pending tasks.
 Available for assignment or teardown.
 ```

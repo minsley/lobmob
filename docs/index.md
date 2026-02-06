@@ -15,7 +15,7 @@ OpenClaw agent swarm management system for DigitalOcean.
 ## Components
 | Component | Location | Purpose |
 |---|---|---|
-| Terraform infra | `infra/` | VPC, firewall, manager droplet |
+| Terraform infra | `infra/` | VPC, firewall, lobboss droplet |
 | Cloud-init templates | `templates/` | Droplet bootstrapping |
 | OpenClaw skills | `skills/` | Agent capabilities |
 | Agent personas | `openclaw/` | AGENTS.md definitions |

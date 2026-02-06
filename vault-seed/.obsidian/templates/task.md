@@ -17,8 +17,8 @@ tags: []
 ## Acceptance Criteria
 - [ ]
 
-## Worker Notes
-_To be filled by assigned worker_
+## Lobster Notes
+_To be filled by assigned lobster_
 
 ## Result
 _Pending_

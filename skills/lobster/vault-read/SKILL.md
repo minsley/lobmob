@@ -47,5 +47,5 @@ cat /opt/vault/040-fleet/registry.md
 
 ## Important
 - Always pull before reading to get the latest state
-- The vault is a shared resource — other workers may have updated files
+- The vault is a shared resource — other lobsters may have updated files
 - Do not modify files on the main branch directly — use your task branch

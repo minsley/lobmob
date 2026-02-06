@@ -5,13 +5,13 @@ description: Core workflow for receiving and executing a task assignment
 
 # Task Execute
 
-This is your main workflow when the manager assigns you a task.
+This is your main workflow when the lobboss assigns you a task.
 
 ## 1. Receive Assignment
 
 You'll see a message in **#swarm-control** like:
 ```
-@worker-<your-id> TASK: <task-id>
+@lobster-<your-id> TASK: <task-id>
 Title: <title>
 File: 010-tasks/active/<task-id>.md
 Pull main for full details.
@@ -20,7 +20,7 @@ Pull main for full details.
 ## 2. Acknowledge
 Post to **#swarm-control**:
 ```
-ACK <task-id> worker-<your-id>
+ACK <task-id> lobster-<your-id>
 ```
 
 ## 3. Read the Task
@@ -40,12 +40,12 @@ Read the full task file. Understand:
 
 Use the `vault-write` skill to create your branch:
 ```bash
-git checkout -b "worker-${WORKER_ID}/task-${TASK_ID}"
+git checkout -b "lobster-${LOBSTER_ID}/task-${TASK_ID}"
 ```
 
 ## 5. Start Your Work Log
 
-Create or append to `020-logs/workers/<your-id>/<date>.md`:
+Create or append to `020-logs/lobsters/<your-id>/<date>.md`:
 ```markdown
 ## HH:MM — Task Assigned
 Picked up [[010-tasks/active/<task-id>]]: <title>
@@ -66,7 +66,7 @@ As you work:
 When done:
 1. Update the task file:
    - Set `status: completed` and `completed_at` in frontmatter
-   - Fill in `## Worker Notes` with what you did
+   - Fill in `## Lobster Notes` with what you did
    - Fill in `## Result` with a summary and links to result files
    - Check off acceptance criteria
 2. Final commit
@@ -80,7 +80,7 @@ Use the `submit-results` skill to:
 
 ## 9. Handle Feedback
 
-If the manager requests changes on your PR:
+If the lobboss requests changes on your PR:
 1. Read the feedback (Discord message or PR comment)
 2. Make fixes on the same branch
 3. Commit and push

@@ -8,43 +8,43 @@
 
 Or from any machine with SSH access:
 ```bash
-ssh root@<manager-ip> lobmob-fleet-status
+ssh root@<lobboss-ip> lobmob-fleet-status
 ```
 
-## Spawning Workers
+## Spawning Lobsters
 
 ```bash
 ./scripts/lobmob spawn              # auto-generated ID
 ./scripts/lobmob spawn mycustomid   # specific ID
 ```
 
-The manager agent also spawns workers autonomously when tasks queue up.
+The lobboss agent also spawns lobsters autonomously when tasks queue up.
 
-## Tearing Down Workers
+## Tearing Down Lobsters
 
 ```bash
-./scripts/lobmob teardown lobmob-worker-a3f1    # specific worker
-./scripts/lobmob teardown-all                     # all workers
-./scripts/lobmob cleanup 1                        # workers older than 1 hour
+./scripts/lobmob teardown lobster-a3f1          # specific lobster
+./scripts/lobmob teardown-all                     # all lobsters
+./scripts/lobmob cleanup 1                        # lobsters older than 1 hour
 ```
 
 ## Submitting Tasks
 
-Post in **#task-queue** on Discord. The manager picks it up and handles
+Post in **#task-queue** on Discord. The lobboss picks it up and handles
 assignment. Or create a task file directly:
 
 ```bash
-./scripts/lobmob ssh-manager
-# Then on manager:
+./scripts/lobmob ssh-lobboss
+# Then on lobboss:
 cd /opt/vault
 cp .obsidian/templates/task.md 010-tasks/active/task-$(date +%Y-%m-%d)-$(openssl rand -hex 2).md
 # Edit the file, then:
-git add -A && git commit -m "[manager] Create task" && git push origin main
+git add -A && git commit -m "[lobboss] Create task" && git push origin main
 ```
 
 ## Reviewing PRs
 
-The manager does this automatically, but you can also review manually:
+The lobboss does this automatically, but you can also review manually:
 
 ```bash
 ./scripts/lobmob prs                      # list open PRs
@@ -60,16 +60,16 @@ gh pr merge <number> --repo <vault-repo>  # merge manually
 
 Then open `vault-local/` in Obsidian.
 
-## SSH to a Worker
+## SSH to a Lobster
 
 ```bash
-./scripts/lobmob ssh-worker 10.0.0.3       # by WireGuard IP
-./scripts/lobmob ssh-worker worker-a3f1     # by worker ID (resolved via registry)
+./scripts/lobmob ssh-lobster 10.0.0.3         # by WireGuard IP
+./scripts/lobmob ssh-lobster lobster-a3f1      # by lobster ID (resolved via registry)
 ```
 
 ## Monitoring
 
 - **Discord #swarm-logs** — fleet events in real time
-- **Manager logs**: `./scripts/lobmob logs`
-- **PR review log**: `ssh root@<manager-ip> tail -f /var/log/lobmob-pr-review.log`
+- **Lobboss logs**: `./scripts/lobmob logs`
+- **PR review log**: `ssh root@<lobboss-ip> tail -f /var/log/lobmob-pr-review.log`
 - **Vault history**: `cd vault-local && git log --oneline`
