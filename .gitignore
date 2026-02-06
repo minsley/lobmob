@@ -20,5 +20,5 @@ Thumbs.db
 node_modules/
 
 # Obsidian
-.obsidian/workspace.json
+docs/.obsidian/workspace.json
 
