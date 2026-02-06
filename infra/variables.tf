@@ -23,7 +23,7 @@ variable "worker_size" {
 variable "ssh_pub_key_path" {
   description = "Path to SSH public key for droplet access"
   type        = string
-  default     = "~/.ssh/id_ed25519.pub"
+  default     = "~/.ssh/lobmob_ed25519.pub"
 }
 
 variable "vault_repo" {

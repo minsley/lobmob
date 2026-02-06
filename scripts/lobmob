@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INFRA_DIR="$PROJECT_DIR/infra"
 SECRETS_FILE="$PROJECT_DIR/secrets.env"
+LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
 
 # Colors
 RED='\033[0;31m'
@@ -70,6 +71,18 @@ load_secrets() {
   export DIGITALOCEAN_TOKEN="$DO_TOKEN"
 }
 
+lobmob_ssh() {
+  ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new "$@"
+}
+
+ensure_ssh_key() {
+  if [ ! -f "$LOBMOB_SSH_KEY" ]; then
+    log "Generating lobmob SSH keypair at $LOBMOB_SSH_KEY..."
+    ssh-keygen -t ed25519 -C "lobmob" -f "$LOBMOB_SSH_KEY" -N "" -q
+    echo -e "  ${GREEN}✓${NC} Keypair generated"
+  fi
+}
+
 get_lobboss_ip() {
   cd "$INFRA_DIR" && terraform output -raw lobboss_ip 2>/dev/null
 }
@@ -89,7 +102,7 @@ wait_for_ssh() {
   local MAX_ATTEMPTS="${2:-30}"
   log "Waiting for SSH on $HOST..."
   for i in $(seq 1 "$MAX_ATTEMPTS"); do
-    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+    if lobmob_ssh -o ConnectTimeout=5 -o BatchMode=yes \
       "root@$HOST" "true" 2>/dev/null; then
       log "SSH: connected"
       return 0
@@ -107,7 +120,7 @@ wait_for_cloud_init() {
   local MAX_ATTEMPTS="${2:-60}"
   log "Waiting for cloud-init to complete on $HOST..."
   for i in $(seq 1 "$MAX_ATTEMPTS"); do
-    if ssh -o ConnectTimeout=5 "root@$HOST" \
+    if lobmob_ssh -o ConnectTimeout=5 "root@$HOST" \
       "test -f /etc/lobmob/.cloud-init-done" 2>/dev/null; then
       log "Cloud-init: complete"
       return 0
@@ -417,25 +430,14 @@ cmd_bootstrap() {
 
   # ── Step 6: SSH key ──────────────────────────────────────────────────
   log "Step 6/12 — SSH key"
-  BS_DEFAULT_SSH="$HOME/.ssh/id_ed25519.pub"
-  read -rp "  Path to SSH public key [$BS_DEFAULT_SSH]: " BS_SSH_PUB
-  BS_SSH_PUB="${BS_SSH_PUB:-$BS_DEFAULT_SSH}"
-  # Expand ~ if user typed it
-  BS_SSH_PUB="${BS_SSH_PUB/#\~/$HOME}"
-
-  if [ ! -f "$BS_SSH_PUB" ]; then
-    warn "  $BS_SSH_PUB not found"
-    read -rp "  Generate an Ed25519 keypair now? [Y/n]: " BS_GEN_SSH
-    BS_GEN_SSH="${BS_GEN_SSH:-Y}"
-    if [[ "$BS_GEN_SSH" =~ ^[Yy]$ ]]; then
-      ssh-keygen -t ed25519 -f "${BS_SSH_PUB%.pub}" -N "" -q
-      echo -e "  ${GREEN}✓${NC} Keypair generated"
-    else
-      err "SSH public key is required for droplet access"; exit 1
-    fi
+  echo "  lobmob uses a dedicated keypair at $LOBMOB_SSH_KEY"
+  if [ -f "$LOBMOB_SSH_KEY" ]; then
+    echo -e "  ${GREEN}✓${NC} Key already exists"
   else
-    echo -e "  ${GREEN}✓${NC} Found $BS_SSH_PUB"
+    ssh-keygen -t ed25519 -C "lobmob" -f "$LOBMOB_SSH_KEY" -N "" -q
+    echo -e "  ${GREEN}✓${NC} Keypair generated"
   fi
+  BS_SSH_PUB="${LOBMOB_SSH_KEY}.pub"
   echo ""
 
   # ── Step 7: Optional overrides ───────────────────────────────────────
@@ -565,6 +567,8 @@ SECRETSEOF
 }
 
 cmd_init() {
+  ensure_ssh_key
+
   log "Generating WireGuard keypair for lobboss..."
   WG_PRIVKEY=$(wg genkey 2>/dev/null || { err "wg not found — install wireguard-tools"; exit 1; })
   WG_PUBKEY=$(echo "$WG_PRIVKEY" | wg pubkey)
@@ -656,7 +660,7 @@ cmd_provision_secrets_to() {
   log "Pushing secrets to $HOST..."
 
   # 1. Push secrets.env (service tokens)
-  ssh "root@$HOST" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<EOF
+  lobmob_ssh "root@$HOST" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<EOF
 DO_TOKEN=$DO_TOKEN
 GH_TOKEN=$GH_TOKEN
 DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
@@ -666,11 +670,11 @@ EOF
 
   # 2. Push vault deploy key
   echo "$VAULT_DEPLOY_KEY_B64" | base64 -d | \
-    ssh "root@$HOST" "cat > /root/.ssh/vault_key && chmod 600 /root/.ssh/vault_key"
+    lobmob_ssh "root@$HOST" "cat > /root/.ssh/vault_key && chmod 600 /root/.ssh/vault_key"
   log "  deploy key: pushed"
 
   # 3. Push WireGuard private key into config
-  ssh "root@$HOST" bash <<WGSETUP
+  lobmob_ssh "root@$HOST" bash <<WGSETUP
     if [ -f /etc/wireguard/wg0.conf.template ]; then
       sed "s|__WG_PRIVATE_KEY__|$WG_LOBBOSS_PRIVATE_KEY|" \
         /etc/wireguard/wg0.conf.template > /etc/wireguard/wg0.conf
@@ -682,7 +686,7 @@ WGSETUP
 
   # 4. Run the provision script on lobboss
   log "Running provision script..."
-  ssh "root@$HOST" "/usr/local/bin/lobmob-provision"
+  lobmob_ssh "root@$HOST" "/usr/local/bin/lobmob-provision"
 
   log "Secrets provisioned successfully"
 }
@@ -707,7 +711,7 @@ cmd_spawn() {
 
   LOBSTER_ID="${1:-$(openssl rand -hex 4)}"
   log "Spawning lobster-$LOBSTER_ID via lobboss..."
-  ssh "root@$LOBBOSS_IP" "lobmob-spawn-lobster $LOBSTER_ID"
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-spawn-lobster $LOBSTER_ID"
 }
 
 cmd_teardown() {
@@ -717,7 +721,7 @@ cmd_teardown() {
   fi
   LOBBOSS_IP=$(get_lobboss_ip)
   log "Tearing down $1 via lobboss..."
-  ssh "root@$LOBBOSS_IP" "lobmob-teardown-lobster $1"
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-teardown-lobster $1"
 }
 
 cmd_teardown_all() {
@@ -736,7 +740,7 @@ cmd_teardown_all() {
   fi
 
   log "Destroying all lobsters via lobboss..."
-  ssh "root@$LOBBOSS_IP" 'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$LOBSTER_TAG" --force' || true
+  lobmob_ssh "root@$LOBBOSS_IP" 'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$LOBSTER_TAG" --force' || true
   log "All lobsters destroyed"
 }
 
@@ -746,13 +750,13 @@ cmd_status() {
     err "Lobboss not deployed"
     exit 1
   fi
-  ssh "root@$LOBBOSS_IP" "lobmob-fleet-status"
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-fleet-status"
 }
 
 cmd_cleanup() {
   HOURS="${1:-2}"
   LOBBOSS_IP=$(get_lobboss_ip)
-  ssh "root@$LOBBOSS_IP" "lobmob-cleanup $HOURS"
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-cleanup $HOURS"
 }
 
 cmd_vault_init() {
@@ -821,7 +825,7 @@ cmd_sleep() {
   log "Culling all lobsters before sleep..."
   LOBBOSS_IP=$(get_lobboss_ip)
   if [ -n "$LOBBOSS_IP" ]; then
-    ssh -o ConnectTimeout=10 "root@$LOBBOSS_IP" \
+    lobmob_ssh -o ConnectTimeout=10 "root@$LOBBOSS_IP" \
       'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$LOBSTER_TAG" --force' 2>/dev/null || true
   fi
   # Belt-and-suspenders: also cull via API in case SSH missed any
@@ -876,7 +880,7 @@ cmd_wake() {
   wait_for_ssh "$LOBBOSS_IP"
 
   # Restart WireGuard (may not auto-start after power cycle)
-  ssh "root@$LOBBOSS_IP" "systemctl restart wg-quick@wg0" 2>/dev/null || true
+  lobmob_ssh "root@$LOBBOSS_IP" "systemctl restart wg-quick@wg0" 2>/dev/null || true
 
   log "Lobboss is awake at $LOBBOSS_IP"
   log "  SSH:    lobmob ssh-lobboss"
@@ -886,7 +890,7 @@ cmd_wake() {
 cmd_ssh_lobboss() {
   LOBBOSS_IP=$(get_lobboss_ip)
   log "Connecting to lobboss at $LOBBOSS_IP..."
-  ssh "root@$LOBBOSS_IP"
+  lobmob_ssh "root@$LOBBOSS_IP"
 }
 
 cmd_ssh_lobster() {
@@ -897,15 +901,15 @@ cmd_ssh_lobster() {
   LOBBOSS_IP=$(get_lobboss_ip)
   TARGET="$1"
   if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    TARGET=$(ssh "root@$LOBBOSS_IP" "grep '$TARGET' /opt/vault/040-fleet/registry.md | grep -oP 'wg_ip: \K\S+'" 2>/dev/null || echo "$TARGET")
+    TARGET=$(lobmob_ssh "root@$LOBBOSS_IP" "grep '$TARGET' /opt/vault/040-fleet/registry.md | grep -oP 'wg_ip: \K\S+'" 2>/dev/null || echo "$TARGET")
   fi
   log "Connecting to lobster at $TARGET via lobboss tunnel..."
-  ssh -o ProxyJump="root@$LOBBOSS_IP" "root@$TARGET"
+  lobmob_ssh -o ProxyJump="root@$LOBBOSS_IP" "root@$TARGET"
 }
 
 cmd_logs() {
   LOBBOSS_IP=$(get_lobboss_ip)
-  ssh "root@$LOBBOSS_IP" "tail -100f /var/log/cloud-init-output.log"
+  lobmob_ssh "root@$LOBBOSS_IP" "tail -100f /var/log/cloud-init-output.log"
 }
 
 cmd_prs() {
