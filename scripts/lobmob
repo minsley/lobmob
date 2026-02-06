@@ -134,25 +134,156 @@ cmd_bootstrap() {
   log "Step 1/12 — Checking prerequisites"
   echo ""
 
-  local MISSING=0
+  # Map CLI binary names to package names per package manager
+  _pkg_name() {
+    local tool="$1" mgr="$2"
+    case "$tool" in
+      wg)
+        case "$mgr" in
+          brew) echo "wireguard-tools" ;;
+          apt)  echo "wireguard-tools" ;;
+          dnf)  echo "wireguard-tools" ;;
+        esac ;;
+      terraform)
+        case "$mgr" in
+          brew) echo "hashicorp/tap/terraform" ;;
+          *)    echo "terraform" ;;
+        esac ;;
+      gh)
+        case "$mgr" in
+          brew) echo "gh" ;;
+          apt)  echo "gh" ;;
+          dnf)  echo "gh" ;;
+        esac ;;
+      *) echo "$tool" ;;
+    esac
+  }
+
+  # Detect package manager
+  local PKG_MGR=""
+  if command -v brew > /dev/null 2>&1; then
+    PKG_MGR="brew"
+  elif command -v apt-get > /dev/null 2>&1; then
+    PKG_MGR="apt"
+  elif command -v dnf > /dev/null 2>&1; then
+    PKG_MGR="dnf"
+  fi
+
+  local MISSING_REQUIRED=()
+  local MISSING_OPTIONAL=()
+
   for tool in terraform gh wg ssh jq; do
     if command -v "$tool" > /dev/null 2>&1; then
       echo -e "  ${GREEN}✓${NC} $tool"
     else
       echo -e "  ${RED}✗${NC} $tool — required"
-      MISSING=1
+      MISSING_REQUIRED+=("$tool")
     fi
   done
   if command -v doctl > /dev/null 2>&1; then
     echo -e "  ${GREEN}✓${NC} doctl"
   else
     echo -e "  ${YELLOW}?${NC} doctl — recommended (sleep/wake commands need it)"
+    MISSING_OPTIONAL+=("doctl")
   fi
 
-  if [ "$MISSING" -eq 1 ]; then
+  # Offer to install missing tools
+  if [ ${#MISSING_REQUIRED[@]} -gt 0 ] || [ ${#MISSING_OPTIONAL[@]} -gt 0 ]; then
     echo ""
-    err "Install missing tools and re-run: lobmob bootstrap"
-    exit 1
+    local ALL_MISSING=("${MISSING_REQUIRED[@]}" "${MISSING_OPTIONAL[@]}")
+
+    if [ -z "$PKG_MGR" ]; then
+      err "No supported package manager found (brew, apt, dnf)"
+      err "Install manually: ${ALL_MISSING[*]}"
+      if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then exit 1; fi
+    else
+      # Build install list with package names
+      local INSTALL_PKGS=()
+      for tool in "${ALL_MISSING[@]}"; do
+        INSTALL_PKGS+=("$(_pkg_name "$tool" "$PKG_MGR")")
+      done
+
+      log "Missing: ${ALL_MISSING[*]}"
+      read -rp "  Install via $PKG_MGR? [Y/n]: " BS_INSTALL
+      BS_INSTALL="${BS_INSTALL:-Y}"
+
+      if [[ "$BS_INSTALL" =~ ^[Yy]$ ]]; then
+        case "$PKG_MGR" in
+          brew)
+            # Ensure HashiCorp tap if terraform is needed
+            for tool in "${ALL_MISSING[@]}"; do
+              if [ "$tool" = "terraform" ]; then
+                brew tap hashicorp/tap 2>/dev/null || true
+                break
+              fi
+            done
+            # gh needs its own tap on some setups
+            brew install "${INSTALL_PKGS[@]}"
+            ;;
+          apt)
+            # Add external repos for tools not in default apt
+            for tool in "${ALL_MISSING[@]}"; do
+              case "$tool" in
+                terraform)
+                  log "  Adding HashiCorp APT repo..."
+                  curl -fsSL https://apt.releases.hashicorp.com/gpg \
+                    | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg 2>/dev/null
+                  echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+                    | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+                  ;;
+                gh)
+                  log "  Adding GitHub CLI APT repo..."
+                  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                    | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+                  echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                    | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+                  ;;
+                doctl)
+                  log "  Installing doctl from GitHub release..."
+                  curl -sL https://github.com/digitalocean/doctl/releases/latest/download/doctl-1.104.0-linux-amd64.tar.gz \
+                    | sudo tar -xzv -C /usr/local/bin
+                  ;;
+              esac
+            done
+            sudo apt-get update -qq
+            # Filter out doctl (installed via binary above)
+            local APT_PKGS=()
+            for tool in "${ALL_MISSING[@]}"; do
+              if [ "$tool" != "doctl" ]; then
+                APT_PKGS+=("$(_pkg_name "$tool" apt)")
+              fi
+            done
+            if [ ${#APT_PKGS[@]} -gt 0 ]; then
+              sudo apt-get install -y "${APT_PKGS[@]}"
+            fi
+            ;;
+          dnf)
+            sudo dnf install -y "${INSTALL_PKGS[@]}"
+            ;;
+        esac
+
+        # Re-check
+        echo ""
+        local STILL_MISSING=0
+        for tool in "${MISSING_REQUIRED[@]}"; do
+          if ! command -v "$tool" > /dev/null 2>&1; then
+            echo -e "  ${RED}✗${NC} $tool — still not found"
+            STILL_MISSING=1
+          else
+            echo -e "  ${GREEN}✓${NC} $tool — installed"
+          fi
+        done
+        if [ "$STILL_MISSING" -eq 1 ]; then
+          err "Some required tools could not be installed"
+          exit 1
+        fi
+      else
+        if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
+          err "Required tools missing: ${MISSING_REQUIRED[*]}"
+          exit 1
+        fi
+      fi
+    fi
   fi
   echo ""
 
