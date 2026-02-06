@@ -57,7 +57,7 @@ write_files:
       # Validate secrets exist
       source /etc/lobmob/secrets.env 2>/dev/null || { echo "ERROR: /etc/lobmob/secrets.env not found"; exit 1; }
       for VAR in DO_TOKEN GH_TOKEN DISCORD_BOT_TOKEN ANTHROPIC_API_KEY; do
-        if [ -z "${!VAR:-}" ]; then
+        if [ -z "$${!VAR:-}" ]; then
           echo "ERROR: $VAR not set in secrets.env"
           exit 1
         fi
@@ -394,14 +394,14 @@ write_files:
       source /etc/lobmob/env
       source /etc/lobmob/secrets.env 2>/dev/null || true
 
-      MAX_AGE_HOURS="${1:-2}"
+      MAX_AGE_HOURS="$${1:-2}"
       NOW=$(date +%s)
 
       doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,Created --no-header | while read -r ID NAME CREATED; do
         CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null)
         AGE_HOURS=$(( (NOW - CREATED_TS) / 3600 ))
         if [ "$AGE_HOURS" -ge "$MAX_AGE_HOURS" ]; then
-          echo "Destroying stale lobster $NAME (age: ${AGE_HOURS}h)"
+          echo "Destroying stale lobster $NAME (age: $${AGE_HOURS}h)"
           lobmob-teardown-lobster "$NAME"
         fi
       done
