@@ -132,20 +132,15 @@ wait_for_ssh() {
 
 wait_for_cloud_init() {
   local HOST="$1"
-  local MAX_ATTEMPTS="${2:-60}"
-  log "Waiting for cloud-init to complete on $HOST..."
-  for i in $(seq 1 "$MAX_ATTEMPTS"); do
-    if lobmob_ssh -o ConnectTimeout=5 "root@$HOST" \
-      "test -f /etc/lobmob/.cloud-init-done" 2>/dev/null; then
-      log "Cloud-init: complete"
-      return 0
-    fi
-    echo -n "."
-    sleep 10
-  done
-  echo ""
-  err "Cloud-init did not complete within $((MAX_ATTEMPTS * 10))s"
-  err "Check: ssh root@$HOST tail -50 /var/log/cloud-init-output.log"
+  local TIMEOUT="${2:-600}"
+  log "Waiting for cloud-init to complete on $HOST (timeout: ${TIMEOUT}s)..."
+  if lobmob_ssh -o ConnectTimeout=10 "root@$HOST" \
+    "cloud-init status --wait --long" 2>/dev/null; then
+    log "Cloud-init: complete"
+    return 0
+  fi
+  err "Cloud-init did not complete successfully"
+  err "Check: lobmob_ssh root@$HOST tail -100 /var/log/cloud-init-output.log"
   return 1
 }
 
