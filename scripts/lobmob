@@ -132,15 +132,24 @@ wait_for_ssh() {
 
 wait_for_cloud_init() {
   local HOST="$1"
-  local TIMEOUT="${2:-600}"
-  log "Waiting for cloud-init to complete on $HOST (timeout: ${TIMEOUT}s)..."
-  if lobmob_ssh -o ConnectTimeout=10 "root@$HOST" \
-    "cloud-init status --wait --long" 2>/dev/null; then
+  log "Waiting for cloud-init to complete on $HOST..."
+  # cloud-init status --wait blocks until done; returns non-zero on degraded
+  local CI_STATUS
+  CI_STATUS=$(lobmob_ssh -o ConnectTimeout=10 "root@$HOST" \
+    "cloud-init status --wait 2>/dev/null; cloud-init status --format=json 2>/dev/null || cloud-init status" 2>/dev/null) || true
+
+  if echo "$CI_STATUS" | grep -qE '"(done|degraded)"' 2>/dev/null || \
+     echo "$CI_STATUS" | grep -qE 'status: (done|degraded)' 2>/dev/null; then
     log "Cloud-init: complete"
+    if echo "$CI_STATUS" | grep -q "degraded" 2>/dev/null; then
+      warn "Cloud-init finished with warnings (degraded) -- non-fatal, continuing"
+    fi
     return 0
   fi
+
   err "Cloud-init did not complete successfully"
-  err "Check: lobmob_ssh root@$HOST tail -100 /var/log/cloud-init-output.log"
+  err "Status: $CI_STATUS"
+  err "Check: lobmob ssh-lobboss then: tail -100 /var/log/cloud-init-output.log"
   return 1
 }
 
