@@ -57,6 +57,12 @@ This runs a fully automated sequence:
 
 ## Step 4: Verify
 
+Run the automated smoke test:
+```bash
+tests/smoke-lobboss
+```
+
+Or check manually:
 ```bash
 ./scripts/lobmob ssh-lobboss
 # On the lobboss:
@@ -67,11 +73,11 @@ ls /opt/vault/        # Vault cloned
 cat /etc/lobmob/.awaiting-secrets  # Should not exist (file removed after provisioning)
 ```
 
-## Step 5: Configure Discord
+## Step 5: Configure OpenClaw + Discord
 
 1. Invite the bot to your Discord server (if not done during setup)
 2. Create channels: `#task-queue`, `#swarm-control`, `#results`, `#swarm-logs`
-3. Configure OpenClaw channel bindings in `/root/.openclaw/config.json` on the lobboss
+3. Set up OpenClaw on the lobboss — see [[operations/openclaw-setup]] for the full procedure
 
 ## Step 6: Test a Lobster
 
@@ -87,7 +93,14 @@ The spawn process:
 4. SSHes into the lobster over WireGuard to push secrets
 5. Authenticates gh, clones vault, configures OpenClaw
 
-Verify the lobster appears in WireGuard peers, responds to ping, and joins Discord.
+Verify with the smoke test:
+```bash
+tests/smoke-lobster 10.0.0.3
+```
+
+Then set up OpenClaw on the lobster — see [[operations/openclaw-setup]].
+
+For full end-to-end testing, see [[operations/testing]].
 
 ## Re-Provisioning Secrets
 

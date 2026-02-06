@@ -31,7 +31,13 @@ The lobboss agent also spawns lobsters autonomously when tasks queue up.
 ## Submitting Tasks
 
 Post in **#task-queue** on Discord. The lobboss picks it up and handles
-assignment. Or create a task file directly:
+assignment. Or use the test script:
+
+```bash
+tests/push-task --title "Research X" --objective "Find information about X and write it up..."
+```
+
+Or create a task file manually:
 
 ```bash
 ./scripts/lobmob ssh-lobboss
@@ -41,6 +47,26 @@ cp .obsidian/templates/task.md 010-tasks/active/task-$(date +%Y-%m-%d)-$(openssl
 # Edit the file, then:
 git add -A && git commit -m "[lobboss] Create task" && git push origin main
 ```
+
+## Triggering Agents
+
+To make lobboss assign a task:
+```bash
+# SSH to lobboss, then:
+source /etc/lobmob/secrets.env
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY openclaw agent --agent main \
+  --message "Assign task-XXXX to lobster-YYYY"
+```
+
+To make a lobster execute an assigned task:
+```bash
+# SSH to lobster (via ProxyJump), then:
+source /etc/lobmob/secrets.env
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY openclaw agent --agent main \
+  --message "Execute your assigned task task-XXXX"
+```
+
+The gateway must be running on the node for this to work. See [[operations/openclaw-setup]].
 
 ## Reviewing PRs
 

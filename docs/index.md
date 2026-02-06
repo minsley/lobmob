@@ -8,6 +8,8 @@ OpenClaw agent swarm management system for DigitalOcean.
 - [[operations/setup-checklist]] — Pre-deployment setup (GitHub, DO, Discord)
 - [[operations/deployment]] — How to deploy the swarm
 - [[operations/daily-ops]] — Day-to-day fleet operations
+- [[operations/testing]] — Test scripts and end-to-end verification
+- [[operations/openclaw-setup]] — OpenClaw configuration on nodes
 - [[reference/discord-protocol]] — Message formats and channel usage
 - [[reference/vault-structure]] — Obsidian vault layout and conventions
 - [[reference/cli]] — lobmob CLI reference
