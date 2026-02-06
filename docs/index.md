@@ -5,6 +5,7 @@ OpenClaw agent swarm management system for DigitalOcean.
 ## Quick Links
 - [[architecture/overview]] — System architecture and component diagram
 - [[architecture/git-workflow]] — PR-based task delivery workflow
+- [[operations/setup-checklist]] — Pre-deployment setup (GitHub, DO, Discord)
 - [[operations/deployment]] — How to deploy the swarm
 - [[operations/daily-ops]] — Day-to-day fleet operations
 - [[reference/discord-protocol]] — Message formats and channel usage
