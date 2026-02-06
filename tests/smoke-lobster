@@ -1,0 +1,126 @@
+#!/bin/bash
+# smoke-lobster — verify a deployed lobster is healthy
+# Usage: smoke-lobster <wireguard-ip or lobster-id>
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+lobmob_ssh() {
+  ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new "$@"
+}
+
+get_lobboss_ip() {
+  terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
+}
+
+# --- Argument handling ---
+
+if [ -z "${1:-}" ]; then
+  echo "Usage: smoke-lobster <wireguard-ip or lobster-id>"
+  exit 1
+fi
+
+TARGET="$1"
+
+# --- Test runner ---
+
+PASS_COUNT=0
+FAIL_COUNT=0
+
+check() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${NC}  $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+# --- Resolve lobboss IP ---
+
+LOBBOSS_IP=$(get_lobboss_ip)
+if [ -z "$LOBBOSS_IP" ]; then
+  echo -e "${RED}Cannot resolve lobboss IP from Terraform state.${NC}"
+  exit 1
+fi
+
+# If TARGET is not an IP, resolve it via lobboss registry
+if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  RESOLVED=$(lobmob_ssh "root@$LOBBOSS_IP" \
+    "grep '$TARGET' /opt/vault/040-fleet/registry.md 2>/dev/null | grep -oP 'wg_ip: \K\S+'" 2>/dev/null || true)
+  if [ -n "$RESOLVED" ]; then
+    TARGET="$RESOLVED"
+  else
+    echo -e "${RED}Could not resolve lobster ID '$1' to a WireGuard IP.${NC}"
+    exit 1
+  fi
+fi
+
+echo ""
+echo -e "${YELLOW}smoke-lobster${NC}  $TARGET  (via lobboss $LOBBOSS_IP)"
+echo ""
+
+# Helper: run a command on the lobster via lobboss
+lobster_ssh() {
+  lobmob_ssh -o ProxyJump="root@$LOBBOSS_IP" -o ConnectTimeout=10 "root@$TARGET" "$@"
+}
+
+# --- Checks ---
+
+check "Reachable via WireGuard ping" \
+  lobmob_ssh -o ConnectTimeout=10 "root@$LOBBOSS_IP" "ping -c 1 -W 3 $TARGET"
+
+check "SSH reachable (via ProxyJump)" \
+  lobmob_ssh -o ProxyJump="root@$LOBBOSS_IP" -o ConnectTimeout=10 -o BatchMode=yes "root@$TARGET" true
+
+check "WireGuard interface up" \
+  lobster_ssh "wg show wg0"
+
+check "Tool: gh" \
+  lobster_ssh "command -v gh"
+
+check "Tool: node" \
+  lobster_ssh "command -v node"
+
+check "Tool: openclaw" \
+  lobster_ssh "command -v openclaw"
+
+check "Secrets provisioned (secrets.env exists)" \
+  lobster_ssh "test -f /etc/lobmob/secrets.env"
+
+check "Secrets provisioned (.awaiting-secrets absent)" \
+  lobster_ssh "test ! -f /etc/lobmob/.awaiting-secrets"
+
+check "Vault cloned" \
+  lobster_ssh "test -d /opt/vault/.git"
+
+check "OpenClaw config exists" \
+  lobster_ssh "test -f /root/.openclaw/config.json"
+
+check "AGENTS.md exists" \
+  lobster_ssh "test -f /root/.openclaw/AGENTS.md"
+
+check "Git identity configured" \
+  lobster_ssh "git config --global user.name | grep -q ."
+
+# --- Summary ---
+
+TOTAL=$((PASS_COUNT + FAIL_COUNT))
+echo ""
+echo -e "${GREEN}$PASS_COUNT${NC}/$TOTAL passed"
+if [ "$FAIL_COUNT" -gt 0 ]; then
+  echo -e "${RED}$FAIL_COUNT failed${NC}"
+  exit 1
+fi

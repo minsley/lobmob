@@ -1,0 +1,93 @@
+#!/bin/bash
+# push-task — create and push a task file to the vault repo
+# Usage: push-task [--title "..."] [--objective "..."]
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+VAULT_LOCAL="$PROJECT_DIR/vault-local"
+
+# Colors
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# --- Parse arguments ---
+
+TITLE="Smoke test — write a haiku"
+OBJECTIVE="Write a haiku about the ocean and save it to \`030-knowledge/topics/haiku-test.md\`"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --title)   TITLE="$2"; shift 2 ;;
+    --objective) OBJECTIVE="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; echo "Usage: push-task [--title \"...\"] [--objective \"...\"]"; exit 1 ;;
+  esac
+done
+
+# --- Resolve vault repo ---
+
+VAULT_REPO=$(grep vault_repo "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
+if [ -z "$VAULT_REPO" ]; then
+  echo -e "${RED}vault_repo not found in infra/terraform.tfvars${NC}"
+  exit 1
+fi
+
+# --- Clone or pull vault ---
+
+if [ -d "$VAULT_LOCAL/.git" ]; then
+  echo -e "${YELLOW}Pulling latest vault...${NC}"
+  git -C "$VAULT_LOCAL" checkout main 2>/dev/null || true
+  git -C "$VAULT_LOCAL" pull origin main
+else
+  echo -e "${YELLOW}Cloning vault repo...${NC}"
+  gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
+  git -C "$VAULT_LOCAL" checkout main
+fi
+
+# --- Generate task ---
+
+TASK_ID="task-$(date +%Y-%m-%d)-$(openssl rand -hex 2)"
+TASK_FILE="010-tasks/active/${TASK_ID}.md"
+TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+mkdir -p "$VAULT_LOCAL/010-tasks/active"
+
+cat > "$VAULT_LOCAL/$TASK_FILE" <<EOF
+---
+id: ${TASK_ID}
+status: queued
+created: ${TIMESTAMP}
+assigned_to:
+assigned_at:
+completed_at:
+priority: normal
+tags: [test]
+---
+
+# ${TITLE}
+
+## Objective
+${OBJECTIVE}
+
+## Acceptance Criteria
+- [ ] Task completed as described
+
+## Lobster Notes
+_To be filled by assigned lobster_
+
+## Result
+_Pending_
+EOF
+
+# --- Commit and push ---
+
+git -C "$VAULT_LOCAL" add "$TASK_FILE"
+git -C "$VAULT_LOCAL" commit -m "[test] Create ${TASK_ID}"
+git -C "$VAULT_LOCAL" push origin main
+
+echo ""
+echo -e "${GREEN}Task pushed:${NC}  ${TASK_ID}"
+echo -e "${GREEN}Vault file:${NC}  ${TASK_FILE}"

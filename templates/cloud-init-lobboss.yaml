@@ -85,6 +85,10 @@ write_files:
       gh auth setup-git
       echo "GitHub CLI: authenticated"
 
+      # Re-set git identity (gh auth setup-git clobbers .gitconfig)
+      git config --global user.name "lobboss"
+      git config --global user.email "lobboss@lobmob.swarm"
+
       # Authenticate doctl
       doctl auth init -t "$DO_TOKEN"
       echo "doctl: authenticated"
@@ -119,6 +123,12 @@ write_files:
       # Copy lobboss skills
       cp -r /opt/vault/040-fleet/lobboss-skills/* /root/.openclaw/skills/ 2>/dev/null || true
 
+      # Generate SSH keypair for lobboss -> lobster connections
+      if [ ! -f /root/.ssh/lobster_admin ]; then
+        ssh-keygen -t ed25519 -C "lobboss-to-lobster" -f /root/.ssh/lobster_admin -N "" -q
+        echo "SSH keypair for lobster access: generated"
+      fi
+
       # Remove provision marker
       rm -f /etc/lobmob/.awaiting-secrets
 
@@ -144,6 +154,9 @@ write_files:
         WG_IP="10.0.0.$${NEXT_OCTET}"
       fi
 
+      # Read lobboss SSH public key for injecting into lobster authorized_keys
+      LOBBOSS_SSH_PUBKEY=$(cat /root/.ssh/lobster_admin.pub)
+
       # Generate WireGuard keypair for lobster
       LOBSTER_WG_PRIVKEY=$(wg genkey)
       LOBSTER_WG_PUBKEY=$(echo "$LOBSTER_WG_PRIVKEY" | wg pubkey)
@@ -158,6 +171,7 @@ write_files:
       set -euo pipefail
 
       export DEBIAN_FRONTEND=noninteractive
+      export HOME=/root
       apt-get update
       apt-get install -y wireguard git jq curl unzip
 
@@ -178,9 +192,10 @@ write_files:
       wg-quick up wg0
       systemctl enable wg-quick@wg0
 
-      # SSH authorized key from DO metadata
+      # SSH authorized keys: DO metadata + lobboss admin key
       mkdir -p /root/.ssh
       curl -s http://169.254.169.254/metadata/v1/public-keys >> /root/.ssh/authorized_keys
+      printf '\n%s\n' "$LOBBOSS_SSH_PUBKEY" >> /root/.ssh/authorized_keys
 
       # Git identity only -- no auth tokens
       git config --global user.name "lobster-$LOBSTER_ID"
@@ -245,7 +260,7 @@ write_files:
 
       # Wait for cloud-init to finish
       echo "Waiting for cloud-init to complete on lobster..."
-      ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+      ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
         "cloud-init status --wait" 2>/dev/null || true
       echo "Cloud-init: done"
 
@@ -253,20 +268,24 @@ write_files:
       echo "Pushing secrets to lobster via SSH..."
 
       # Write secrets.env
-      ssh "root@$WG_IP" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<SECRETS
+      ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<SECRETS
       GH_TOKEN=$GH_TOKEN
       DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
       ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
       SECRETS
 
       # Authenticate gh and clone vault
-      ssh "root@$WG_IP" bash <<PROVISION
+      ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" bash <<PROVISION
       set -euo pipefail
       source /etc/lobmob/secrets.env
 
       # GitHub auth
       echo "\$GH_TOKEN" | gh auth login --with-token
       gh auth setup-git
+
+      # Re-set git identity (gh auth setup-git clobbers .gitconfig)
+      git config --global user.name "lobster-$LOBSTER_ID"
+      git config --global user.email "lobster-$LOBSTER_ID@lobmob.swarm"
 
       # Clone vault
       source /etc/lobmob/env
