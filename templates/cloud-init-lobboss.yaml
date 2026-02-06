@@ -460,9 +460,7 @@ runcmd:
   - apt-get update && apt-get install -y gh
 
   # Install doctl (auth happens later via provision script)
-  - |
-    DOCTL_VER=$(curl -sL https://api.github.com/repos/digitalocean/doctl/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/^v//')
-    curl -sL "https://github.com/digitalocean/doctl/releases/download/v$${DOCTL_VER}/doctl-$${DOCTL_VER}-linux-amd64.tar.gz" | tar -xzv -C /usr/local/bin
+  - snap install doctl
 
   # Install Node.js 22
   - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
