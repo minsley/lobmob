@@ -16,6 +16,7 @@ ln -s $(pwd)/scripts/lobmob /usr/local/bin/lobmob
 
 | Command | Description |
 |---|---|
+| `lobmob bootstrap` | Interactive wizard — walks through full setup from scratch |
 | `lobmob init` | Generate WireGuard keys, create terraform.tfvars + secrets.env, run terraform init |
 | `lobmob deploy` | Terraform apply + wait for SSH + push secrets + provision lobboss |
 | `lobmob provision-secrets` | Re-push secrets to lobboss (e.g. after key rotation) |
@@ -37,6 +38,13 @@ ln -s $(pwd)/scripts/lobmob /usr/local/bin/lobmob
 |---|---|
 | `lobmob vault-init` | Create the GitHub vault repo and seed it |
 | `lobmob vault-sync` | Clone or pull the vault to `vault-local/` |
+
+### Power
+
+| Command | Description |
+|---|---|
+| `lobmob sleep` | Cull all lobsters then power off lobboss |
+| `lobmob wake` | Power on lobboss and wait for SSH |
 
 ### SSH
 

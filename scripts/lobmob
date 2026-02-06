@@ -23,6 +23,7 @@ usage() {
 Usage: lobmob <command> [options]
 
 Infrastructure:
+  bootstrap           Interactive wizard — full setup from scratch
   init                Generate WireGuard keys and prepare config files
   deploy              Deploy lobboss via Terraform + provision secrets via SSH
   provision-secrets   Re-push secrets to lobboss (e.g. after key rotation)
@@ -42,6 +43,10 @@ Vault:
 SSH:
   ssh-lobboss         SSH into the lobboss droplet
   ssh-lobster <id>    SSH into a lobster via lobboss (WG tunnel)
+
+Power:
+  sleep               Cull all lobsters then power off lobboss
+  wake                Power on lobboss and wait for it to come back
 
 Utilities:
   logs                Tail lobboss cloud-init logs
@@ -67,6 +72,16 @@ load_secrets() {
 
 get_lobboss_ip() {
   cd "$INFRA_DIR" && terraform output -raw lobboss_ip 2>/dev/null
+}
+
+get_lobboss_id() {
+  local PROJECT_NAME
+  PROJECT_NAME=$(grep project_name "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
+  PROJECT_NAME="${PROJECT_NAME:-lobmob}"
+  doctl compute droplet list \
+    --tag-name "${PROJECT_NAME}-lobboss" \
+    --format ID --no-header \
+    --access-token "$DO_TOKEN" 2>/dev/null | head -1
 }
 
 wait_for_ssh() {
@@ -107,6 +122,316 @@ wait_for_cloud_init() {
 }
 
 # --- Commands ---
+
+cmd_bootstrap() {
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║        lobmob bootstrap wizard           ║${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+  echo ""
+
+  # ── Step 1: Preflight checks ──────────────────────────────────────────
+  log "Step 1/12 — Checking prerequisites"
+  echo ""
+
+  local MISSING=0
+  for tool in terraform gh wg ssh jq; do
+    if command -v "$tool" > /dev/null 2>&1; then
+      echo -e "  ${GREEN}✓${NC} $tool"
+    else
+      echo -e "  ${RED}✗${NC} $tool — required"
+      MISSING=1
+    fi
+  done
+  if command -v doctl > /dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} doctl"
+  else
+    echo -e "  ${YELLOW}?${NC} doctl — recommended (sleep/wake commands need it)"
+  fi
+
+  if [ "$MISSING" -eq 1 ]; then
+    echo ""
+    err "Install missing tools and re-run: lobmob bootstrap"
+    exit 1
+  fi
+  echo ""
+
+  # ── Step 2: DigitalOcean ──────────────────────────────────────────────
+  log "Step 2/12 — DigitalOcean"
+  echo "  Create an API token at: https://cloud.digitalocean.com/account/api/tokens"
+  echo "  Scopes: read + write"
+  echo ""
+  read -rsp "  DO API token: " BS_DO_TOKEN; echo ""
+
+  if [ -z "$BS_DO_TOKEN" ]; then
+    err "DO token is required"; exit 1
+  fi
+
+  log "  Validating token..."
+  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Bearer $BS_DO_TOKEN" \
+    "https://api.digitalocean.com/v2/account")
+  if [ "$HTTP_CODE" != "200" ]; then
+    err "DO token validation failed (HTTP $HTTP_CODE). Check token and try again."
+    exit 1
+  fi
+  echo -e "  ${GREEN}✓${NC} Token valid"
+  echo ""
+
+  echo "  Choose a region (nyc1, nyc3, sfo3, ams3, lon1, fra1, sgp1, blr1, tor1, syd1)"
+  read -rp "  Region [nyc3]: " BS_REGION
+  BS_REGION="${BS_REGION:-nyc3}"
+  echo ""
+
+  # ── Step 3: GitHub ────────────────────────────────────────────────────
+  log "Step 3/12 — GitHub"
+  echo ""
+  read -rp "  Vault repo (org/name) [lobmob-vault]: " BS_VAULT_REPO
+  BS_VAULT_REPO="${BS_VAULT_REPO:-lobmob-vault}"
+  echo ""
+
+  read -rp "  Create this repo now via GitHub CLI? [Y/n]: " BS_CREATE_REPO
+  BS_CREATE_REPO="${BS_CREATE_REPO:-Y}"
+  if [[ "$BS_CREATE_REPO" =~ ^[Yy]$ ]]; then
+    log "  Creating repo..."
+    gh repo create "$BS_VAULT_REPO" --private --description "lobmob swarm Obsidian vault" 2>/dev/null \
+      && echo -e "  ${GREEN}✓${NC} Repo created" \
+      || echo -e "  ${YELLOW}!${NC} Repo may already exist — continuing"
+
+    # Seed the vault
+    BS_TMPDIR=$(mktemp -d)
+    gh repo clone "$BS_VAULT_REPO" "$BS_TMPDIR" 2>/dev/null || true
+    if [ -d "$BS_TMPDIR/.git" ]; then
+      cp -r "$PROJECT_DIR/vault-seed/"* "$BS_TMPDIR/" 2>/dev/null || true
+      cp -r "$PROJECT_DIR/vault-seed/".obsidian "$BS_TMPDIR/" 2>/dev/null || true
+      cp -r "$PROJECT_DIR/vault-seed/".gitattributes "$BS_TMPDIR/" 2>/dev/null || true
+      cd "$BS_TMPDIR"
+      git add -A
+      git commit -m "Seed vault structure" 2>/dev/null || true
+      mkdir -p 040-fleet/lobboss-skills 040-fleet/lobster-skills
+      cp -r "$PROJECT_DIR/skills/lobboss/"* 040-fleet/lobboss-skills/ 2>/dev/null || true
+      cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/ 2>/dev/null || true
+      git add -A
+      git commit -m "Add OpenClaw skills for fleet distribution" 2>/dev/null || true
+      git push origin main 2>/dev/null || git push -u origin main 2>/dev/null || true
+      echo -e "  ${GREEN}✓${NC} Vault seeded"
+      rm -rf "$BS_TMPDIR"
+      cd "$PROJECT_DIR"
+    fi
+    echo ""
+  fi
+
+  echo "  Create a fine-grained PAT at: https://github.com/settings/personal-access-tokens/new"
+  echo "  Scope to the vault repo. Permissions: Contents (rw), Pull requests (rw), Metadata (r)"
+  echo ""
+  read -rsp "  GitHub PAT: " BS_GH_TOKEN; echo ""
+  if [ -z "$BS_GH_TOKEN" ]; then
+    err "GitHub token is required"; exit 1
+  fi
+  echo ""
+
+  # Deploy key
+  echo "  The vault repo needs an SSH deploy key for server-side git operations."
+  read -rp "  Auto-generate a deploy key? [Y/n]: " BS_GEN_DEPLOY_KEY
+  BS_GEN_DEPLOY_KEY="${BS_GEN_DEPLOY_KEY:-Y}"
+
+  if [[ "$BS_GEN_DEPLOY_KEY" =~ ^[Yy]$ ]]; then
+    BS_DEPLOY_TMPDIR=$(mktemp -d)
+    ssh-keygen -t ed25519 -C "lobmob-deploy" -f "$BS_DEPLOY_TMPDIR/lobmob_deploy" -N "" -q
+    BS_DEPLOY_KEY_B64=$(base64 < "$BS_DEPLOY_TMPDIR/lobmob_deploy" | tr -d '\n')
+    BS_DEPLOY_PUBKEY=$(cat "$BS_DEPLOY_TMPDIR/lobmob_deploy.pub")
+    rm -rf "$BS_DEPLOY_TMPDIR"
+
+    echo ""
+    echo -e "  ${YELLOW}ACTION REQUIRED:${NC} Add this public key as a deploy key on your vault repo"
+    echo "  https://github.com/${BS_VAULT_REPO}/settings/keys"
+    echo "  Enable \"Allow write access\""
+    echo ""
+    echo "  Public key:"
+    echo -e "  ${CYAN}${BS_DEPLOY_PUBKEY}${NC}"
+    echo ""
+    read -rp "  Press Enter once you've added the deploy key..." _
+  else
+    echo "  Generate one with: ssh-keygen -t ed25519 -C lobmob-deploy -f ~/.ssh/lobmob_deploy -N \"\""
+    echo "  Then base64-encode the private key: base64 < ~/.ssh/lobmob_deploy"
+    echo ""
+    read -rsp "  Paste base64-encoded deploy key: " BS_DEPLOY_KEY_B64; echo ""
+    if [ -z "$BS_DEPLOY_KEY_B64" ]; then
+      err "Deploy key is required"; exit 1
+    fi
+  fi
+  echo ""
+
+  # ── Step 4: Discord ──────────────────────────────────────────────────
+  log "Step 4/12 — Discord"
+  echo "  Create a bot at: https://discord.com/developers/applications"
+  echo "  Enable MESSAGE CONTENT intent. Invite bot to your server."
+  echo "  Create channels: #task-queue, #swarm-control, #results, #swarm-logs"
+  echo ""
+  read -rsp "  Discord bot token: " BS_DISCORD_TOKEN; echo ""
+  if [ -z "$BS_DISCORD_TOKEN" ]; then
+    err "Discord token is required"; exit 1
+  fi
+  echo ""
+
+  # ── Step 5: Anthropic ────────────────────────────────────────────────
+  log "Step 5/12 — Anthropic"
+  echo "  Get an API key at: https://console.anthropic.com/settings/keys"
+  echo ""
+  read -rsp "  Anthropic API key: " BS_ANTHROPIC_KEY; echo ""
+  if [ -z "$BS_ANTHROPIC_KEY" ]; then
+    err "Anthropic API key is required"; exit 1
+  fi
+  echo ""
+
+  # ── Step 6: SSH key ──────────────────────────────────────────────────
+  log "Step 6/12 — SSH key"
+  BS_DEFAULT_SSH="$HOME/.ssh/id_ed25519.pub"
+  read -rp "  Path to SSH public key [$BS_DEFAULT_SSH]: " BS_SSH_PUB
+  BS_SSH_PUB="${BS_SSH_PUB:-$BS_DEFAULT_SSH}"
+  # Expand ~ if user typed it
+  BS_SSH_PUB="${BS_SSH_PUB/#\~/$HOME}"
+
+  if [ ! -f "$BS_SSH_PUB" ]; then
+    warn "  $BS_SSH_PUB not found"
+    read -rp "  Generate an Ed25519 keypair now? [Y/n]: " BS_GEN_SSH
+    BS_GEN_SSH="${BS_GEN_SSH:-Y}"
+    if [[ "$BS_GEN_SSH" =~ ^[Yy]$ ]]; then
+      ssh-keygen -t ed25519 -f "${BS_SSH_PUB%.pub}" -N "" -q
+      echo -e "  ${GREEN}✓${NC} Keypair generated"
+    else
+      err "SSH public key is required for droplet access"; exit 1
+    fi
+  else
+    echo -e "  ${GREEN}✓${NC} Found $BS_SSH_PUB"
+  fi
+  echo ""
+
+  # ── Step 7: Optional overrides ───────────────────────────────────────
+  log "Step 7/12 — Droplet sizing"
+  echo "  Defaults: lobboss s-2vcpu-4gb (\$24/mo), lobster s-1vcpu-2gb (\$12/mo)"
+  read -rp "  Customize sizes? [y/N]: " BS_CUSTOM_SIZES
+  BS_CUSTOM_SIZES="${BS_CUSTOM_SIZES:-N}"
+
+  BS_MANAGER_SIZE=""
+  BS_WORKER_SIZE=""
+  if [[ "$BS_CUSTOM_SIZES" =~ ^[Yy]$ ]]; then
+    read -rp "  Lobboss size [s-2vcpu-4gb]: " BS_MANAGER_SIZE
+    BS_MANAGER_SIZE="${BS_MANAGER_SIZE:-s-2vcpu-4gb}"
+    read -rp "  Lobster size [s-1vcpu-2gb]: " BS_WORKER_SIZE
+    BS_WORKER_SIZE="${BS_WORKER_SIZE:-s-1vcpu-2gb}"
+  fi
+  echo ""
+
+  # ── Step 8: WireGuard keys ──────────────────────────────────────────
+  log "Step 8/12 — Generating WireGuard keys"
+  BS_WG_PRIVKEY=$(wg genkey)
+  BS_WG_PUBKEY=$(echo "$BS_WG_PRIVKEY" | wg pubkey)
+  echo -e "  ${GREEN}✓${NC} Keypair generated"
+  echo ""
+
+  # ── Step 9: Write config files ──────────────────────────────────────
+  log "Step 9/12 — Writing config files"
+
+  # Check for existing files
+  if [ -f "$SECRETS_FILE" ]; then
+    warn "  secrets.env already exists"
+    read -rp "  Overwrite? [y/N]: " BS_OVERWRITE_SECRETS
+    if [[ ! "$BS_OVERWRITE_SECRETS" =~ ^[Yy]$ ]]; then
+      log "  Keeping existing secrets.env"
+      BS_SKIP_SECRETS=1
+    fi
+  fi
+
+  if [ -z "${BS_SKIP_SECRETS:-}" ]; then
+    cat > "$SECRETS_FILE" <<SECRETSEOF
+DO_TOKEN=$BS_DO_TOKEN
+GH_TOKEN=$BS_GH_TOKEN
+DISCORD_BOT_TOKEN=$BS_DISCORD_TOKEN
+ANTHROPIC_API_KEY=$BS_ANTHROPIC_KEY
+VAULT_DEPLOY_KEY_B64=$BS_DEPLOY_KEY_B64
+WG_LOBBOSS_PRIVATE_KEY=$BS_WG_PRIVKEY
+SECRETSEOF
+    chmod 600 "$SECRETS_FILE"
+    echo -e "  ${GREEN}✓${NC} secrets.env written"
+  fi
+
+  if [ -f "$INFRA_DIR/terraform.tfvars" ]; then
+    warn "  terraform.tfvars already exists"
+    read -rp "  Overwrite? [y/N]: " BS_OVERWRITE_TFVARS
+    if [[ ! "$BS_OVERWRITE_TFVARS" =~ ^[Yy]$ ]]; then
+      log "  Keeping existing terraform.tfvars"
+      BS_SKIP_TFVARS=1
+    fi
+  fi
+
+  if [ -z "${BS_SKIP_TFVARS:-}" ]; then
+    {
+      echo "vault_repo            = \"$BS_VAULT_REPO\""
+      echo "wg_lobboss_public_key = \"$BS_WG_PUBKEY\""
+      echo "ssh_pub_key_path      = \"$BS_SSH_PUB\""
+      echo "region                = \"$BS_REGION\""
+      echo "project_name          = \"lobmob\""
+      if [ -n "$BS_MANAGER_SIZE" ]; then
+        echo "manager_size          = \"$BS_MANAGER_SIZE\""
+      fi
+      if [ -n "$BS_WORKER_SIZE" ]; then
+        echo "worker_size           = \"$BS_WORKER_SIZE\""
+      fi
+    } > "$INFRA_DIR/terraform.tfvars"
+    echo -e "  ${GREEN}✓${NC} terraform.tfvars written"
+  fi
+  echo ""
+
+  # ── Step 10: Terraform init + plan ──────────────────────────────────
+  log "Step 10/12 — Terraform init"
+  export DIGITALOCEAN_TOKEN="$BS_DO_TOKEN"
+  cd "$INFRA_DIR" && terraform init
+  echo ""
+
+  log "Step 11/12 — Terraform plan"
+  terraform plan -out=tfplan
+  echo ""
+
+  read -rp "$(echo -e "${YELLOW}Deploy now?${NC} [Y/n]: ")" BS_DEPLOY_NOW
+  BS_DEPLOY_NOW="${BS_DEPLOY_NOW:-Y}"
+  if [[ ! "$BS_DEPLOY_NOW" =~ ^[Yy]$ ]]; then
+    log "Config saved. Run 'lobmob deploy' when ready."
+    return
+  fi
+
+  # ── Step 11/12: Deploy ──────────────────────────────────────────────
+  echo ""
+  terraform apply tfplan
+  LOBBOSS_IP=$(terraform output -raw lobboss_ip)
+  log "Lobboss droplet created at $LOBBOSS_IP"
+
+  wait_for_ssh "$LOBBOSS_IP"
+  wait_for_cloud_init "$LOBBOSS_IP"
+
+  # ── Step 12: Provision secrets ──────────────────────────────────────
+  log "Step 12/12 — Provisioning secrets"
+
+  # Source the written secrets for cmd_provision_secrets_to
+  set -a; source "$SECRETS_FILE"; set +a
+  export DIGITALOCEAN_TOKEN="$DO_TOKEN"
+
+  cmd_provision_secrets_to "$LOBBOSS_IP"
+
+  echo ""
+  echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+  echo -e "${CYAN}║           lobmob is live!                ║${NC}"
+  echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  log "Lobboss running at $LOBBOSS_IP"
+  echo ""
+  echo "  Next steps:"
+  echo "    lobmob ssh-lobboss        SSH into lobboss"
+  echo "    lobmob spawn              Spawn a lobster"
+  echo "    lobmob status             Fleet status"
+  echo "    lobmob sleep              Power down when done"
+  echo ""
+}
 
 cmd_init() {
   log "Generating WireGuard keypair for lobboss..."
@@ -344,6 +669,89 @@ cmd_vault_sync() {
   log "Vault synced to $PROJECT_DIR/vault-local/"
 }
 
+cmd_sleep() {
+  load_secrets
+
+  LOBBOSS_ID=$(get_lobboss_id)
+  if [ -z "$LOBBOSS_ID" ]; then
+    err "Lobboss droplet not found. Is it deployed?"
+    exit 1
+  fi
+
+  # Check if already off
+  STATUS=$(doctl compute droplet get "$LOBBOSS_ID" \
+    --format Status --no-header --access-token "$DO_TOKEN" 2>/dev/null)
+  if [ "$STATUS" = "off" ]; then
+    warn "Lobboss is already asleep"
+    return
+  fi
+
+  # Cull all lobsters first
+  log "Culling all lobsters before sleep..."
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -n "$LOBBOSS_IP" ]; then
+    ssh -o ConnectTimeout=10 "root@$LOBBOSS_IP" \
+      'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$LOBSTER_TAG" --force' 2>/dev/null || true
+  fi
+  # Belt-and-suspenders: also cull via API in case SSH missed any
+  local PROJECT_NAME
+  PROJECT_NAME=$(grep project_name "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
+  PROJECT_NAME="${PROJECT_NAME:-lobmob}"
+  curl -s -X DELETE \
+    "https://api.digitalocean.com/v2/droplets?tag_name=${PROJECT_NAME}-lobster" \
+    -H "Authorization: Bearer $DO_TOKEN" > /dev/null 2>&1 || true
+  log "Lobsters culled"
+
+  # Graceful shutdown
+  log "Shutting down lobboss..."
+  doctl compute droplet-action shutdown "$LOBBOSS_ID" \
+    --access-token "$DO_TOKEN" --wait 2>/dev/null || true
+
+  # Verify it's off — fall back to hard power-off if graceful shutdown stalled
+  sleep 5
+  STATUS=$(doctl compute droplet get "$LOBBOSS_ID" \
+    --format Status --no-header --access-token "$DO_TOKEN" 2>/dev/null)
+  if [ "$STATUS" != "off" ]; then
+    warn "Graceful shutdown incomplete, forcing power off..."
+    doctl compute droplet-action power-off "$LOBBOSS_ID" \
+      --access-token "$DO_TOKEN" --wait
+  fi
+
+  log "Lobboss is asleep. Run 'lobmob wake' to resume."
+}
+
+cmd_wake() {
+  load_secrets
+
+  LOBBOSS_ID=$(get_lobboss_id)
+  if [ -z "$LOBBOSS_ID" ]; then
+    err "Lobboss droplet not found. Is it deployed?"
+    exit 1
+  fi
+
+  # Check if already running
+  STATUS=$(doctl compute droplet get "$LOBBOSS_ID" \
+    --format Status --no-header --access-token "$DO_TOKEN" 2>/dev/null)
+  if [ "$STATUS" = "active" ]; then
+    warn "Lobboss is already awake"
+    return
+  fi
+
+  log "Powering on lobboss..."
+  doctl compute droplet-action power-on "$LOBBOSS_ID" \
+    --access-token "$DO_TOKEN" --wait
+
+  LOBBOSS_IP=$(get_lobboss_ip)
+  wait_for_ssh "$LOBBOSS_IP"
+
+  # Restart WireGuard (may not auto-start after power cycle)
+  ssh "root@$LOBBOSS_IP" "systemctl restart wg-quick@wg0" 2>/dev/null || true
+
+  log "Lobboss is awake at $LOBBOSS_IP"
+  log "  SSH:    lobmob ssh-lobboss"
+  log "  Spawn:  lobmob spawn"
+}
+
 cmd_ssh_lobboss() {
   LOBBOSS_IP=$(get_lobboss_ip)
   log "Connecting to lobboss at $LOBBOSS_IP..."
@@ -384,6 +792,7 @@ COMMAND="${1:-help}"
 shift || true
 
 case "$COMMAND" in
+  bootstrap)           cmd_bootstrap ;;
   init)                cmd_init ;;
   deploy)              cmd_deploy ;;
   provision-secrets)   cmd_provision_secrets ;;
@@ -395,6 +804,8 @@ case "$COMMAND" in
   cleanup)             cmd_cleanup "$@" ;;
   vault-init)          cmd_vault_init ;;
   vault-sync)          cmd_vault_sync ;;
+  sleep)               cmd_sleep ;;
+  wake)                cmd_wake ;;
   ssh-lobboss)         cmd_ssh_lobboss ;;
   ssh-lobster)         cmd_ssh_lobster "$@" ;;
   logs)                cmd_logs ;;
