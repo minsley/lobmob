@@ -1,0 +1,202 @@
+#!/bin/bash
+# await-task-completion — watch a task through lobster work, PR, review, and merge
+# Usage: await-task-completion [--timeout <minutes>] <task-id>
+#
+# Polls for three stages:
+#   1. PR opened — lobster pushes branch and creates a pull request
+#   2. PR merged — lobboss reviews and merges the PR
+#   3. Task completed — task file has status: completed
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+VAULT_LOCAL="$PROJECT_DIR/vault-local"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# --- Parse arguments ---
+
+TIMEOUT_MINUTES=15
+TASK_ID=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --timeout) TIMEOUT_MINUTES="$2"; shift 2 ;;
+    --help|-h) echo "Usage: await-task-completion [--timeout <minutes>] <task-id>"; exit 0 ;;
+    *) TASK_ID="$1"; shift ;;
+  esac
+done
+
+if [ -z "$TASK_ID" ]; then
+  echo "Usage: await-task-completion [--timeout <minutes>] <task-id>"
+  exit 1
+fi
+
+# --- Preflight ---
+
+VAULT_REPO=$(grep vault_repo "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
+if [ -z "$VAULT_REPO" ]; then
+  echo -e "${RED}vault_repo not found in infra/terraform.tfvars${NC}"
+  exit 1
+fi
+
+if [ ! -d "$VAULT_LOCAL/.git" ]; then
+  echo -e "${YELLOW}Cloning vault repo...${NC}"
+  gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
+fi
+
+# --- Helpers ---
+
+read_field() {
+  local file="$1" field="$2"
+  if [ ! -f "$file" ]; then return; fi
+  sed -n '/^---$/,/^---$/p' "$file" | grep "^${field}:" | head -1 | sed "s/^${field}:[[:space:]]*//"
+}
+
+find_task_file() {
+  for dir in active completed failed; do
+    local path="$VAULT_LOCAL/010-tasks/$dir/${TASK_ID}.md"
+    if [ -f "$path" ]; then
+      echo "$path"
+      return
+    fi
+  done
+}
+
+echo ""
+echo -e "${YELLOW}await-task-completion${NC}  task=$TASK_ID  timeout=${TIMEOUT_MINUTES}m"
+echo ""
+
+# --- Initial state ---
+
+git -C "$VAULT_LOCAL" checkout main --quiet 2>/dev/null || true
+git -C "$VAULT_LOCAL" pull --quiet origin main 2>/dev/null || true
+
+TASK_FILE=$(find_task_file)
+if [ -z "$TASK_FILE" ]; then
+  echo -e "${RED}Task file not found for $TASK_ID${NC}"
+  exit 1
+fi
+
+STATUS=$(read_field "$TASK_FILE" "status")
+ASSIGNED=$(read_field "$TASK_FILE" "assigned_to")
+
+echo -e "  status:      ${CYAN}$STATUS${NC}"
+echo -e "  assigned_to: ${CYAN}${ASSIGNED:-unassigned}${NC}"
+echo ""
+
+if [ "$STATUS" != "active" ] && [ "$STATUS" != "completed" ]; then
+  echo -e "${RED}Task is '$STATUS', expected 'active' (assigned to a lobster)${NC}"
+  exit 1
+fi
+
+# --- Stage tracking ---
+
+STAGE_PR_OPENED=false
+STAGE_PR_MERGED=false
+STAGE_COMPLETED=false
+PR_NUMBER=""
+PR_URL=""
+
+# Check if already completed
+if [ "$STATUS" = "completed" ]; then
+  STAGE_COMPLETED=true
+  STAGE_PR_MERGED=true
+  STAGE_PR_OPENED=true
+fi
+
+# --- Poll loop ---
+
+TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
+POLL_INTERVAL=15
+ELAPSED=0
+
+while [ "$ELAPSED" -lt "$TIMEOUT_SECONDS" ]; do
+  if [ "$STAGE_COMPLETED" = true ]; then
+    break
+  fi
+
+  # Stage 1: Check for PR
+  if [ "$STAGE_PR_OPENED" = false ]; then
+    PR_JSON=$(gh pr list --repo "$VAULT_REPO" --state all --search "$TASK_ID" --json number,url,state,headRefName --jq ".[] | select(.headRefName | contains(\"$TASK_ID\"))" 2>/dev/null || echo "")
+    if [ -n "$PR_JSON" ]; then
+      PR_NUMBER=$(echo "$PR_JSON" | head -1 | jq -r '.number' 2>/dev/null || echo "")
+      PR_URL=$(echo "$PR_JSON" | head -1 | jq -r '.url' 2>/dev/null || echo "")
+      PR_STATE=$(echo "$PR_JSON" | head -1 | jq -r '.state' 2>/dev/null || echo "")
+      if [ -n "$PR_NUMBER" ]; then
+        STAGE_PR_OPENED=true
+        echo -e "  ${GREEN}PR OPENED${NC}  #$PR_NUMBER  (${ELAPSED}s)"
+        echo -e "             $PR_URL"
+        if [ "$PR_STATE" = "MERGED" ]; then
+          STAGE_PR_MERGED=true
+          echo -e "  ${GREEN}PR MERGED${NC}  #$PR_NUMBER  (${ELAPSED}s)"
+        fi
+      fi
+    fi
+  fi
+
+  # Stage 2: Check for PR merge
+  if [ "$STAGE_PR_OPENED" = true ] && [ "$STAGE_PR_MERGED" = false ] && [ -n "$PR_NUMBER" ]; then
+    PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$VAULT_REPO" --json state --jq '.state' 2>/dev/null || echo "")
+    if [ "$PR_STATE" = "MERGED" ]; then
+      STAGE_PR_MERGED=true
+      echo -e "  ${GREEN}PR MERGED${NC}  #$PR_NUMBER  (${ELAPSED}s)"
+    fi
+  fi
+
+  # Stage 3: Check for task completion
+  if [ "$STAGE_PR_MERGED" = true ]; then
+    git -C "$VAULT_LOCAL" pull --quiet origin main 2>/dev/null || true
+    TASK_FILE=$(find_task_file)
+    if [ -n "$TASK_FILE" ]; then
+      STATUS=$(read_field "$TASK_FILE" "status")
+      if [ "$STATUS" = "completed" ]; then
+        STAGE_COMPLETED=true
+        echo -e "  ${GREEN}TASK COMPLETED${NC}  (${ELAPSED}s)"
+        break
+      fi
+    fi
+  fi
+
+  sleep "$POLL_INTERVAL"
+  ELAPSED=$((ELAPSED + POLL_INTERVAL))
+  echo -n "."
+done
+
+echo ""
+echo ""
+
+# --- Summary ---
+
+PASS=0
+FAIL=0
+
+for stage in PR_OPENED PR_MERGED COMPLETED; do
+  eval "val=\$STAGE_$stage"
+  case "$stage" in
+    PR_OPENED)  label="PR opened" ;;
+    PR_MERGED)  label="PR merged" ;;
+    COMPLETED)  label="Task completed" ;;
+  esac
+  if [ "$val" = true ]; then
+    echo -e "  ${GREEN}PASS${NC}  $label"
+    PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label (not reached in ${TIMEOUT_MINUTES}m)"
+    FAIL=$((FAIL + 1))
+  fi
+done
+
+TOTAL=$((PASS + FAIL))
+echo ""
+echo -e "${GREEN}$PASS${NC}/$TOTAL stages completed"
+if [ "$FAIL" -gt 0 ]; then
+  echo -e "${RED}$FAIL stages not reached${NC}"
+  exit 1
+fi
