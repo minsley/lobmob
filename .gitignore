@@ -1,0 +1,19 @@
+# Secrets
+infra/terraform.tfvars
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/tfplan
+*.pem
+*.key
+
+# Local vault clone
+vault-local/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/

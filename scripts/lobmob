@@ -1,0 +1,263 @@
+#!/bin/bash
+# lobmob — CLI for managing the OpenClaw swarm
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[lobmob]${NC} $*"; }
+warn() { echo -e "${YELLOW}[lobmob]${NC} $*"; }
+err()  { echo -e "${RED}[lobmob]${NC} $*" >&2; }
+
+usage() {
+  cat <<EOF
+Usage: lobmob <command> [options]
+
+Infrastructure:
+  init              Generate WireGuard keys and prepare terraform.tfvars
+  deploy            Deploy manager droplet via Terraform
+  destroy           Tear down all infrastructure
+
+Fleet Management:
+  spawn [id]        Spawn a new worker (SSH into manager to run)
+  teardown <id>     Destroy a specific worker
+  teardown-all      Destroy all worker droplets
+  status            Show fleet status (droplets, WG peers, open PRs)
+  cleanup [hours]   Destroy workers older than N hours (default: 2)
+
+Vault:
+  vault-init        Initialize the Obsidian vault GitHub repo
+  vault-sync        Pull latest vault to local machine
+
+SSH:
+  ssh-manager       SSH into the manager droplet
+  ssh-worker <id>   SSH into a worker via manager (WG tunnel)
+
+Utilities:
+  logs              Tail manager cloud-init logs
+  prs               List open PRs on the vault repo
+EOF
+}
+
+cmd_init() {
+  log "Generating WireGuard keypair for manager..."
+  WG_PRIVKEY=$(wg genkey 2>/dev/null || { err "wg not found — install wireguard-tools"; exit 1; })
+  WG_PUBKEY=$(echo "$WG_PRIVKEY" | wg pubkey)
+
+  log "Private key: $WG_PRIVKEY"
+  log "Public key:  $WG_PUBKEY"
+
+  if [ ! -f "$INFRA_DIR/terraform.tfvars" ]; then
+    cp "$INFRA_DIR/terraform.tfvars.example" "$INFRA_DIR/terraform.tfvars"
+    # Inject WG keys
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      sed -i '' "s|wg_manager_private_key.*|wg_manager_private_key   = \"$WG_PRIVKEY\"|" "$INFRA_DIR/terraform.tfvars"
+      sed -i '' "s|wg_manager_public_key.*|wg_manager_public_key    = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
+    else
+      sed -i "s|wg_manager_private_key.*|wg_manager_private_key   = \"$WG_PRIVKEY\"|" "$INFRA_DIR/terraform.tfvars"
+      sed -i "s|wg_manager_public_key.*|wg_manager_public_key    = \"$WG_PUBKEY\"|" "$INFRA_DIR/terraform.tfvars"
+    fi
+    log "Created infra/terraform.tfvars — fill in your tokens"
+  else
+    warn "terraform.tfvars already exists — WG keys printed above, update manually"
+  fi
+
+  log "Initializing Terraform..."
+  cd "$INFRA_DIR" && terraform init
+}
+
+cmd_deploy() {
+  log "Deploying manager via Terraform..."
+  cd "$INFRA_DIR"
+  terraform plan -out=tfplan
+  echo ""
+  read -rp "Apply this plan? [y/N] " confirm
+  if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    terraform apply tfplan
+    MANAGER_IP=$(terraform output -raw manager_ip)
+    log "Manager deployed at $MANAGER_IP"
+    log "SSH: ssh root@$MANAGER_IP"
+    log "Wait ~3-5 min for cloud-init to complete"
+  else
+    log "Cancelled"
+  fi
+}
+
+cmd_destroy() {
+  warn "This will destroy ALL lobmob infrastructure (manager + VPC + firewalls)"
+  read -rp "Are you sure? [y/N] " confirm
+  if [[ "$confirm" =~ ^[Yy]$ ]]; then
+    # Destroy workers first
+    cmd_teardown_all
+    # Then terraform
+    cd "$INFRA_DIR" && terraform destroy -auto-approve
+    log "All infrastructure destroyed"
+  fi
+}
+
+cmd_spawn() {
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  if [ -z "$MANAGER_IP" ]; then
+    err "Manager not deployed. Run: lobmob deploy"
+    exit 1
+  fi
+
+  WORKER_ID="${1:-$(openssl rand -hex 4)}"
+  log "Spawning worker-$WORKER_ID via manager..."
+  ssh "root@$MANAGER_IP" "lobmob-spawn-worker $WORKER_ID"
+}
+
+cmd_teardown() {
+  if [ -z "${1:-}" ]; then
+    err "Usage: lobmob teardown <worker-name>"
+    exit 1
+  fi
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  log "Tearing down $1 via manager..."
+  ssh "root@$MANAGER_IP" "lobmob-teardown-worker $1"
+}
+
+cmd_teardown_all() {
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  if [ -z "$MANAGER_IP" ]; then
+    warn "Manager not reachable — attempting direct API teardown"
+    source "$INFRA_DIR/terraform.tfvars" 2>/dev/null || true
+    if [ -n "${do_token:-}" ]; then
+      curl -s -X DELETE "https://api.digitalocean.com/v2/droplets?tag_name=lobmob-worker" \
+        -H "Authorization: Bearer $do_token"
+      log "Sent bulk delete for all lobmob-worker tagged droplets"
+    else
+      err "No DO token available"
+    fi
+    return
+  fi
+
+  log "Destroying all workers via manager..."
+  ssh "root@$MANAGER_IP" 'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$WORKER_TAG" --force' || true
+  log "All workers destroyed"
+}
+
+cmd_status() {
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  if [ -z "$MANAGER_IP" ]; then
+    err "Manager not deployed"
+    exit 1
+  fi
+  ssh "root@$MANAGER_IP" "lobmob-fleet-status"
+}
+
+cmd_cleanup() {
+  HOURS="${1:-2}"
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  ssh "root@$MANAGER_IP" "lobmob-cleanup $HOURS"
+}
+
+cmd_vault_init() {
+  log "Initializing vault repo..."
+
+  if [ -z "${VAULT_REPO:-}" ]; then
+    read -rp "Vault repo (org/name): " VAULT_REPO
+  fi
+
+  # Create the repo
+  gh repo create "$VAULT_REPO" --private --description "lobmob swarm Obsidian vault"
+
+  # Clone and seed
+  TMPDIR=$(mktemp -d)
+  gh repo clone "$VAULT_REPO" "$TMPDIR"
+  cp -r "$PROJECT_DIR/vault-seed/"* "$TMPDIR/"
+  cp -r "$PROJECT_DIR/vault-seed/".obsidian "$TMPDIR/" 2>/dev/null || true
+
+  cd "$TMPDIR"
+  git add -A
+  git commit -m "Seed vault structure"
+  git push origin main
+
+  # Copy skills into vault for distribution
+  mkdir -p 040-fleet/manager-skills 040-fleet/worker-skills
+  cp -r "$PROJECT_DIR/skills/manager/"* 040-fleet/manager-skills/
+  cp -r "$PROJECT_DIR/skills/worker/"* 040-fleet/worker-skills/
+  git add -A
+  git commit -m "Add OpenClaw skills for fleet distribution"
+  git push origin main
+
+  rm -rf "$TMPDIR"
+  log "Vault repo created: $VAULT_REPO"
+}
+
+cmd_vault_sync() {
+  if [ -d "$PROJECT_DIR/vault-local" ]; then
+    cd "$PROJECT_DIR/vault-local" && git pull origin main
+  else
+    VAULT_REPO=$(cd "$INFRA_DIR" && grep vault_repo terraform.tfvars | cut -d'"' -f2)
+    gh repo clone "$VAULT_REPO" "$PROJECT_DIR/vault-local"
+  fi
+  log "Vault synced to $PROJECT_DIR/vault-local/"
+}
+
+cmd_ssh_manager() {
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  log "Connecting to manager at $MANAGER_IP..."
+  ssh "root@$MANAGER_IP"
+}
+
+cmd_ssh_worker() {
+  if [ -z "${1:-}" ]; then
+    err "Usage: lobmob ssh-worker <wireguard-ip or worker-id>"
+    exit 1
+  fi
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  TARGET="$1"
+  # If it looks like a worker ID rather than an IP, resolve it
+  if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    TARGET=$(ssh "root@$MANAGER_IP" "grep '$TARGET' /opt/vault/040-fleet/registry.md | grep -oP 'wg_ip: \K\S+'" 2>/dev/null || echo "$TARGET")
+  fi
+  log "Connecting to worker at $TARGET via manager tunnel..."
+  ssh -o ProxyJump="root@$MANAGER_IP" "root@$TARGET"
+}
+
+cmd_logs() {
+  MANAGER_IP=$(cd "$INFRA_DIR" && terraform output -raw manager_ip 2>/dev/null)
+  ssh "root@$MANAGER_IP" "tail -100f /var/log/cloud-init-output.log"
+}
+
+cmd_prs() {
+  VAULT_REPO=$(cd "$INFRA_DIR" && grep vault_repo terraform.tfvars 2>/dev/null | cut -d'"' -f2)
+  if [ -z "$VAULT_REPO" ]; then
+    err "vault_repo not found in terraform.tfvars"
+    exit 1
+  fi
+  gh pr list --repo "$VAULT_REPO" --state open
+}
+
+# --- Main ---
+
+COMMAND="${1:-help}"
+shift || true
+
+case "$COMMAND" in
+  init)          cmd_init ;;
+  deploy)        cmd_deploy ;;
+  destroy)       cmd_destroy ;;
+  spawn)         cmd_spawn "$@" ;;
+  teardown)      cmd_teardown "$@" ;;
+  teardown-all)  cmd_teardown_all ;;
+  status)        cmd_status ;;
+  cleanup)       cmd_cleanup "$@" ;;
+  vault-init)    cmd_vault_init ;;
+  vault-sync)    cmd_vault_sync ;;
+  ssh-manager)   cmd_ssh_manager ;;
+  ssh-worker)    cmd_ssh_worker "$@" ;;
+  logs)          cmd_logs ;;
+  prs)           cmd_prs ;;
+  help|--help|-h) usage ;;
+  *)             err "Unknown command: $COMMAND"; usage; exit 1 ;;
+esac

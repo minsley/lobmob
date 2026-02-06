@@ -1,0 +1,372 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - wireguard
+  - git
+  - jq
+  - curl
+  - unzip
+
+write_files:
+  # WireGuard config
+  - path: /etc/wireguard/wg0.conf
+    permissions: "0600"
+    content: |
+      [Interface]
+      PrivateKey = ${wg_private_key}
+      Address = 10.0.0.1/24
+      ListenPort = 51820
+      SaveConfig = true
+
+  # DO API token for worker management
+  - path: /etc/lobmob/env
+    permissions: "0600"
+    content: |
+      DO_TOKEN=${do_token}
+      GH_TOKEN=${gh_token}
+      DISCORD_BOT_TOKEN=${discord_bot_token}
+      ANTHROPIC_API_KEY=${anthropic_api_key}
+      VAULT_REPO=${vault_repo}
+      PROJECT_NAME=${project_name}
+      WORKER_SIZE=${worker_size}
+      REGION=${region}
+      SSH_KEY_ID=${ssh_key_id}
+      VPC_UUID=${vpc_uuid}
+      WORKER_TAG=${worker_tag}
+
+  # Vault deploy key
+  - path: /root/.ssh/vault_key
+    permissions: "0600"
+    encoding: b64
+    content: ${vault_deploy_key_b64}
+
+  - path: /root/.ssh/config
+    permissions: "0644"
+    content: |
+      Host github.com
+        IdentityFile /root/.ssh/vault_key
+        StrictHostKeyChecking accept-new
+
+  # Worker spawn script (used by OpenClaw skill)
+  - path: /usr/local/bin/lobmob-spawn-worker
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      source /etc/lobmob/env
+
+      WORKER_ID="$${1:-$(openssl rand -hex 4)}"
+      WG_IP="$${2:-}"
+
+      if [ -z "$WG_IP" ]; then
+        EXISTING=$(wg show wg0 allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1 | sort -t. -k4 -n | tail -1)
+        LAST_OCTET=$(echo "$${EXISTING:-10.0.0.1}" | cut -d. -f4)
+        NEXT_OCTET=$((LAST_OCTET + 1))
+        WG_IP="10.0.0.$${NEXT_OCTET}"
+      fi
+
+      # Generate WireGuard keypair for worker
+      WORKER_WG_PRIVKEY=$(wg genkey)
+      WORKER_WG_PUBKEY=$(echo "$WORKER_WG_PRIVKEY" | wg pubkey)
+      MANAGER_PUB_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
+      MANAGER_WG_PUBKEY=$(wg show wg0 public-key)
+
+      # Build cloud-init for worker
+      WORKER_USERDATA=$(cat <<USERDATA
+      #!/bin/bash
+      set -euo pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y wireguard git jq curl unzip
+
+      # WireGuard
+      cat > /etc/wireguard/wg0.conf <<WGEOF
+      [Interface]
+      PrivateKey = $WORKER_WG_PRIVKEY
+      Address = $WG_IP/24
+      ListenPort = 51820
+
+      [Peer]
+      PublicKey = $MANAGER_WG_PUBKEY
+      AllowedIPs = 10.0.0.0/24
+      Endpoint = $MANAGER_PUB_IP:51820
+      PersistentKeepalive = 25
+      WGEOF
+
+      wg-quick up wg0
+      systemctl enable wg-quick@wg0
+
+      # SSH authorized key from manager
+      mkdir -p /root/.ssh
+      curl -s http://169.254.169.254/metadata/v1/public-keys >> /root/.ssh/authorized_keys
+
+      # Git + GitHub CLI
+      curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+      echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list
+      apt-get update && apt-get install -y gh
+
+      echo "$GH_TOKEN" | gh auth login --with-token
+      gh auth setup-git
+
+      git config --global user.name "worker-$WORKER_ID"
+      git config --global user.email "worker-$WORKER_ID@lobmob.swarm"
+
+      # Clone vault
+      mkdir -p /opt/vault
+      gh repo clone $VAULT_REPO /opt/vault
+      cd /opt/vault && git checkout main
+
+      # Node.js 22
+      curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+      apt-get install -y nodejs
+
+      # OpenClaw
+      npm install -g openclaw@latest
+
+      # Write OpenClaw config
+      mkdir -p /root/.openclaw
+      cat > /root/.openclaw/config.json <<OCEOF
+      {
+        "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
+        "anthropicApiKey": "$ANTHROPIC_API_KEY",
+        "channels": {
+          "discord": {
+            "enabled": true,
+            "token": "$DISCORD_BOT_TOKEN"
+          }
+        }
+      }
+      OCEOF
+
+      # Copy worker skills
+      mkdir -p /root/.openclaw/skills
+      cp -r /opt/vault/040-fleet/worker-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+
+      # Write worker AGENTS.md
+      cat > /root/.openclaw/AGENTS.md <<AGENTEOF
+      ---
+      name: worker-$WORKER_ID
+      model: anthropic:claude-sonnet-4-5-20250929
+      ---
+      You are worker-$WORKER_ID in the lobmob swarm. Your WireGuard IP is $WG_IP.
+      You execute tasks assigned by the manager agent via Discord #swarm-control.
+      When you complete a task:
+      1. Write results to the vault repo under /opt/vault/
+      2. Create a PR using the submit-results skill
+      3. Post a summary with PR link to #results
+      Report failures honestly. Self-destruct when idle too long.
+      AGENTEOF
+
+      # Signal ready
+      echo "WORKER_READY worker-$WORKER_ID $WG_IP" > /tmp/worker-ready
+
+      USERDATA
+      )
+
+      # Create the droplet
+      RESPONSE=$(doctl compute droplet create \
+        "lobmob-worker-$WORKER_ID" \
+        --region "$REGION" \
+        --size "$WORKER_SIZE" \
+        --image ubuntu-24-04-x64 \
+        --ssh-keys "$SSH_KEY_ID" \
+        --vpc-uuid "$VPC_UUID" \
+        --tag-name "$WORKER_TAG" \
+        --user-data "$WORKER_USERDATA" \
+        --wait \
+        --format ID,PublicIPv4 \
+        --no-header \
+        --output json)
+
+      DROPLET_ID=$(echo "$RESPONSE" | jq -r '.[0].id')
+      DROPLET_IP=$(echo "$RESPONSE" | jq -r '.[0].networks.v4[] | select(.type=="public") | .ip_address')
+
+      # Add worker as WireGuard peer on manager
+      wg set wg0 peer "$WORKER_WG_PUBKEY" allowed-ips "$WG_IP/32" endpoint "$DROPLET_IP:51820"
+
+      # Output worker info as JSON
+      cat <<EOF
+      {
+        "worker_id": "worker-$WORKER_ID",
+        "droplet_id": "$DROPLET_ID",
+        "public_ip": "$DROPLET_IP",
+        "wireguard_ip": "$WG_IP",
+        "wg_public_key": "$WORKER_WG_PUBKEY"
+      }
+      EOF
+
+  # Worker teardown script
+  - path: /usr/local/bin/lobmob-teardown-worker
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      source /etc/lobmob/env
+
+      WORKER_NAME="$1"
+
+      # Get droplet ID
+      DROPLET_ID=$(doctl compute droplet list \
+        --tag-name "$WORKER_TAG" \
+        --format ID,Name \
+        --no-header | grep "$WORKER_NAME" | awk '{print $1}')
+
+      if [ -z "$DROPLET_ID" ]; then
+        echo "Worker $WORKER_NAME not found"
+        exit 1
+      fi
+
+      # Remove WireGuard peer (find by allowed-ips matching the worker)
+      # Worker's WG pubkey is tracked in fleet registry
+      WG_PUBKEY=$(grep "$WORKER_NAME" /opt/vault/040-fleet/registry.md 2>/dev/null \
+        | grep -oP 'wg_pubkey: \K\S+' || true)
+      if [ -n "$WG_PUBKEY" ]; then
+        wg set wg0 peer "$WG_PUBKEY" remove
+      fi
+
+      # Destroy droplet
+      doctl compute droplet delete "$DROPLET_ID" --force
+
+      echo "Destroyed $WORKER_NAME (droplet $DROPLET_ID)"
+
+  # Fleet status script
+  - path: /usr/local/bin/lobmob-fleet-status
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      source /etc/lobmob/env
+
+      echo "=== WireGuard Peers ==="
+      wg show wg0
+
+      echo ""
+      echo "=== Active Worker Droplets ==="
+      doctl compute droplet list --tag-name "$WORKER_TAG" --format ID,Name,PublicIPv4,Status,Created --no-header
+
+      echo ""
+      echo "=== Open PRs ==="
+      cd /opt/vault && gh pr list --state open --json number,title,headRefName,author,createdAt 2>/dev/null || echo "No vault repo"
+
+  # Stale worker cleanup cron
+  - path: /usr/local/bin/lobmob-cleanup
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      source /etc/lobmob/env
+
+      MAX_AGE_HOURS="${1:-2}"
+      NOW=$(date +%s)
+
+      doctl compute droplet list --tag-name "$WORKER_TAG" --format ID,Name,Created --no-header | while read -r ID NAME CREATED; do
+        CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null)
+        AGE_HOURS=$(( (NOW - CREATED_TS) / 3600 ))
+        if [ "$AGE_HOURS" -ge "$MAX_AGE_HOURS" ]; then
+          echo "Destroying stale worker $NAME (age: ${AGE_HOURS}h)"
+          lobmob-teardown-worker "$NAME"
+        fi
+      done
+
+  # PR review script
+  - path: /usr/local/bin/lobmob-review-prs
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      source /etc/lobmob/env
+      cd /opt/vault
+
+      git checkout main && git pull origin main
+
+      PRS=$(gh pr list --state open --json number,title,headRefName --jq '.[]' 2>/dev/null)
+      if [ -z "$PRS" ]; then
+        exit 0
+      fi
+
+      echo "$PRS" | jq -c '.' | while read -r PR; do
+        NUMBER=$(echo "$PR" | jq -r '.number')
+        TITLE=$(echo "$PR" | jq -r '.title')
+        BRANCH=$(echo "$PR" | jq -r '.headRefName')
+
+        echo "Reviewing PR #$NUMBER: $TITLE ($BRANCH)"
+
+        # Check diff for secrets
+        DIFF=$(gh pr diff "$NUMBER" 2>/dev/null || true)
+        if echo "$DIFF" | grep -qiE '(sk-ant-|dop_v1_|github_pat_|PRIVATE KEY)'; then
+          gh pr comment "$NUMBER" --body "⚠️ Possible secrets detected in diff. Please remove and force-push."
+          echo "BLOCKED PR #$NUMBER — secrets detected"
+          continue
+        fi
+
+        # Check file paths are within allowed directories
+        FILES=$(gh pr view "$NUMBER" --json files --jq '.files[].path')
+        INVALID=$(echo "$FILES" | grep -vE '^(010-tasks/|020-logs/|030-knowledge/|000-inbox/)' || true)
+        if [ -n "$INVALID" ]; then
+          gh pr comment "$NUMBER" --body "⚠️ Files outside allowed paths: $INVALID"
+          echo "BLOCKED PR #$NUMBER — invalid paths"
+          continue
+        fi
+
+        echo "PR #$NUMBER passes checks — ready for manager agent review"
+      done
+
+runcmd:
+  # Enable WireGuard
+  - wg-quick up wg0
+  - systemctl enable wg-quick@wg0
+
+  # Install GitHub CLI
+  - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+  - echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+  - apt-get update && apt-get install -y gh
+
+  # Auth GitHub
+  - bash -c 'source /etc/lobmob/env && echo "$GH_TOKEN" | gh auth login --with-token && gh auth setup-git'
+
+  # Git config
+  - git config --global user.name "lobmob-manager"
+  - git config --global user.email "manager@lobmob.swarm"
+
+  # Install doctl
+  - curl -sL https://github.com/digitalocean/doctl/releases/latest/download/doctl-1.104.0-linux-amd64.tar.gz | tar -xzv -C /usr/local/bin
+  - bash -c 'source /etc/lobmob/env && doctl auth init -t "$DO_TOKEN"'
+
+  # Install Node.js 22
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+
+  # Install OpenClaw
+  - npm install -g openclaw@latest
+
+  # Clone vault repo
+  - bash -c 'source /etc/lobmob/env && gh repo clone "$VAULT_REPO" /opt/vault'
+  - cd /opt/vault && git checkout main
+
+  # Setup OpenClaw workspace
+  - mkdir -p /root/.openclaw/skills
+  - bash -c 'source /etc/lobmob/env && cat > /root/.openclaw/config.json <<OCEOF
+    {
+      "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
+      "anthropicApiKey": "$ANTHROPIC_API_KEY",
+      "channels": {
+        "discord": {
+          "enabled": true,
+          "token": "$DISCORD_BOT_TOKEN"
+        }
+      }
+    }
+    OCEOF'
+
+  # Copy manager skills into OpenClaw
+  - cp -r /opt/vault/040-fleet/manager-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+
+  # Cleanup cron — every 30 minutes
+  - echo "*/30 * * * * root /usr/local/bin/lobmob-cleanup 2" >> /etc/crontab
+
+  # PR review cron — every 2 minutes
+  - echo "*/2 * * * * root /usr/local/bin/lobmob-review-prs >> /var/log/lobmob-pr-review.log 2>&1" >> /etc/crontab
