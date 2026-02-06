@@ -120,8 +120,9 @@ write_files:
       OCEOF
       chmod 600 /root/.openclaw/config.json
 
-      # Copy lobboss skills
+      # Copy lobboss skills and AGENTS.md from vault
       cp -r /opt/vault/040-fleet/lobboss-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+      cp /opt/vault/040-fleet/lobboss-AGENTS.md /root/.openclaw/AGENTS.md 2>/dev/null || true
 
       # Generate SSH keypair for lobboss -> lobster connections
       if [ ! -f /root/.ssh/lobster_admin ]; then
