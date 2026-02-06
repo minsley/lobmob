@@ -1,26 +1,6 @@
-variable "do_token" {
-  description = "DigitalOcean API token"
-  type        = string
-  sensitive   = true
-}
-
-variable "gh_token" {
-  description = "GitHub fine-grained PAT scoped to the vault repo"
-  type        = string
-  sensitive   = true
-}
-
-variable "discord_bot_token" {
-  description = "Discord bot token for OpenClaw"
-  type        = string
-  sensitive   = true
-}
-
-variable "anthropic_api_key" {
-  description = "Anthropic API key for Claude"
-  type        = string
-  sensitive   = true
-}
+# --- Infrastructure variables (non-secret) ---
+# Secrets are stored in secrets.env and pushed via SSH after deploy.
+# The DO provider authenticates via DIGITALOCEAN_TOKEN env var.
 
 variable "region" {
   description = "DigitalOcean region"
@@ -51,20 +31,8 @@ variable "vault_repo" {
   type        = string
 }
 
-variable "vault_deploy_key_private" {
-  description = "Base64-encoded private deploy key for the vault repo"
-  type        = string
-  sensitive   = true
-}
-
-variable "wg_manager_private_key" {
-  description = "WireGuard private key for manager (generate with wg genkey)"
-  type        = string
-  sensitive   = true
-}
-
 variable "wg_manager_public_key" {
-  description = "WireGuard public key for manager"
+  description = "WireGuard public key for manager (not secret — used in worker configs)"
   type        = string
 }
 

@@ -1,14 +1,11 @@
-# Copy to terraform.tfvars and fill in real values
-# NEVER commit terraform.tfvars — it contains secrets
+# Copy to terraform.tfvars and fill in real values.
+# This file contains NO SECRETS — only infrastructure config.
+# Secrets go in ../secrets.env (see secrets.env.example).
 
-do_token             = "dop_v1_..."
-gh_token             = "github_pat_..."
-discord_bot_token    = "MTI..."
-anthropic_api_key    = "sk-ant-..."
-vault_repo           = "yourorg/lobmob-vault"
-vault_deploy_key_private = "base64-encoded-private-key"
-wg_manager_private_key   = "run: wg genkey"
-wg_manager_public_key    = "run: echo <privkey> | wg pubkey"
-ssh_pub_key_path         = "~/.ssh/id_ed25519.pub"
-region                   = "nyc3"
-project_name             = "lobmob"
+vault_repo            = "yourorg/lobmob-vault"
+wg_manager_public_key = "run: lobmob init (generates this)"
+ssh_pub_key_path      = "~/.ssh/id_ed25519.pub"
+region                = "nyc3"
+project_name          = "lobmob"
+# manager_size        = "s-2vcpu-4gb"   # uncomment to override default
+# worker_size         = "s-1vcpu-2gb"   # uncomment to override default

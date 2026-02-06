@@ -69,9 +69,29 @@
 ## Security Layers
 | Layer | Mechanism |
 |---|---|
+| Secret delivery | SSH-push only — zero secrets in cloud-init user_data or Terraform state |
 | Network | DO Cloud Firewall (SSH only from manager, WG UDP 51820) |
 | Transport | WireGuard encryption on all inter-node traffic |
-| SSH | Ed25519 keys, password auth disabled, root disabled on workers |
-| Secrets | Only on manager; workers get scoped GH PAT only |
+| SSH | Ed25519 keys, password auth disabled |
+| Secrets at rest | `/etc/lobmob/secrets.env` mode 0600; OpenClaw config mode 0600 |
+| Workers | Secrets pushed via SSH over WireGuard after boot; ephemeral; auto-destroyed after 2 hours |
 | Vault | No secrets in repo; Git LFS for large assets |
-| Workers | Ephemeral; auto-destroyed after 2 hours by cleanup cron |
+
+## Secret Flow
+```
+Local machine                    Manager                      Worker
+secrets.env ──── SSH ────► /etc/lobmob/secrets.env
+                           /root/.ssh/vault_key
+                           /etc/wireguard/wg0.conf
+                                    │
+                                    │ SSH over WireGuard
+                                    ▼
+                           /etc/lobmob/secrets.env ────► Worker secrets
+                           (GH_TOKEN, ANTHROPIC,         (subset only —
+                            DISCORD only)                 no DO_TOKEN)
+```
+Secrets never appear in:
+- Terraform state files
+- Cloud-init user_data (readable via DO metadata endpoint at 169.254.169.254)
+- Git history
+- Discord messages

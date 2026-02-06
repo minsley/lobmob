@@ -9,9 +9,8 @@ terraform {
   }
 }
 
-provider "digitalocean" {
-  token = var.do_token
-}
+# Authenticates via DIGITALOCEAN_TOKEN env var — no token in state
+provider "digitalocean" {}
 
 # --- SSH Key ---
 
@@ -111,6 +110,8 @@ resource "digitalocean_tag" "worker" {
 }
 
 # --- Manager Droplet ---
+# Cloud-init installs packages and scripts only — zero secrets.
+# Secrets are pushed via SSH after boot by `lobmob deploy`.
 
 resource "digitalocean_droplet" "manager" {
   name     = "${var.project_name}-manager"
@@ -122,19 +123,13 @@ resource "digitalocean_droplet" "manager" {
   tags     = [digitalocean_tag.manager.id]
 
   user_data = templatefile("${path.module}/../templates/cloud-init-manager.yaml", {
-    do_token              = var.do_token
-    gh_token              = var.gh_token
-    discord_bot_token     = var.discord_bot_token
-    anthropic_api_key     = var.anthropic_api_key
-    vault_repo            = var.vault_repo
-    vault_deploy_key_b64  = var.vault_deploy_key_private
-    wg_private_key        = var.wg_manager_private_key
-    project_name          = var.project_name
-    worker_size           = var.worker_size
-    region                = var.region
-    ssh_key_id            = digitalocean_ssh_key.lobmob.id
-    vpc_uuid              = digitalocean_vpc.swarm.id
-    worker_tag            = digitalocean_tag.worker.name
+    vault_repo   = var.vault_repo
+    project_name = var.project_name
+    worker_size  = var.worker_size
+    region       = var.region
+    ssh_key_id   = digitalocean_ssh_key.lobmob.id
+    vpc_uuid     = digitalocean_vpc.swarm.id
+    worker_tag   = digitalocean_tag.worker.name
   })
 }
 

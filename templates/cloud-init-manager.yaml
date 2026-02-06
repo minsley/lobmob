@@ -1,4 +1,8 @@
 #cloud-config
+#
+# Manager cloud-init — CONTAINS NO SECRETS.
+# Installs packages, scripts, and config skeletons.
+# Secrets are pushed via SSH after boot by `lobmob deploy`.
 
 package_update: true
 package_upgrade: true
@@ -11,24 +15,20 @@ packages:
   - unzip
 
 write_files:
-  # WireGuard config
-  - path: /etc/wireguard/wg0.conf
+  # WireGuard skeleton — private key injected by provision script
+  - path: /etc/wireguard/wg0.conf.template
     permissions: "0600"
     content: |
       [Interface]
-      PrivateKey = ${wg_private_key}
+      PrivateKey = __WG_PRIVATE_KEY__
       Address = 10.0.0.1/24
       ListenPort = 51820
       SaveConfig = true
 
-  # DO API token for worker management
+  # Non-secret config only — secrets appended by provision script
   - path: /etc/lobmob/env
     permissions: "0600"
     content: |
-      DO_TOKEN=${do_token}
-      GH_TOKEN=${gh_token}
-      DISCORD_BOT_TOKEN=${discord_bot_token}
-      ANTHROPIC_API_KEY=${anthropic_api_key}
       VAULT_REPO=${vault_repo}
       PROJECT_NAME=${project_name}
       WORKER_SIZE=${worker_size}
@@ -37,12 +37,7 @@ write_files:
       VPC_UUID=${vpc_uuid}
       WORKER_TAG=${worker_tag}
 
-  # Vault deploy key
-  - path: /root/.ssh/vault_key
-    permissions: "0600"
-    encoding: b64
-    content: ${vault_deploy_key_b64}
-
+  # SSH config skeleton for GitHub — deploy key pushed by provision script
   - path: /root/.ssh/config
     permissions: "0644"
     content: |
@@ -50,13 +45,98 @@ write_files:
         IdentityFile /root/.ssh/vault_key
         StrictHostKeyChecking accept-new
 
-  # Worker spawn script (used by OpenClaw skill)
+  # Provision script — called by `lobmob deploy` via SSH after secrets are pushed
+  - path: /usr/local/bin/lobmob-provision
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      echo "=== lobmob provision: configuring manager ==="
+
+      # Validate secrets exist
+      source /etc/lobmob/secrets.env 2>/dev/null || { echo "ERROR: /etc/lobmob/secrets.env not found"; exit 1; }
+      for VAR in DO_TOKEN GH_TOKEN DISCORD_BOT_TOKEN ANTHROPIC_API_KEY; do
+        if [ -z "${!VAR:-}" ]; then
+          echo "ERROR: $VAR not set in secrets.env"
+          exit 1
+        fi
+      done
+
+      # Validate deploy key
+      if [ ! -f /root/.ssh/vault_key ]; then
+        echo "ERROR: /root/.ssh/vault_key not found"
+        exit 1
+      fi
+      chmod 600 /root/.ssh/vault_key
+
+      # Activate WireGuard
+      if [ -f /etc/wireguard/wg0.conf ]; then
+        wg-quick up wg0 2>/dev/null || true
+        systemctl enable wg-quick@wg0
+        echo "WireGuard: active"
+      else
+        echo "ERROR: /etc/wireguard/wg0.conf not found — was WG private key pushed?"
+        exit 1
+      fi
+
+      # Authenticate GitHub CLI
+      echo "$GH_TOKEN" | gh auth login --with-token
+      gh auth setup-git
+      echo "GitHub CLI: authenticated"
+
+      # Git config
+      git config --global user.name "lobmob-manager"
+      git config --global user.email "manager@lobmob.swarm"
+
+      # Authenticate doctl
+      doctl auth init -t "$DO_TOKEN"
+      echo "doctl: authenticated"
+
+      # Clone vault repo
+      source /etc/lobmob/env
+      if [ ! -d /opt/vault/.git ]; then
+        gh repo clone "$VAULT_REPO" /opt/vault
+        cd /opt/vault && git checkout main
+        echo "Vault: cloned"
+      else
+        cd /opt/vault && git pull origin main
+        echo "Vault: updated"
+      fi
+
+      # Configure OpenClaw
+      mkdir -p /root/.openclaw/skills
+      cat > /root/.openclaw/config.json <<OCEOF
+      {
+        "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
+        "anthropicApiKey": "$ANTHROPIC_API_KEY",
+        "channels": {
+          "discord": {
+            "enabled": true,
+            "token": "$DISCORD_BOT_TOKEN"
+          }
+        }
+      }
+      OCEOF
+      chmod 600 /root/.openclaw/config.json
+
+      # Copy manager skills
+      cp -r /opt/vault/040-fleet/manager-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+
+      # Remove provision marker
+      rm -f /etc/lobmob/.awaiting-secrets
+
+      echo "=== lobmob provision: complete ==="
+
+  # Worker spawn script — creates droplets with SECRET-FREE cloud-init,
+  # then pushes secrets via SSH over WireGuard after boot
   - path: /usr/local/bin/lobmob-spawn-worker
     permissions: "0755"
     content: |
       #!/bin/bash
       set -euo pipefail
       source /etc/lobmob/env
+      source /etc/lobmob/secrets.env
 
       WORKER_ID="$${1:-$(openssl rand -hex 4)}"
       WG_IP="$${2:-}"
@@ -74,7 +154,9 @@ write_files:
       MANAGER_PUB_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
       MANAGER_WG_PUBKEY=$(wg show wg0 public-key)
 
-      # Build cloud-init for worker
+      # Build SECRET-FREE cloud-init for worker
+      # Only contains: packages, WireGuard config (ephemeral key — not a stored secret),
+      # SSH authorized keys, git identity, Node.js, OpenClaw, gh CLI install
       WORKER_USERDATA=$(cat <<USERDATA
       #!/bin/bash
       set -euo pipefail
@@ -83,7 +165,7 @@ write_files:
       apt-get update
       apt-get install -y wireguard git jq curl unzip
 
-      # WireGuard
+      # WireGuard — uses ephemeral keypair generated by manager at spawn time
       cat > /etc/wireguard/wg0.conf <<WGEOF
       [Interface]
       PrivateKey = $WORKER_WG_PRIVKEY
@@ -100,71 +182,38 @@ write_files:
       wg-quick up wg0
       systemctl enable wg-quick@wg0
 
-      # SSH authorized key from manager
+      # SSH authorized key from DO metadata
       mkdir -p /root/.ssh
       curl -s http://169.254.169.254/metadata/v1/public-keys >> /root/.ssh/authorized_keys
 
-      # Git + GitHub CLI
+      # Git identity only — no auth tokens
+      git config --global user.name "worker-$WORKER_ID"
+      git config --global user.email "worker-$WORKER_ID@lobmob.swarm"
+
+      # Install GitHub CLI (auth happens via manager SSH push)
       curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
       echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list
       apt-get update && apt-get install -y gh
 
-      echo "$GH_TOKEN" | gh auth login --with-token
-      gh auth setup-git
-
-      git config --global user.name "worker-$WORKER_ID"
-      git config --global user.email "worker-$WORKER_ID@lobmob.swarm"
-
-      # Clone vault
-      mkdir -p /opt/vault
-      gh repo clone $VAULT_REPO /opt/vault
-      cd /opt/vault && git checkout main
-
       # Node.js 22
       curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
       apt-get install -y nodejs
 
-      # OpenClaw
+      # OpenClaw (config written later by manager via SSH)
       npm install -g openclaw@latest
+      mkdir -p /root/.openclaw/skills /etc/lobmob
 
-      # Write OpenClaw config
-      mkdir -p /root/.openclaw
-      cat > /root/.openclaw/config.json <<OCEOF
-      {
-        "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
-        "anthropicApiKey": "$ANTHROPIC_API_KEY",
-        "channels": {
-          "discord": {
-            "enabled": true,
-            "token": "$DISCORD_BOT_TOKEN"
-          }
-        }
-      }
-      OCEOF
+      # Non-secret config
+      cat > /etc/lobmob/env <<ENVEOF
+      WORKER_ID=$WORKER_ID
+      WG_IP=$WG_IP
+      ENVEOF
 
-      # Copy worker skills
-      mkdir -p /root/.openclaw/skills
-      cp -r /opt/vault/040-fleet/worker-skills/* /root/.openclaw/skills/ 2>/dev/null || true
-
-      # Write worker AGENTS.md
-      cat > /root/.openclaw/AGENTS.md <<AGENTEOF
-      ---
-      name: worker-$WORKER_ID
-      model: anthropic:claude-sonnet-4-5-20250929
-      ---
-      You are worker-$WORKER_ID in the lobmob swarm. Your WireGuard IP is $WG_IP.
-      You execute tasks assigned by the manager agent via Discord #swarm-control.
-      When you complete a task:
-      1. Write results to the vault repo under /opt/vault/
-      2. Create a PR using the submit-results skill
-      3. Post a summary with PR link to #results
-      Report failures honestly. Self-destruct when idle too long.
-      AGENTEOF
-
-      # Signal ready
-      echo "WORKER_READY worker-$WORKER_ID $WG_IP" > /tmp/worker-ready
+      # Signal that cloud-init is done, awaiting secrets
+      touch /etc/lobmob/.cloud-init-done
+      touch /etc/lobmob/.awaiting-secrets
 
       USERDATA
       )
@@ -190,6 +239,90 @@ write_files:
       # Add worker as WireGuard peer on manager
       wg set wg0 peer "$WORKER_WG_PUBKEY" allowed-ips "$WG_IP/32" endpoint "$DROPLET_IP:51820"
 
+      echo "Droplet created. Waiting for WireGuard connectivity..."
+      for i in $(seq 1 30); do
+        if ping -c 1 -W 2 "$WG_IP" > /dev/null 2>&1; then
+          echo "WireGuard: connected to $WG_IP"
+          break
+        fi
+        sleep 5
+      done
+
+      # Wait for cloud-init to finish
+      echo "Waiting for cloud-init to complete on worker..."
+      for i in $(seq 1 60); do
+        if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+          "test -f /etc/lobmob/.cloud-init-done" 2>/dev/null; then
+          echo "Cloud-init: done"
+          break
+        fi
+        sleep 10
+      done
+
+      # Push secrets to worker via SSH over WireGuard
+      echo "Pushing secrets to worker via SSH..."
+
+      # Write secrets.env
+      ssh "root@$WG_IP" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<SECRETS
+      GH_TOKEN=$GH_TOKEN
+      DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+      ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+      SECRETS
+
+      # Authenticate gh and clone vault
+      ssh "root@$WG_IP" bash <<PROVISION
+      set -euo pipefail
+      source /etc/lobmob/secrets.env
+
+      # GitHub auth
+      echo "\$GH_TOKEN" | gh auth login --with-token
+      gh auth setup-git
+
+      # Clone vault
+      source /etc/lobmob/env
+      gh repo clone "$VAULT_REPO" /opt/vault 2>/dev/null || (cd /opt/vault && git pull origin main)
+      cd /opt/vault && git checkout main
+
+      # OpenClaw config
+      cat > /root/.openclaw/config.json <<OCEOF
+      {
+        "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
+        "anthropicApiKey": "\$ANTHROPIC_API_KEY",
+        "channels": {
+          "discord": {
+            "enabled": true,
+            "token": "\$DISCORD_BOT_TOKEN"
+          }
+        }
+      }
+      OCEOF
+      chmod 600 /root/.openclaw/config.json
+
+      # Copy worker skills
+      cp -r /opt/vault/040-fleet/worker-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+
+      # Write worker AGENTS.md
+      cat > /root/.openclaw/AGENTS.md <<AGENTEOF
+      ---
+      name: worker-$WORKER_ID
+      model: anthropic:claude-sonnet-4-5-20250929
+      ---
+      You are worker-$WORKER_ID in the lobmob swarm. Your WireGuard IP is $WG_IP.
+      You execute tasks assigned by the manager agent via Discord #swarm-control.
+      When you complete a task:
+      1. Write results to the vault repo under /opt/vault/
+      2. Create a PR using the submit-results skill
+      3. Post a summary with PR link to #results
+      Report failures honestly. Self-destruct when idle too long.
+      AGENTEOF
+
+      # Mark secrets provisioned
+      rm -f /etc/lobmob/.awaiting-secrets
+      echo "WORKER_READY"
+      PROVISION
+
+      echo "Worker provisioned."
+
       # Output worker info as JSON
       cat <<EOF
       {
@@ -208,6 +341,7 @@ write_files:
       #!/bin/bash
       set -euo pipefail
       source /etc/lobmob/env
+      source /etc/lobmob/secrets.env
 
       WORKER_NAME="$1"
 
@@ -222,8 +356,7 @@ write_files:
         exit 1
       fi
 
-      # Remove WireGuard peer (find by allowed-ips matching the worker)
-      # Worker's WG pubkey is tracked in fleet registry
+      # Remove WireGuard peer
       WG_PUBKEY=$(grep "$WORKER_NAME" /opt/vault/040-fleet/registry.md 2>/dev/null \
         | grep -oP 'wg_pubkey: \K\S+' || true)
       if [ -n "$WG_PUBKEY" ]; then
@@ -259,6 +392,7 @@ write_files:
     content: |
       #!/bin/bash
       source /etc/lobmob/env
+      source /etc/lobmob/secrets.env 2>/dev/null || true
 
       MAX_AGE_HOURS="${1:-2}"
       NOW=$(date +%s)
@@ -298,7 +432,7 @@ write_files:
         # Check diff for secrets
         DIFF=$(gh pr diff "$NUMBER" 2>/dev/null || true)
         if echo "$DIFF" | grep -qiE '(sk-ant-|dop_v1_|github_pat_|PRIVATE KEY)'; then
-          gh pr comment "$NUMBER" --body "⚠️ Possible secrets detected in diff. Please remove and force-push."
+          gh pr comment "$NUMBER" --body "Possible secrets detected in diff. Please remove and force-push."
           echo "BLOCKED PR #$NUMBER — secrets detected"
           continue
         fi
@@ -307,7 +441,7 @@ write_files:
         FILES=$(gh pr view "$NUMBER" --json files --jq '.files[].path')
         INVALID=$(echo "$FILES" | grep -vE '^(010-tasks/|020-logs/|030-knowledge/|000-inbox/)' || true)
         if [ -n "$INVALID" ]; then
-          gh pr comment "$NUMBER" --body "⚠️ Files outside allowed paths: $INVALID"
+          gh pr comment "$NUMBER" --body "Files outside allowed paths: $INVALID"
           echo "BLOCKED PR #$NUMBER — invalid paths"
           continue
         fi
@@ -315,58 +449,36 @@ write_files:
         echo "PR #$NUMBER passes checks — ready for manager agent review"
       done
 
-runcmd:
-  # Enable WireGuard
-  - wg-quick up wg0
-  - systemctl enable wg-quick@wg0
+  # Awaiting secrets marker
+  - path: /etc/lobmob/.awaiting-secrets
+    content: "Secrets not yet provisioned. Run: lobmob deploy\n"
 
-  # Install GitHub CLI
+runcmd:
+  # Install GitHub CLI (auth happens later via provision script)
   - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
   - echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
   - apt-get update && apt-get install -y gh
 
-  # Auth GitHub
-  - bash -c 'source /etc/lobmob/env && echo "$GH_TOKEN" | gh auth login --with-token && gh auth setup-git'
-
-  # Git config
-  - git config --global user.name "lobmob-manager"
-  - git config --global user.email "manager@lobmob.swarm"
-
-  # Install doctl
+  # Install doctl (auth happens later via provision script)
   - curl -sL https://github.com/digitalocean/doctl/releases/latest/download/doctl-1.104.0-linux-amd64.tar.gz | tar -xzv -C /usr/local/bin
-  - bash -c 'source /etc/lobmob/env && doctl auth init -t "$DO_TOKEN"'
 
   # Install Node.js 22
   - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   - apt-get install -y nodejs
 
-  # Install OpenClaw
+  # Install OpenClaw (config written later via provision script)
   - npm install -g openclaw@latest
-
-  # Clone vault repo
-  - bash -c 'source /etc/lobmob/env && gh repo clone "$VAULT_REPO" /opt/vault'
-  - cd /opt/vault && git checkout main
-
-  # Setup OpenClaw workspace
   - mkdir -p /root/.openclaw/skills
-  - bash -c 'source /etc/lobmob/env && cat > /root/.openclaw/config.json <<OCEOF
-    {
-      "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
-      "anthropicApiKey": "$ANTHROPIC_API_KEY",
-      "channels": {
-        "discord": {
-          "enabled": true,
-          "token": "$DISCORD_BOT_TOKEN"
-        }
-      }
-    }
-    OCEOF'
 
-  # Copy manager skills into OpenClaw
-  - cp -r /opt/vault/040-fleet/manager-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+  # Git identity only — no auth
+  - git config --global user.name "lobmob-manager"
+  - git config --global user.email "manager@lobmob.swarm"
 
   # Cleanup cron — every 30 minutes
   - echo "*/30 * * * * root /usr/local/bin/lobmob-cleanup 2" >> /etc/crontab
 
   # PR review cron — every 2 minutes
   - echo "*/2 * * * * root /usr/local/bin/lobmob-review-prs >> /var/log/lobmob-pr-review.log 2>&1" >> /etc/crontab
+
+  # Signal cloud-init complete
+  - touch /etc/lobmob/.cloud-init-done

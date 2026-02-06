@@ -2,6 +2,20 @@
 
 Everything you need to configure before running `lobmob deploy`.
 
+## Important: Secret Management
+
+Secrets are **never stored in Terraform state or cloud-init user_data**.
+Two config files are used:
+
+| File | Contains | Committed to git? |
+|---|---|---|
+| `infra/terraform.tfvars` | Non-secret infra config (region, sizing, vault repo, WG public key) | No (gitignored) |
+| `secrets.env` | All secrets (API tokens, private keys) | No (gitignored) |
+
+The `lobmob deploy` command creates infrastructure via Terraform (secret-free),
+then pushes secrets to the manager via SSH. Workers receive secrets from the
+manager via SSH over WireGuard — never via cloud-init.
+
 ---
 
 ## DigitalOcean
@@ -10,7 +24,7 @@ Everything you need to configure before running `lobmob deploy`.
 - [ ] Create a DigitalOcean account (or use existing)
 - [ ] Generate a **Personal Access Token** with full read/write scope
   - Control Panel → API → Tokens → Generate New Token
-  - Save as `do_token` in `terraform.tfvars`
+  - Save as `DO_TOKEN` in `secrets.env`
 
 ### SSH Key
 - [ ] Generate an Ed25519 keypair (if you don't have one):
@@ -18,7 +32,7 @@ Everything you need to configure before running `lobmob deploy`.
   ssh-keygen -t ed25519 -C "lobmob" -f ~/.ssh/id_ed25519
   ```
 - [ ] Note the path to the public key — goes in `ssh_pub_key_path` in `terraform.tfvars`
-  - The Terraform config uploads this key to DO and injects it into all droplets
+  - Terraform uploads this key to DO and injects it into all droplets
   - You do NOT need to manually add it in the DO control panel
 
 ### Region Selection
@@ -32,20 +46,20 @@ Everything you need to configure before running `lobmob deploy`.
 ## GitHub
 
 ### Vault Repository
-- [ ] Decide on a repo name for the shared vault (e.g. `yourorg/lobmob-vault` or `yourusername/lobmob-vault`)
+- [ ] Decide on a repo name for the shared vault (e.g. `yourorg/lobmob-vault`)
   - The `lobmob vault-init` command creates this for you — just have the name ready
   - Set as `vault_repo` in `terraform.tfvars`
 
 ### Fine-Grained Personal Access Token
 - [ ] Create a fine-grained PAT scoped to the vault repo
-  - GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
+  - GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
   - **Resource owner**: your user or org
-  - **Repository access**: Only select repositories → select the vault repo (create the repo first, or select it after `vault-init`)
+  - **Repository access**: Only select repositories → select the vault repo
   - **Permissions needed**:
     - **Contents**: Read and write (push branches, read files)
     - **Pull requests**: Read and write (create PRs, read/post comments)
     - **Metadata**: Read (required by default)
-  - Save as `gh_token` in `terraform.tfvars`
+  - Save as `GH_TOKEN` in `secrets.env`
 
 ### Deploy Key (for server-side git over SSH)
 - [ ] Generate a dedicated deploy keypair:
@@ -57,12 +71,11 @@ Everything you need to configure before running `lobmob deploy`.
   - Title: `lobmob-swarm`
   - Check "Allow write access"
   - Paste contents of `~/.ssh/lobmob_deploy.pub`
-- [ ] Base64-encode the **private** key and save in `terraform.tfvars`:
+- [ ] Base64-encode the **private** key and save in `secrets.env`:
   ```bash
-  base64 < ~/.ssh/lobmob_deploy > /tmp/deploy_key_b64.txt
-  # Copy contents into vault_deploy_key_private
+  base64 < ~/.ssh/lobmob_deploy
+  # Copy output into VAULT_DEPLOY_KEY_B64 in secrets.env
   ```
-  Then delete `/tmp/deploy_key_b64.txt`
 
 ---
 
@@ -75,7 +88,7 @@ Everything you need to configure before running `lobmob deploy`.
   - Application → Bot → Add Bot
 - [ ] Copy the bot token
   - Bot → Reset Token → Copy
-  - Save as `discord_bot_token` in `terraform.tfvars`
+  - Save as `DISCORD_BOT_TOKEN` in `secrets.env`
 - [ ] Enable required intents:
   - Bot → Privileged Gateway Intents:
     - **Message Content Intent** — ON (needed to read task messages)
@@ -85,7 +98,7 @@ Everything you need to configure before running `lobmob deploy`.
 - [ ] Create a Discord server (or use existing)
 - [ ] Create four text channels:
   - `#task-queue` — where humans post work requests
-  - `#swarm-control` — manager ↔ worker coordination
+  - `#swarm-control` — manager-worker coordination
   - `#results` — workers post PR announcements
   - `#swarm-logs` — manager posts fleet events
 - [ ] Invite the bot to the server:
@@ -93,10 +106,9 @@ Everything you need to configure before running `lobmob deploy`.
   - Scopes: `bot`
   - Bot Permissions: `Send Messages`, `Read Message History`, `Embed Links`, `Attach Files`, `Use Slash Commands`
   - Copy the generated URL, open in browser, select your server
-- [ ] Note the channel IDs (needed for OpenClaw config):
+- [ ] Note the channel IDs (needed for OpenClaw config post-deploy):
   - Enable Developer Mode: User Settings → Advanced → Developer Mode
   - Right-click each channel → Copy Channel ID
-  - These get configured in OpenClaw's config on the manager after deploy
 
 ---
 
@@ -105,9 +117,8 @@ Everything you need to configure before running `lobmob deploy`.
 ### API Key
 - [ ] Generate an API key from the Anthropic Console
   - console.anthropic.com → API Keys → Create Key
-  - Save as `anthropic_api_key` in `terraform.tfvars`
+  - Save as `ANTHROPIC_API_KEY` in `secrets.env`
 - [ ] Ensure your account has sufficient credits/billing set up
-  - Manager + workers all use this key for LLM calls
 
 ---
 
@@ -150,20 +161,15 @@ Once all the above are ready:
 
 ```bash
 cd lobmob
+chmod +x scripts/lobmob
 ./scripts/lobmob init
 ```
 
 This will:
-1. Generate WireGuard manager keys and inject them into `terraform.tfvars`
-2. Run `terraform init` to download the DO provider
-
-Then fill in the remaining values in `infra/terraform.tfvars`:
-- `do_token`
-- `gh_token`
-- `discord_bot_token`
-- `anthropic_api_key`
-- `vault_repo`
-- `vault_deploy_key_private`
+1. Generate WireGuard manager keypair
+2. Create `infra/terraform.tfvars` with the WG public key (fill in `vault_repo`)
+3. Create `secrets.env` with the WG private key (fill in all tokens)
+4. Run `terraform init`
 
 ---
 
@@ -171,11 +177,19 @@ Then fill in the remaining values in `infra/terraform.tfvars`:
 
 Before deploying, verify:
 
-- [ ] `infra/terraform.tfvars` has all values filled (no placeholder strings)
+- [ ] `infra/terraform.tfvars` has `vault_repo` and `wg_manager_public_key` set
+- [ ] `secrets.env` has all 6 values filled (no placeholders)
 - [ ] `gh auth status` succeeds
-- [ ] `terraform plan` in `infra/` shows expected resources (1 VPC, 2 firewalls, 1 SSH key, 1 droplet)
 - [ ] Discord bot is in the server and channels exist
 - [ ] Vault repo exists on GitHub (run `lobmob vault-init` if not)
 - [ ] Deploy key is added to the vault repo with write access
 
 Then: `./scripts/lobmob deploy`
+
+The deploy command will:
+1. Run `terraform plan` and ask for confirmation
+2. Create the droplet (secret-free cloud-init)
+3. Wait for SSH connectivity
+4. Wait for cloud-init to complete
+5. Push secrets via SSH
+6. Run the provision script on the manager
