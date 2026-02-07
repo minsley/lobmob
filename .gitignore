@@ -12,6 +12,9 @@ infra/tfplan
 # Local vault clone
 vault-local/
 
+# Claude Code
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db
