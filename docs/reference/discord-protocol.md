@@ -9,16 +9,6 @@
 | #results | Lobsters | PR announcements with summaries |
 | #swarm-logs | Lobboss | Fleet events, merge confirmations |
 
-## Reaction Protocol
-
-| Reaction | On | Meaning |
-|---|---|---|
-| :eyes: | User message | Acknowledged, evaluating |
-| :memo: | User message | Proposal sent, awaiting confirmation |
-| :white_check_mark: | Proposal message | User confirms (or lobboss adds for quick-react) |
-| :x: | Proposal message | User cancels (or lobboss adds for quick-react) |
-| :rocket: | Proposal message | Task created |
-
 ## Message Formats
 
 ### Task Proposal (lobboss → #task-queue)
@@ -36,7 +26,7 @@
 > - <criterion 1>
 > - <criterion 2>
 
-React ✅ to create, ❌ to cancel, or reply with changes.
+Reply **go** to create, **cancel** to discard, or describe changes.
 ```
 
 ### Task Confirmed (lobboss → #task-queue)

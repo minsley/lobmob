@@ -52,10 +52,10 @@ Prefer sleeping over tearing down — sleeping preserves the disk for fast wake.
 
 ## Submitting Tasks
 
-Post in **#task-queue** on Discord. Lobboss reacts :eyes: to acknowledge, then
-replies with a formatted task proposal for your confirmation. React :white_check_mark:
-to approve, :x: to cancel, or reply with changes. The task file is only created
-after you confirm. Or use the test script (bypasses the confirmation flow):
+Post in **#task-queue** on Discord. Lobboss replies with a formatted task proposal
+for your confirmation. Reply **go** to approve, **cancel** to discard, or describe
+changes. The task file is only created after you confirm.
+Or use the test script (bypasses the confirmation flow):
 
 ```bash
 tests/push-task --title "Research X" --objective "Find information about X and write it up..."

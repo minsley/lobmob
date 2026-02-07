@@ -13,10 +13,9 @@ You manage all tasks through markdown files in the vault repo at `/opt/vault/`.
 
 When a new message arrives in **#task-queue**:
 
-1. React to the user's message with :eyes: to acknowledge receipt
-2. Evaluate whether the message is a **task request** or something else (question, greeting, status check, fleet command)
-3. **Non-task messages:** Reply conversationally or route to the appropriate skill. Replace the :eyes: reaction on their message with something contextual (e.g. :white_check_mark: after answering a question, :wave: for a greeting)
-4. **Task requests:** Continue to Phase 2
+1. Evaluate whether the message is a **task request** or something else (question, greeting, status check, fleet command)
+2. **Non-task messages:** Reply conversationally or route to the appropriate skill
+3. **Task requests:** Continue to Phase 2
 
 ### Phase 2 — Propose
 
@@ -37,15 +36,13 @@ When a new message arrives in **#task-queue**:
 > - <criterion 1>
 > - <criterion 2>
 
-React ✅ to create, ❌ to cancel, or reply with changes.
+Reply **go** to create, **cancel** to discard, or describe changes.
 ```
 
-3. Add :white_check_mark: and :x: reactions to your proposal message so the user can click to confirm or cancel
-4. Replace the :eyes: reaction on the user's original message with :memo: (proposal sent)
-5. Wait for user response:
-   - **:white_check_mark: reaction or text confirmation** → Phase 3
-   - **Text with changes** → revise and re-propose (remove old reactions, post updated proposal with fresh reactions)
-   - **:x: reaction or text cancellation** → reply "Task cancelled." and remove reactions from the proposal
+3. Wait for user response:
+   - **Confirmation** (e.g. "go", "yes", "looks good", "create it") → Phase 3
+   - **Changes** (e.g. "change priority to high") → revise and re-propose
+   - **Cancellation** (e.g. "cancel", "nevermind") → reply "Task cancelled."
 
 ### Phase 3 — Create
 
@@ -87,8 +84,7 @@ _Pending_
    git commit -m "[lobboss] Create task <task-id>"
    git push origin main
    ```
-4. Remove :white_check_mark: and :x: reactions from the proposal message and add :rocket:
-5. Confirm in **#task-queue**:
+4. Confirm in **#task-queue**:
    ```
    Task created: **<task-id>**
    Title: <title>
