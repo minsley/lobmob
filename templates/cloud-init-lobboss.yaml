@@ -225,8 +225,71 @@ write_files:
       WG_IP=$WG_IP
       ENVEOF
 
+      # Event logger
+      cat > /usr/local/bin/lobmob-log <<'LOGEOF'
+      #!/bin/bash
+      CATEGORY="\$1"; shift
+      echo "\$(date -Iseconds) [\$CATEGORY] \$*" >> /var/log/lobmob-events.log
+      LOGEOF
+      chmod 755 /usr/local/bin/lobmob-log
+
+      # Flush event log to vault
+      cat > /usr/local/bin/lobmob-flush-logs <<'FLUSHEOF'
+      #!/bin/bash
+      set -euo pipefail
+
+      LOG_FILE="/var/log/lobmob-events.log"
+      VAULT_DIR="/opt/vault"
+      LOCK_FILE="/tmp/lobmob-flush.lock"
+
+      if [ ! -s "\$LOG_FILE" ]; then
+        exit 0
+      fi
+
+      exec 200>"\$LOCK_FILE"
+      flock -n 200 || { echo "Another flush is running"; exit 0; }
+
+      if [ -f /etc/lobmob/env ]; then
+        source /etc/lobmob/env
+      fi
+
+      if [ -n "\${LOBSTER_ID:-}" ]; then
+        LOG_SUBDIR="020-logs/lobsters/lobster-\$LOBSTER_ID"
+        COMMIT_PREFIX="[lobster-\$LOBSTER_ID]"
+      else
+        LOG_SUBDIR="020-logs/lobboss"
+        COMMIT_PREFIX="[lobboss]"
+      fi
+
+      TODAY=\$(date +%Y-%m-%d)
+      TARGET_FILE="\$VAULT_DIR/\$LOG_SUBDIR/events-\$TODAY.log"
+
+      cd "\$VAULT_DIR"
+      git pull origin main --quiet 2>/dev/null || true
+
+      mkdir -p "\$VAULT_DIR/\$LOG_SUBDIR"
+      cat "\$LOG_FILE" >> "\$TARGET_FILE"
+
+      git add "\$LOG_SUBDIR/"
+      if git diff --cached --quiet; then
+        exit 0
+      fi
+
+      git commit -m "\$COMMIT_PREFIX Flush event log" --quiet
+      git push origin main --quiet
+
+      : > "\$LOG_FILE"
+      FLUSHEOF
+      chmod 755 /usr/local/bin/lobmob-flush-logs
+
+      # Flush cron -- every 15 minutes
+      echo "*/15 * * * * root /usr/local/bin/lobmob-flush-logs >> /var/log/lobmob-flush.log 2>&1" >> /etc/crontab
+
       # Signal awaiting secrets
       touch /etc/lobmob/.awaiting-secrets
+
+      # Log boot event
+      /usr/local/bin/lobmob-log boot "lobster-$LOBSTER_ID wg_ip=$WG_IP"
 
       USERDATA
       )
@@ -334,6 +397,10 @@ write_files:
       PROVISION
 
       echo "Lobster provisioned."
+
+      # Log ready event on the lobster
+      ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+        "lobmob-log ready lobster-$LOBSTER_ID" 2>/dev/null || true
 
       # Write config version to lobster for pool management staleness checks
       CONFIG_VERSION=$(md5sum /usr/local/bin/lobmob-spawn-lobster | awk '{print $1}')
