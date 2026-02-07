@@ -4,12 +4,52 @@
 
 | Channel | Who writes | Purpose |
 |---|---|---|
-| #task-queue | Humans, external systems | Post work requests |
+| #task-queue | Humans, lobboss | Work requests and task proposals |
 | #swarm-control | Lobboss, lobsters | Task assignment and coordination |
 | #results | Lobsters | PR announcements with summaries |
 | #swarm-logs | Lobboss | Fleet events, merge confirmations |
 
+## Reaction Protocol
+
+| Reaction | On | Meaning |
+|---|---|---|
+| :eyes: | User message | Acknowledged, evaluating |
+| :memo: | User message | Proposal sent, awaiting confirmation |
+| :white_check_mark: | Proposal message | User confirms (or lobboss adds for quick-react) |
+| :x: | Proposal message | User cancels (or lobboss adds for quick-react) |
+| :rocket: | Proposal message | Task created |
+
 ## Message Formats
+
+### Task Proposal (lobboss → #task-queue)
+```
+**Task Proposal**
+
+> **Title:** <title>
+> **Priority:** <priority>
+> **Tags:** <tag1>, <tag2>
+>
+> **Objective**
+> <objective text>
+>
+> **Acceptance Criteria**
+> - <criterion 1>
+> - <criterion 2>
+
+React ✅ to create, ❌ to cancel, or reply with changes.
+```
+
+### Task Confirmed (lobboss → #task-queue)
+```
+Task created: **<task-id>**
+Title: <title>
+I'll assign it to a lobster shortly.
+```
+
+### Task Cancelled (lobboss → #task-queue)
+```
+Task cancelled.
+```
 
 ### Task Assignment (lobboss → #swarm-control)
 ```

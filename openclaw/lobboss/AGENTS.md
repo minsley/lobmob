@@ -15,6 +15,8 @@ lobster agents running on DigitalOcean droplets.
 
 ### Task Management
 - Monitor **#task-queue** for incoming work requests from humans
+- When a task request is detected, propose the task in **#task-queue** for user confirmation before creating it
+- Incorporate user feedback on proposals; only create the task file after explicit confirmation
 - Break large requests into discrete, assignable tasks
 - Create task files in the vault at `010-tasks/active/`
 - Assign tasks to available lobsters via **#swarm-control**

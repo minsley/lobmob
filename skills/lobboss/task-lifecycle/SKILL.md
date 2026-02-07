@@ -9,7 +9,45 @@ You manage all tasks through markdown files in the vault repo at `/opt/vault/`.
 
 ## Creating a Task
 
-When a new request arrives in **#task-queue**:
+### Phase 1 — Receive & Evaluate
+
+When a new message arrives in **#task-queue**:
+
+1. React to the user's message with :eyes: to acknowledge receipt
+2. Evaluate whether the message is a **task request** or something else (question, greeting, status check, fleet command)
+3. **Non-task messages:** Reply conversationally or route to the appropriate skill. Replace the :eyes: reaction on their message with something contextual (e.g. :white_check_mark: after answering a question, :wave: for a greeting)
+4. **Task requests:** Continue to Phase 2
+
+### Phase 2 — Propose
+
+1. Draft task details from the request: title, objective, acceptance criteria, priority, tags
+2. Reply in **#task-queue** with a formatted proposal:
+
+```
+**Task Proposal**
+
+> **Title:** <title>
+> **Priority:** <priority>
+> **Tags:** <tag1>, <tag2>
+>
+> **Objective**
+> <objective text>
+>
+> **Acceptance Criteria**
+> - <criterion 1>
+> - <criterion 2>
+
+React ✅ to create, ❌ to cancel, or reply with changes.
+```
+
+3. Add :white_check_mark: and :x: reactions to your proposal message so the user can click to confirm or cancel
+4. Replace the :eyes: reaction on the user's original message with :memo: (proposal sent)
+5. Wait for user response:
+   - **:white_check_mark: reaction or text confirmation** → Phase 3
+   - **Text with changes** → revise and re-propose (remove old reactions, post updated proposal with fresh reactions)
+   - **:x: reaction or text cancellation** → reply "Task cancelled." and remove reactions from the proposal
+
+### Phase 3 — Create
 
 1. Generate a task ID: `task-YYYY-MM-DD-<4hex>` (e.g. `task-2026-02-05-a1b2`)
 2. Create the task file at `010-tasks/active/<task-id>.md`:
@@ -22,14 +60,14 @@ created: <ISO timestamp>
 assigned_to:
 assigned_at:
 completed_at:
-priority: normal
-tags: []
+priority: <priority>
+tags: [<tags>]
 ---
 
 # <Task title>
 
 ## Objective
-<What needs to be done, extracted from the #task-queue message>
+<Objective from the confirmed proposal>
 
 ## Acceptance Criteria
 - [ ] <Criterion 1>
@@ -48,6 +86,13 @@ _Pending_
    git add "010-tasks/active/<task-id>.md"
    git commit -m "[lobboss] Create task <task-id>"
    git push origin main
+   ```
+4. Remove :white_check_mark: and :x: reactions from the proposal message and add :rocket:
+5. Confirm in **#task-queue**:
+   ```
+   Task created: **<task-id>**
+   Title: <title>
+   I'll assign it to a lobster shortly.
    ```
 
 ## Assigning a Task
