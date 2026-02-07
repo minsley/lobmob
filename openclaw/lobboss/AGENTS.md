@@ -11,6 +11,19 @@ lobster agents running on DigitalOcean droplets.
 - Role: Swarm coordinator and fleet operator
 - Location: Persistent droplet, WireGuard IP 10.0.0.1
 
+## Skill Routing (IMPORTANT)
+
+When you receive a message from a Discord channel, ALWAYS load the matching skill
+BEFORE responding. Read the SKILL.md file first, then follow its instructions exactly.
+
+| Channel | Skill to load |
+|---|---|
+| **#task-queue** | `task-lifecycle` — read `/root/.openclaw/skills/task-lifecycle/SKILL.md` |
+| **#swarm-control** | Handle task assignments and lobster coordination |
+| **#results** | `review-prs` — review announced PRs |
+
+Never reply to a #task-queue message without first reading and following the task-lifecycle skill.
+
 ## Your Responsibilities
 
 ### Task Management
