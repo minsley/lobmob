@@ -104,22 +104,20 @@ echo -e "${CYAN}lobmob-log function${NC}"
 
 # Write a test event
 TEST_MARKER="test-$(date +%s)"
-lobmob_ssh "root@$LOBBOSS_IP" "lobmob-log test-event '$TEST_MARKER hello from event-logging test'" 2>/dev/null
+lobmob_ssh "root@$LOBBOSS_IP" "lobmob-log test-event '$TEST_MARKER hello from event-logging test'" 2>/dev/null || true
 
-# Read back the last line
-LAST_LINE=$(lobmob_ssh "root@$LOBBOSS_IP" "tail -1 /var/log/lobmob-events.log" 2>/dev/null)
-
+# Verify via grep on the remote log file
 check "Event written to /var/log/lobmob-events.log" \
-  echo "$LAST_LINE" | grep -q "$TEST_MARKER"
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q '$TEST_MARKER' /var/log/lobmob-events.log"
 
 check "Event has ISO-8601 timestamp" \
-  echo "$LAST_LINE" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+  lobmob_ssh "root@$LOBBOSS_IP" "grep '$TEST_MARKER' /var/log/lobmob-events.log | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'"
 
 check "Event has [category] format" \
-  echo "$LAST_LINE" | grep -q '\[test-event\]'
+  lobmob_ssh "root@$LOBBOSS_IP" "grep '$TEST_MARKER' /var/log/lobmob-events.log | grep -q '\\[test-event\\]'"
 
 check "Event contains message text" \
-  echo "$LAST_LINE" | grep -q "hello from event-logging test"
+  lobmob_ssh "root@$LOBBOSS_IP" "grep '$TEST_MARKER' /var/log/lobmob-events.log | grep -q 'hello from event-logging test'"
 
 echo ""
 
@@ -136,10 +134,10 @@ else
   # Run the flush
   FLUSH_OUTPUT=$(lobmob_ssh "root@$LOBBOSS_IP" "lobmob-flush-logs 2>&1" || true)
 
-  # Check the vault file exists
-  TODAY=$(date -u +%Y-%m-%d)
+  # Check the vault file exists (use lobboss date in case of timezone drift)
+  TODAY=$(lobmob_ssh "root@$LOBBOSS_IP" "date +%Y-%m-%d" 2>/dev/null || date -u +%Y-%m-%d)
   VAULT_LOG_EXISTS=$(lobmob_ssh "root@$LOBBOSS_IP" \
-    "test -f /opt/vault/020-logs/lobboss/events-$TODAY.log && echo yes || echo no" 2>/dev/null)
+    "test -f /opt/vault/020-logs/lobboss/events-$TODAY.log && echo yes || echo no" 2>/dev/null || true)
 
   check_eq "Vault log file created (020-logs/lobboss/events-$TODAY.log)" "$VAULT_LOG_EXISTS" "yes"
 
@@ -148,7 +146,7 @@ else
     lobmob_ssh "root@$LOBBOSS_IP" "grep -q '$TEST_MARKER' /opt/vault/020-logs/lobboss/events-$TODAY.log"
 
   # Check local log was truncated
-  LOCAL_SIZE=$(lobmob_ssh "root@$LOBBOSS_IP" "wc -c < /var/log/lobmob-events.log" 2>/dev/null | tr -d ' ')
+  LOCAL_SIZE=$(lobmob_ssh "root@$LOBBOSS_IP" "wc -c < /var/log/lobmob-events.log" 2>/dev/null | tr -d ' ' || true)
   check_eq "Local log truncated after flush" "$LOCAL_SIZE" "0"
 
   # Check git log shows the flush commit
@@ -205,8 +203,8 @@ check "lobmob-flush-logs script in lobster userdata" \
   lobmob_ssh "root@$LOBBOSS_IP" "grep -q '/usr/local/bin/lobmob-flush-logs' /usr/local/bin/lobmob-spawn-lobster"
 
 check "Flush cron in lobster userdata" \
-  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-flush-logs' /usr/local/bin/lobmob-spawn-lobster | head -1 && \
-    grep -q 'crontab' /usr/local/bin/lobmob-spawn-lobster"
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-flush-logs.*crontab\|crontab.*lobmob-flush-logs' /usr/local/bin/lobmob-spawn-lobster || \
+    (grep -q 'lobmob-flush-logs' /usr/local/bin/lobmob-spawn-lobster && grep -q 'crontab' /usr/local/bin/lobmob-spawn-lobster)"
 
 # Pre-sleep flush wired into sleep script
 check "Pre-sleep flush in lobmob-sleep-lobster" \
