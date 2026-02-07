@@ -56,6 +56,7 @@ Power:
 
 Utilities:
   logs                Tail lobboss cloud-init logs
+  flush-logs          Flush event logs on lobboss to the vault
   prs                 List open PRs on the vault repo
 EOF
 }
@@ -882,6 +883,17 @@ cmd_ssh_lobster() {
   lobmob_ssh -o ProxyJump="root@$LOBBOSS_IP" "root@$TARGET"
 }
 
+cmd_flush_logs() {
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed. Run: lobmob deploy"
+    exit 1
+  fi
+  log "Flushing event logs on lobboss..."
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-flush-logs"
+  log "Flush complete"
+}
+
 cmd_logs() {
   LOBBOSS_IP=$(get_lobboss_ip)
   lobmob_ssh "root@$LOBBOSS_IP" "tail -100f /var/log/cloud-init-output.log"
@@ -989,6 +1001,7 @@ case "$COMMAND" in
   ssh-lobboss)         cmd_ssh_lobboss ;;
   ssh-lobster)         cmd_ssh_lobster "$@" ;;
   logs)                cmd_logs ;;
+  flush-logs)          cmd_flush_logs ;;
   prs)                 cmd_prs ;;
   help|--help|-h)      usage ;;
   *)                   err "Unknown command: $COMMAND"; usage; exit 1 ;;

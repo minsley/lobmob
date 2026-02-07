@@ -115,9 +115,39 @@ Then open `vault-local/` in Obsidian.
 ./scripts/lobmob ssh-lobster lobster-a3f1      # by lobster ID (resolved via registry)
 ```
 
+## Event Logging
+
+All operational events (spawns, sleeps, wakes, destroys, convergence) are logged to `/var/log/lobmob-events.log` on each node. Every 15 minutes a cron job flushes the local log into the vault at `020-logs/`.
+
+**Log format:**
+```
+2026-02-07T03:14:00+00:00 [spawn] lobster-a3f1 droplet=549933580 wg_ip=10.0.0.9
+2026-02-07T03:20:00+00:00 [sleep] lobster-a3f1 droplet=549933580
+2026-02-07T03:25:00+00:00 [converge] active=2 standby=1 total=3
+```
+
+**Viewing logs:**
+```bash
+# Local event log on lobboss
+ssh root@<lobboss-ip> cat /var/log/lobmob-events.log
+
+# Flushed logs in vault
+ls vault-local/020-logs/lobboss/
+ls vault-local/020-logs/lobsters/lobster-*/
+```
+
+**Manual flush:**
+```bash
+./scripts/lobmob flush-logs              # flush lobboss logs to vault
+ssh root@<lobboss-ip> lobmob-flush-logs  # same, directly
+```
+
+Logs are also flushed automatically before sleep and destroy (best-effort for destroys).
+
 ## Monitoring
 
 - **Discord #swarm-logs** — fleet events in real time
 - **Lobboss logs**: `./scripts/lobmob logs`
+- **Event log**: `ssh root@<lobboss-ip> cat /var/log/lobmob-events.log`
 - **PR review log**: `ssh root@<lobboss-ip> tail -f /var/log/lobmob-pr-review.log`
 - **Vault history**: `cd vault-local && git log --oneline`
