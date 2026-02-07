@@ -340,6 +340,8 @@ write_files:
       ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
         "echo '$CONFIG_VERSION' > /etc/lobmob/config-version"
 
+      lobmob-log spawn "lobster-$LOBSTER_ID droplet=$DROPLET_ID wg_ip=$WG_IP"
+
       # Output lobster info as JSON
       cat <<EOF
       {
@@ -376,6 +378,20 @@ write_files:
         exit 1
       fi
 
+      # Best-effort: flush lobster's event log before destroy
+      WG_IP=$(wg show wg0 allowed-ips 2>/dev/null | while read -r PK ALLOWED; do
+        IP=$(echo "$ALLOWED" | cut -d/ -f1)
+        REMOTE_ID=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new \
+          "root@$IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
+        if echo "$LOBSTER_NAME" | grep -q "$REMOTE_ID" 2>/dev/null && [ -n "$REMOTE_ID" ]; then
+          echo "$IP"; break
+        fi
+      done)
+      if [ -n "$WG_IP" ]; then
+        ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+          "root@$WG_IP" "lobmob-flush-logs" 2>/dev/null || true
+      fi
+
       # Remove WireGuard peer by matching endpoint IP
       WG_PUBKEY=""
       if [ -n "$DROPLET_IP" ]; then
@@ -395,6 +411,7 @@ write_files:
       # Destroy droplet
       doctl compute droplet delete "$DROPLET_ID" --force
 
+      lobmob-log destroy "$LOBSTER_NAME droplet=$DROPLET_ID"
       echo "Destroyed $LOBSTER_NAME (droplet $DROPLET_ID)"
 
   # Fleet status script
@@ -475,6 +492,9 @@ write_files:
       # Classify droplets
       ACTIVE_IDLE=()
       STANDBY=()
+      SLEPT=0
+      DESTROYED=0
+      AGED_OUT=0
 
       while read -r ID NAME STATUS CREATED; do
         # Hard ceiling: destroy ANY lobster older than 24h
@@ -483,6 +503,7 @@ write_files:
         if [ "$AGE_HOURS" -ge "$HARD_MAX_HOURS" ]; then
           echo "Destroying lobster $NAME (age: $${AGE_HOURS}h exceeds $${HARD_MAX_HOURS}h ceiling)"
           lobmob-teardown-lobster "$NAME"
+          AGED_OUT=$((AGED_OUT + 1))
           continue
         fi
 
@@ -507,6 +528,7 @@ write_files:
         echo "Sleeping $EXCESS excess idle lobsters (have $IDLE_COUNT, want $POOL_ACTIVE)"
         for (( i=0; i<EXCESS; i++ )); do
           lobmob-sleep-lobster "$${ACTIVE_IDLE[$i]}"
+          SLEPT=$((SLEPT + 1))
         done
       fi
 
@@ -517,8 +539,11 @@ write_files:
         echo "Destroying $EXCESS excess standby lobsters (have $STANDBY_COUNT, want $POOL_STANDBY)"
         for (( i=0; i<EXCESS; i++ )); do
           lobmob-teardown-lobster "$${STANDBY[$i]}"
+          DESTROYED=$((DESTROYED + 1))
         done
       fi
+
+      lobmob-log cleanup "slept=$SLEPT destroyed=$DESTROYED aged_out=$AGED_OUT"
 
   # Sleep lobster script -- powers off a lobster, preserving disk
   - path: /usr/local/bin/lobmob-sleep-lobster
@@ -543,6 +568,21 @@ write_files:
 
       echo "Sleeping $LOBSTER_NAME (droplet $DROPLET_ID)..."
 
+      # Flush lobster's event log before sleep
+      # Find WG IP by checking peers
+      WG_IP=$(wg show wg0 allowed-ips 2>/dev/null | while read -r PK ALLOWED; do
+        IP=$(echo "$ALLOWED" | cut -d/ -f1)
+        REMOTE_ID=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=3 -o StrictHostKeyChecking=accept-new \
+          "root@$IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
+        if echo "$LOBSTER_NAME" | grep -q "$REMOTE_ID" 2>/dev/null && [ -n "$REMOTE_ID" ]; then
+          echo "$IP"; break
+        fi
+      done)
+      if [ -n "$WG_IP" ]; then
+        ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+          "root@$WG_IP" "lobmob-flush-logs" 2>/dev/null || true
+      fi
+
       # Graceful shutdown with timeout
       doctl compute droplet-action shutdown "$DROPLET_ID" --wait 2>/dev/null &
       SHUTDOWN_PID=$!
@@ -560,6 +600,7 @@ write_files:
       done
       wait "$SHUTDOWN_PID" 2>/dev/null || true
 
+      lobmob-log sleep "$LOBSTER_NAME droplet=$DROPLET_ID"
       echo "Lobster $LOBSTER_NAME is now standby (powered off)"
 
   # Wake lobster script -- powers on a standby lobster
@@ -659,6 +700,7 @@ write_files:
       ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
       SECRETS
 
+      lobmob-log wake "$LOBSTER_NAME wg_ip=$WG_IP"
       echo "Lobster $LOBSTER_NAME is awake at $WG_IP"
 
       # Output lobster info as JSON
@@ -815,6 +857,14 @@ write_files:
           lobmob-spawn-lobster
         done
       fi
+
+      # Log convergence result
+      FINAL_ACTIVE=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format Status --no-header 2>/dev/null \
+        | grep -c "active" || echo 0)
+      FINAL_STANDBY=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format Status --no-header 2>/dev/null \
+        | grep -c "off" || echo 0)
+      FINAL_TOTAL=$((FINAL_ACTIVE + FINAL_STANDBY))
+      lobmob-log converge "active=$FINAL_ACTIVE standby=$FINAL_STANDBY total=$FINAL_TOTAL"
 
       echo "$(date -Iseconds) Pool manager: done"
 
