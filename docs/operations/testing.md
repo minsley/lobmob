@@ -11,6 +11,7 @@ Test scripts live in `tests/` and verify deployments and the task lifecycle.
 | `tests/push-task` | Push a task to the vault | ~5s |
 | `tests/await-task-pickup <id> [<id>...]` | Lobboss assigns queued tasks | up to 10m |
 | `tests/await-task-completion <id>` | Full lifecycle: PR opened, merged, task completed | up to 15m |
+| `tests/event-logging` | Event log+flush functions, vault export, event types | ~30s |
 
 All scripts exit 0 on success, 1 on failure.
 
@@ -86,3 +87,12 @@ tests/await-task-completion task-YYYY-MM-DD-XXXX
 ```
 
 Note: Steps 4 and 5 currently require manually triggering the agents via `openclaw agent --message "..."` on each node. See [[operations/openclaw-setup]] for details.
+
+## Event Logging
+
+```bash
+tests/event-logging              # full test (writes a test event, flushes to vault)
+tests/event-logging --no-flush   # skip vault write (infrastructure + static checks only)
+```
+
+Checks: lobmob-log and lobmob-flush-logs scripts exist, cron active, log format correct, vault export works, all 8 event types ([spawn], [destroy], [sleep], [wake], [converge], [cleanup], [boot], [ready]) wired into scripts, pre-sleep/pre-destroy flush wired in, lobster-side logging in spawn userdata.

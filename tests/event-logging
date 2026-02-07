@@ -1,0 +1,228 @@
+#!/bin/bash
+# event-logging — verify event logging infrastructure, log+flush functions, and event types
+#
+# Usage:
+#   event-logging              Run all checks (requires live lobboss)
+#   event-logging --no-flush   Skip live flush test (no vault writes)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+lobmob_ssh() {
+  ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new "$@"
+}
+
+get_lobboss_ip() {
+  terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
+}
+
+# --- Test runner ---
+
+PASS_COUNT=0
+FAIL_COUNT=0
+
+check() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${NC}  $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+check_eq() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+  if [ "$actual" = "$expected" ]; then
+    echo -e "  ${GREEN}PASS${NC}  $label  ($actual)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label  (got '$actual', expected '$expected')"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+# --- Args ---
+
+SKIP_FLUSH=0
+if [ "${1:-}" = "--no-flush" ]; then
+  SKIP_FLUSH=1
+fi
+
+# --- Resolve lobboss IP ---
+
+LOBBOSS_IP=$(get_lobboss_ip)
+if [ -z "$LOBBOSS_IP" ]; then
+  echo -e "${RED}Cannot resolve lobboss IP from Terraform state.${NC}"
+  echo "Is lobboss deployed? Run: lobmob deploy"
+  exit 1
+fi
+
+echo ""
+echo -e "${YELLOW}event-logging${NC}  lobboss=$LOBBOSS_IP"
+echo ""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Section 1: Infrastructure
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+echo -e "${CYAN}Infrastructure${NC}"
+
+check "SSH reachable" \
+  lobmob_ssh -o ConnectTimeout=10 -o BatchMode=yes "root@$LOBBOSS_IP" true
+
+check "lobmob-log exists and executable" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -x /usr/local/bin/lobmob-log"
+
+check "lobmob-flush-logs exists and executable" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -x /usr/local/bin/lobmob-flush-logs"
+
+check "Cron: flush-logs (every 15m)" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q lobmob-flush-logs /etc/crontab"
+
+echo ""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Section 2: lobmob-log function
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+echo -e "${CYAN}lobmob-log function${NC}"
+
+# Write a test event
+TEST_MARKER="test-$(date +%s)"
+lobmob_ssh "root@$LOBBOSS_IP" "lobmob-log test-event '$TEST_MARKER hello from event-logging test'" 2>/dev/null
+
+# Read back the last line
+LAST_LINE=$(lobmob_ssh "root@$LOBBOSS_IP" "tail -1 /var/log/lobmob-events.log" 2>/dev/null)
+
+check "Event written to /var/log/lobmob-events.log" \
+  echo "$LAST_LINE" | grep -q "$TEST_MARKER"
+
+check "Event has ISO-8601 timestamp" \
+  echo "$LAST_LINE" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+
+check "Event has [category] format" \
+  echo "$LAST_LINE" | grep -q '\[test-event\]'
+
+check "Event contains message text" \
+  echo "$LAST_LINE" | grep -q "hello from event-logging test"
+
+echo ""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Section 3: lobmob-flush-logs (vault export)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ "$SKIP_FLUSH" -eq 1 ]; then
+  echo -e "${YELLOW}Skipping flush test (--no-flush)${NC}"
+  echo ""
+else
+  echo -e "${CYAN}lobmob-flush-logs (vault export)${NC}"
+
+  # Run the flush
+  FLUSH_OUTPUT=$(lobmob_ssh "root@$LOBBOSS_IP" "lobmob-flush-logs 2>&1" || true)
+
+  # Check the vault file exists
+  TODAY=$(date -u +%Y-%m-%d)
+  VAULT_LOG_EXISTS=$(lobmob_ssh "root@$LOBBOSS_IP" \
+    "test -f /opt/vault/020-logs/lobboss/events-$TODAY.log && echo yes || echo no" 2>/dev/null)
+
+  check_eq "Vault log file created (020-logs/lobboss/events-$TODAY.log)" "$VAULT_LOG_EXISTS" "yes"
+
+  # Check the vault file contains our test event
+  check "Vault log contains test event" \
+    lobmob_ssh "root@$LOBBOSS_IP" "grep -q '$TEST_MARKER' /opt/vault/020-logs/lobboss/events-$TODAY.log"
+
+  # Check local log was truncated
+  LOCAL_SIZE=$(lobmob_ssh "root@$LOBBOSS_IP" "wc -c < /var/log/lobmob-events.log" 2>/dev/null | tr -d ' ')
+  check_eq "Local log truncated after flush" "$LOCAL_SIZE" "0"
+
+  # Check git log shows the flush commit
+  check "Git log shows flush commit" \
+    lobmob_ssh "root@$LOBBOSS_IP" "cd /opt/vault && git log -1 --oneline | grep -q 'Flush event log'"
+
+  echo ""
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Section 4: Event types in scripts
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+echo -e "${CYAN}Event types wired into scripts${NC}"
+
+# lobboss-side events
+check "[spawn] in lobmob-spawn-lobster" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log spawn' /usr/local/bin/lobmob-spawn-lobster"
+
+check "[destroy] in lobmob-teardown-lobster" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log destroy' /usr/local/bin/lobmob-teardown-lobster"
+
+check "[sleep] in lobmob-sleep-lobster" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log sleep' /usr/local/bin/lobmob-sleep-lobster"
+
+check "[wake] in lobmob-wake-lobster" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log wake' /usr/local/bin/lobmob-wake-lobster"
+
+check "[converge] in lobmob-pool-manager" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log converge' /usr/local/bin/lobmob-pool-manager"
+
+check "[cleanup] in lobmob-cleanup" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log cleanup' /usr/local/bin/lobmob-cleanup"
+
+# lobster-side events (embedded in spawn script's userdata)
+check "[boot] in lobster userdata" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log boot' /usr/local/bin/lobmob-spawn-lobster"
+
+check "[ready] logged after provision" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-log ready' /usr/local/bin/lobmob-spawn-lobster"
+
+echo ""
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Section 5: Lobster-side logging in userdata
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+echo -e "${CYAN}Lobster-side logging (in spawn userdata)${NC}"
+
+check "lobmob-log script in lobster userdata" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q '/usr/local/bin/lobmob-log' /usr/local/bin/lobmob-spawn-lobster"
+
+check "lobmob-flush-logs script in lobster userdata" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q '/usr/local/bin/lobmob-flush-logs' /usr/local/bin/lobmob-spawn-lobster"
+
+check "Flush cron in lobster userdata" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-flush-logs' /usr/local/bin/lobmob-spawn-lobster | head -1 && \
+    grep -q 'crontab' /usr/local/bin/lobmob-spawn-lobster"
+
+# Pre-sleep flush wired into sleep script
+check "Pre-sleep flush in lobmob-sleep-lobster" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-flush-logs' /usr/local/bin/lobmob-sleep-lobster"
+
+# Pre-destroy flush wired into teardown script
+check "Pre-destroy flush in lobmob-teardown-lobster" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q 'lobmob-flush-logs' /usr/local/bin/lobmob-teardown-lobster"
+
+# --- Summary ---
+
+TOTAL=$((PASS_COUNT + FAIL_COUNT))
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "${GREEN}$PASS_COUNT${NC}/$TOTAL passed"
+if [ "$FAIL_COUNT" -gt 0 ]; then
+  echo -e "${RED}$FAIL_COUNT failed${NC}"
+  exit 1
+fi
