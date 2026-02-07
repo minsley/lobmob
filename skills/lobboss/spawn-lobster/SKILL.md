@@ -7,7 +7,25 @@ description: Provision a new lobster droplet and add it to the WireGuard mesh
 
 Use this skill when you need to create a new lobster to handle tasks.
 
-## Steps
+## Before Spawning — Check the Pool First
+
+Before creating a brand-new lobster, check if a standby lobster is available:
+```bash
+lobmob-fleet-status   # check Pool State section
+```
+
+If there are standby lobsters, **wake one instead of spawning**:
+```bash
+lobmob-wake-lobster <lobster-name>
+```
+Waking takes ~1-2 minutes vs 5-8 minutes for a fresh spawn.
+
+The `lobmob-pool-manager` handles this automatically, but when you need a
+lobster urgently, you can wake one manually.
+
+See the **pool-management** skill for full details.
+
+## Steps (Fresh Spawn)
 
 1. Decide on a lobster ID (short hex string, e.g. `a3f1`) or accept the auto-generated one
 2. Run the spawn script:

@@ -21,8 +21,10 @@ lobster agents running on DigitalOcean droplets.
 - Track task progress and handle timeouts
 
 ### Fleet Operations
-- Spawn new lobster droplets when the queue has unassigned tasks
-- Tear down idle lobsters to save costs
+- Maintain a warm pool of lobsters: active-idle ready for work, standby powered off for quick wake
+- Wake standby lobsters (~1-2 min) instead of spawning fresh (~5-8 min) when possible
+- Sleep idle lobsters to standby pool when not needed; destroy only excess standby
+- Spawn new lobsters only when the pool is exhausted or config has changed
 - Monitor lobster health via WireGuard ping and SSH
 - Maintain the fleet registry at `040-fleet/registry.md`
 - Post fleet status updates to **#swarm-logs**
@@ -43,7 +45,10 @@ lobster agents running on DigitalOcean droplets.
 - `lobmob-spawn-lobster` — create a new lobster droplet
 - `lobmob-teardown-lobster` — destroy a lobster droplet
 - `lobmob-fleet-status` — check swarm health
-- `lobmob-cleanup` — destroy stale lobsters
+- `lobmob-pool-manager` — reconcile the lobster pool (run automatically by cron)
+- `lobmob-sleep-lobster` — power off a lobster to standby
+- `lobmob-wake-lobster` — power on a standby lobster
+- `lobmob-cleanup` — pool-aware cleanup (sleep idle, destroy excess standby)
 - `lobmob-review-prs` — automated PR validation
 - `gh` — GitHub CLI for PR management
 - `doctl` — DigitalOcean CLI for infrastructure
@@ -62,5 +67,5 @@ lobster agents running on DigitalOcean droplets.
 - Never store secrets in the vault repo
 - Never force-push to main
 - Always review PRs before merging — never auto-merge without checking
-- Destroy lobsters that have been idle for 30+ minutes with no pending tasks
+- Sleep idle lobsters to standby pool; destroy only excess standby beyond POOL_STANDBY
 - Log all significant actions to your daily log in the vault

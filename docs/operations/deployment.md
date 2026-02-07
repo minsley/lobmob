@@ -73,6 +73,20 @@ ls /opt/vault/        # Vault cloned
 cat /etc/lobmob/.awaiting-secrets  # Should not exist (file removed after provisioning)
 ```
 
+## Post-Deploy: Pool Defaults
+
+The lobboss comes pre-configured with a warm lobster pool:
+- `POOL_ACTIVE=1` — one idle lobster kept running at all times
+- `POOL_STANDBY=2` — two powered-off lobsters ready to wake (~1-2 min)
+
+Adjust after deploy if needed:
+```bash
+./scripts/lobmob pool active 2 standby 3
+```
+
+The pool manager cron runs every 5 minutes and will start filling the pool
+automatically after the first `lobmob spawn`.
+
 ## Step 5: Configure OpenClaw + Discord
 
 1. Invite the bot to your Discord server (if not done during setup)

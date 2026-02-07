@@ -36,6 +36,8 @@ write_files:
       SSH_KEY_ID=${ssh_key_id}
       VPC_UUID=${vpc_uuid}
       LOBSTER_TAG=${lobster_tag}
+      POOL_ACTIVE=1
+      POOL_STANDBY=2
 
   # SSH config skeleton for GitHub -- deploy key pushed by provision script
   - path: /root/.ssh/config
@@ -333,6 +335,11 @@ write_files:
 
       echo "Lobster provisioned."
 
+      # Write config version to lobster for pool management staleness checks
+      CONFIG_VERSION=$(md5sum /usr/local/bin/lobmob-spawn-lobster | awk '{print $1}')
+      ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+        "echo '$CONFIG_VERSION' > /etc/lobmob/config-version"
+
       # Output lobster info as JSON
       cat <<EOF
       {
@@ -355,22 +362,34 @@ write_files:
 
       LOBSTER_NAME="$1"
 
-      # Get droplet ID
-      DROPLET_ID=$(doctl compute droplet list \
+      # Get droplet ID and public IP
+      DROPLET_INFO=$(doctl compute droplet list \
         --tag-name "$LOBSTER_TAG" \
-        --format ID,Name \
-        --no-header | grep "$LOBSTER_NAME" | awk '{print $1}')
+        --format ID,Name,PublicIPv4 \
+        --no-header | grep "$LOBSTER_NAME")
+
+      DROPLET_ID=$(echo "$DROPLET_INFO" | awk '{print $1}')
+      DROPLET_IP=$(echo "$DROPLET_INFO" | awk '{print $3}')
 
       if [ -z "$DROPLET_ID" ]; then
         echo "Lobster $LOBSTER_NAME not found"
         exit 1
       fi
 
-      # Remove WireGuard peer
-      WG_PUBKEY=$(grep "$LOBSTER_NAME" /opt/vault/040-fleet/registry.md 2>/dev/null \
-        | grep -oP 'wg_pubkey: \K\S+' || true)
+      # Remove WireGuard peer by matching endpoint IP
+      WG_PUBKEY=""
+      if [ -n "$DROPLET_IP" ]; then
+        WG_PUBKEY=$(wg show wg0 endpoints 2>/dev/null \
+          | grep "$DROPLET_IP:" | awk '{print $1}' || true)
+      fi
+      # Fallback: check vault registry
+      if [ -z "$WG_PUBKEY" ]; then
+        WG_PUBKEY=$(grep "$LOBSTER_NAME" /opt/vault/040-fleet/registry.md 2>/dev/null \
+          | grep -oP 'wg_pubkey: \K\S+' || true)
+      fi
       if [ -n "$WG_PUBKEY" ]; then
         wg set wg0 peer "$WG_PUBKEY" remove
+        echo "Removed WireGuard peer $WG_PUBKEY"
       fi
 
       # Destroy droplet
@@ -385,18 +404,56 @@ write_files:
       #!/bin/bash
       source /etc/lobmob/env
 
-      echo "=== WireGuard Peers ==="
-      wg show wg0
+      POOL_ACTIVE="$${POOL_ACTIVE:-1}"
+      POOL_STANDBY="$${POOL_STANDBY:-2}"
+      CONFIG_VERSION=$(md5sum /usr/local/bin/lobmob-spawn-lobster 2>/dev/null | awk '{print $1}')
+
+      echo "=== Pool Config ==="
+      echo "  POOL_ACTIVE=$POOL_ACTIVE  POOL_STANDBY=$POOL_STANDBY"
+      echo "  Config version: $${CONFIG_VERSION:0:8}..."
+      echo ""
+
+      echo "=== Lobster Droplets ==="
+      DROPLETS=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,PublicIPv4,Status,Created --no-header 2>/dev/null)
+      if [ -z "$DROPLETS" ]; then
+        echo "  (none)"
+      else
+        echo "$DROPLETS"
+      fi
+
+      # Classify by state
+      BUSY=0
+      IDLE=0
+      STANDBY_COUNT=0
+      while read -r ID NAME _ STATUS _; do
+        [ -z "$ID" ] && continue
+        if [ "$STATUS" = "off" ]; then
+          STANDBY_COUNT=$((STANDBY_COUNT + 1))
+        elif [ "$STATUS" = "active" ]; then
+          LOBSTER_SHORT=$(echo "$NAME" | sed 's/^lobster-//')
+          if grep -rl "$LOBSTER_SHORT" /opt/vault/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
+            BUSY=$((BUSY + 1))
+          else
+            IDLE=$((IDLE + 1))
+          fi
+        fi
+      done <<< "$DROPLETS"
 
       echo ""
-      echo "=== Active Lobster Droplets ==="
-      doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,PublicIPv4,Status,Created --no-header
+      echo "=== Pool State ==="
+      echo "  active-busy: $BUSY"
+      echo "  active-idle: $IDLE (target: $POOL_ACTIVE)"
+      echo "  standby:     $STANDBY_COUNT (target: $POOL_STANDBY)"
+      echo ""
+
+      echo "=== WireGuard Peers ==="
+      wg show wg0
 
       echo ""
       echo "=== Open PRs ==="
       cd /opt/vault && gh pr list --state open --json number,title,headRefName,author,createdAt 2>/dev/null || echo "No vault repo"
 
-  # Stale lobster cleanup cron
+  # Pool-aware cleanup (replaces age-based cleanup)
   - path: /usr/local/bin/lobmob-cleanup
     permissions: "0755"
     content: |
@@ -404,17 +461,362 @@ write_files:
       source /etc/lobmob/env
       source /etc/lobmob/secrets.env 2>/dev/null || true
 
-      MAX_AGE_HOURS="$${1:-2}"
+      POOL_ACTIVE="$${POOL_ACTIVE:-1}"
+      POOL_STANDBY="$${POOL_STANDBY:-2}"
+      HARD_MAX_HOURS=24
       NOW=$(date +%s)
 
-      doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,Created --no-header | while read -r ID NAME CREATED; do
+      # Get all lobster droplets
+      DROPLETS=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,Status,Created --no-header 2>/dev/null)
+      if [ -z "$DROPLETS" ]; then
+        exit 0
+      fi
+
+      # Classify droplets
+      ACTIVE_IDLE=()
+      STANDBY=()
+
+      while read -r ID NAME STATUS CREATED; do
+        # Hard ceiling: destroy ANY lobster older than 24h
         CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null)
         AGE_HOURS=$(( (NOW - CREATED_TS) / 3600 ))
-        if [ "$AGE_HOURS" -ge "$MAX_AGE_HOURS" ]; then
-          echo "Destroying stale lobster $NAME (age: $${AGE_HOURS}h)"
+        if [ "$AGE_HOURS" -ge "$HARD_MAX_HOURS" ]; then
+          echo "Destroying lobster $NAME (age: $${AGE_HOURS}h exceeds $${HARD_MAX_HOURS}h ceiling)"
           lobmob-teardown-lobster "$NAME"
+          continue
+        fi
+
+        if [ "$STATUS" = "off" ]; then
+          STANDBY+=("$NAME")
+        elif [ "$STATUS" = "active" ]; then
+          # Check if busy (has active task in vault)
+          BUSY=0
+          if ls /opt/vault/010-tasks/active/*"$NAME"* 2>/dev/null | grep -q .; then
+            BUSY=1
+          fi
+          if [ "$BUSY" -eq 0 ]; then
+            ACTIVE_IDLE+=("$NAME")
+          fi
+        fi
+      done <<< "$DROPLETS"
+
+      # Sleep excess idle lobsters beyond POOL_ACTIVE
+      IDLE_COUNT=$${#ACTIVE_IDLE[@]}
+      if [ "$IDLE_COUNT" -gt "$POOL_ACTIVE" ]; then
+        EXCESS=$(( IDLE_COUNT - POOL_ACTIVE ))
+        echo "Sleeping $EXCESS excess idle lobsters (have $IDLE_COUNT, want $POOL_ACTIVE)"
+        for (( i=0; i<EXCESS; i++ )); do
+          lobmob-sleep-lobster "$${ACTIVE_IDLE[$i]}"
+        done
+      fi
+
+      # Destroy excess standby lobsters beyond POOL_STANDBY
+      STANDBY_COUNT=$${#STANDBY[@]}
+      if [ "$STANDBY_COUNT" -gt "$POOL_STANDBY" ]; then
+        EXCESS=$(( STANDBY_COUNT - POOL_STANDBY ))
+        echo "Destroying $EXCESS excess standby lobsters (have $STANDBY_COUNT, want $POOL_STANDBY)"
+        for (( i=0; i<EXCESS; i++ )); do
+          lobmob-teardown-lobster "$${STANDBY[$i]}"
+        done
+      fi
+
+  # Sleep lobster script -- powers off a lobster, preserving disk
+  - path: /usr/local/bin/lobmob-sleep-lobster
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      source /etc/lobmob/env
+
+      LOBSTER_NAME="$1"
+
+      # Look up droplet ID
+      DROPLET_ID=$(doctl compute droplet list \
+        --tag-name "$LOBSTER_TAG" \
+        --format ID,Name \
+        --no-header | grep "$LOBSTER_NAME" | awk '{print $1}')
+
+      if [ -z "$DROPLET_ID" ]; then
+        echo "Lobster $LOBSTER_NAME not found"
+        exit 1
+      fi
+
+      echo "Sleeping $LOBSTER_NAME (droplet $DROPLET_ID)..."
+
+      # Graceful shutdown with timeout
+      doctl compute droplet-action shutdown "$DROPLET_ID" --wait 2>/dev/null &
+      SHUTDOWN_PID=$!
+      TIMEOUT=120
+      ELAPSED=0
+      while kill -0 "$SHUTDOWN_PID" 2>/dev/null; do
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
+        if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+          kill "$SHUTDOWN_PID" 2>/dev/null || true
+          echo "Graceful shutdown timed out, forcing power-off..."
+          doctl compute droplet-action power-off "$DROPLET_ID" --wait
+          break
         fi
       done
+      wait "$SHUTDOWN_PID" 2>/dev/null || true
+
+      echo "Lobster $LOBSTER_NAME is now standby (powered off)"
+
+  # Wake lobster script -- powers on a standby lobster
+  - path: /usr/local/bin/lobmob-wake-lobster
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      source /etc/lobmob/env
+      source /etc/lobmob/secrets.env
+
+      LOBSTER_NAME="$1"
+
+      # Look up droplet info
+      DROPLET_INFO=$(doctl compute droplet list \
+        --tag-name "$LOBSTER_TAG" \
+        --format ID,Name,Status \
+        --no-header | grep "$LOBSTER_NAME")
+
+      if [ -z "$DROPLET_INFO" ]; then
+        echo "Lobster $LOBSTER_NAME not found"
+        exit 1
+      fi
+
+      DROPLET_ID=$(echo "$DROPLET_INFO" | awk '{print $1}')
+      DROPLET_STATUS=$(echo "$DROPLET_INFO" | awk '{print $3}')
+
+      if [ "$DROPLET_STATUS" = "active" ]; then
+        echo "Lobster $LOBSTER_NAME is already active"
+        exit 0
+      fi
+
+      echo "Waking $LOBSTER_NAME (droplet $DROPLET_ID)..."
+      doctl compute droplet-action power-on "$DROPLET_ID" --wait
+
+      # Look up WG IP from wg show (the peer config survives power cycle)
+      WG_IP=""
+      while read -r PUBKEY ALLOWED; do
+        IP=$(echo "$ALLOWED" | cut -d/ -f1)
+        # Try to match -- we'll ping all peers and see which comes alive
+        if ping -c 1 -W 2 "$IP" > /dev/null 2>&1; then
+          # Verify it's our lobster by SSHing in
+          REMOTE_NAME=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+            "root@$IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
+          if echo "$LOBSTER_NAME" | grep -q "$REMOTE_NAME" 2>/dev/null && [ -n "$REMOTE_NAME" ]; then
+            WG_IP="$IP"
+            break
+          fi
+        fi
+      done < <(wg show wg0 allowed-ips 2>/dev/null)
+
+      # If no WG IP found via matching, scan all peers for connectivity
+      if [ -z "$WG_IP" ]; then
+        echo "Waiting for WireGuard connectivity..."
+        for attempt in $(seq 1 30); do
+          while read -r PUBKEY ALLOWED; do
+            IP=$(echo "$ALLOWED" | cut -d/ -f1)
+            if ping -c 1 -W 2 "$IP" > /dev/null 2>&1; then
+              REMOTE_NAME=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+                "root@$IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
+              if echo "$LOBSTER_NAME" | grep -q "$REMOTE_NAME" 2>/dev/null && [ -n "$REMOTE_NAME" ]; then
+                WG_IP="$IP"
+                break 2
+              fi
+            fi
+          done < <(wg show wg0 allowed-ips 2>/dev/null)
+          sleep 5
+        done
+      fi
+
+      if [ -z "$WG_IP" ]; then
+        echo "ERROR: Could not establish WireGuard connectivity to $LOBSTER_NAME"
+        exit 1
+      fi
+
+      echo "WireGuard: connected at $WG_IP"
+
+      # Wait for SSH
+      echo "Waiting for SSH..."
+      for i in $(seq 1 12); do
+        if ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+          "root@$WG_IP" "true" 2>/dev/null; then
+          break
+        fi
+        sleep 5
+      done
+
+      # Pull latest vault
+      ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+        "cd /opt/vault && git pull origin main" 2>/dev/null || true
+
+      # Refresh secrets
+      ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+        "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<SECRETS
+      GH_TOKEN=$GH_TOKEN
+      DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+      ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+      SECRETS
+
+      echo "Lobster $LOBSTER_NAME is awake at $WG_IP"
+
+      # Output lobster info as JSON
+      cat <<EOF
+      {
+        "lobster_name": "$LOBSTER_NAME",
+        "droplet_id": "$DROPLET_ID",
+        "wireguard_ip": "$WG_IP",
+        "status": "active"
+      }
+      EOF
+
+  # Pool manager -- reconciliation loop for the lobster pool
+  - path: /usr/local/bin/lobmob-pool-manager
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      source /etc/lobmob/env
+      source /etc/lobmob/secrets.env 2>/dev/null || true
+
+      POOL_ACTIVE="$${POOL_ACTIVE:-1}"
+      POOL_STANDBY="$${POOL_STANDBY:-2}"
+      MAX_LOBSTERS=10
+
+      echo "$(date -Iseconds) Pool manager: target active-idle=$POOL_ACTIVE standby=$POOL_STANDBY"
+
+      # Get all lobster droplets
+      DROPLETS=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,Status --no-header 2>/dev/null)
+
+      ACTIVE_BUSY=()
+      ACTIVE_IDLE=()
+      STANDBY=()
+      TOTAL=0
+
+      while read -r ID NAME STATUS; do
+        [ -z "$ID" ] && continue
+        TOTAL=$((TOTAL + 1))
+        if [ "$STATUS" = "off" ]; then
+          STANDBY+=("$NAME")
+        elif [ "$STATUS" = "active" ]; then
+          # Check if lobster is busy (assigned to an active task in vault)
+          BUSY=0
+          cd /opt/vault 2>/dev/null && git pull origin main --quiet 2>/dev/null || true
+          # Look for task files mentioning this lobster with status: active
+          LOBSTER_SHORT=$(echo "$NAME" | sed 's/^lobster-//')
+          if grep -rl "$LOBSTER_SHORT" /opt/vault/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
+            BUSY=1
+          fi
+          if [ "$BUSY" -eq 1 ]; then
+            ACTIVE_BUSY+=("$NAME")
+          else
+            ACTIVE_IDLE+=("$NAME")
+          fi
+        fi
+      done <<< "$DROPLETS"
+
+      BUSY_COUNT=$${#ACTIVE_BUSY[@]}
+      IDLE_COUNT=$${#ACTIVE_IDLE[@]}
+      STANDBY_COUNT=$${#STANDBY[@]}
+
+      echo "  Current: active-busy=$BUSY_COUNT active-idle=$IDLE_COUNT standby=$STANDBY_COUNT total=$TOTAL"
+
+      # Current config version
+      CONFIG_VERSION=$(md5sum /usr/local/bin/lobmob-spawn-lobster 2>/dev/null | awk '{print $1}')
+
+      # Step 1: Destroy stale standby lobsters (config version mismatch)
+      for NAME in "$${STANDBY[@]}"; do
+        # Power on briefly to check? No -- too expensive. Check via doctl tags or stored metadata.
+        # Instead, wake and check, or just track version at sleep time.
+        # For now, we store config version on the lobster at spawn time and check via SSH after wake.
+        # Stale detection happens during wake: if version mismatches, teardown instead.
+        true
+      done
+
+      # Step 2: Need more idle active?
+      if [ "$IDLE_COUNT" -lt "$POOL_ACTIVE" ]; then
+        NEED=$((POOL_ACTIVE - IDLE_COUNT))
+        echo "  Need $NEED more active-idle lobsters"
+
+        for (( i=0; i<NEED; i++ )); do
+          if [ "$TOTAL" -ge "$MAX_LOBSTERS" ]; then
+            echo "  Hit max lobster limit ($MAX_LOBSTERS), skipping"
+            break
+          fi
+
+          # Prefer waking standby over spawning new
+          if [ "$STANDBY_COUNT" -gt 0 ]; then
+            WAKE_NAME="$${STANDBY[0]}"
+            echo "  Waking standby lobster: $WAKE_NAME"
+            RESULT=$(lobmob-wake-lobster "$WAKE_NAME" 2>&1) || true
+            echo "$RESULT"
+
+            # Check config version after wake
+            WG_IP=$(echo "$RESULT" | grep -oP '"wireguard_ip": "\K[^"]+' || true)
+            if [ -n "$WG_IP" ]; then
+              REMOTE_VERSION=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+                "root@$WG_IP" "cat /etc/lobmob/config-version 2>/dev/null" 2>/dev/null || true)
+              if [ -n "$REMOTE_VERSION" ] && [ "$REMOTE_VERSION" != "$CONFIG_VERSION" ]; then
+                echo "  Config version mismatch on $WAKE_NAME (got $REMOTE_VERSION, want $CONFIG_VERSION) -- destroying and spawning fresh"
+                lobmob-teardown-lobster "$WAKE_NAME"
+                lobmob-spawn-lobster
+                TOTAL=$((TOTAL))  # net zero: destroyed one, spawned one
+              fi
+            fi
+
+            # Remove from standby array
+            STANDBY=("$${STANDBY[@]:1}")
+            STANDBY_COUNT=$${#STANDBY[@]}
+          else
+            echo "  No standby available, spawning new lobster"
+            lobmob-spawn-lobster
+            TOTAL=$((TOTAL + 1))
+          fi
+        done
+      fi
+
+      # Step 3: Too many idle active? Sleep excess.
+      if [ "$IDLE_COUNT" -gt "$POOL_ACTIVE" ]; then
+        EXCESS=$((IDLE_COUNT - POOL_ACTIVE))
+        echo "  Sleeping $EXCESS excess idle lobsters"
+        for (( i=0; i<EXCESS; i++ )); do
+          lobmob-sleep-lobster "$${ACTIVE_IDLE[$i]}"
+        done
+      fi
+
+      # Step 4: Too many standby? Destroy excess.
+      # Re-count standby (may have changed from waking)
+      STANDBY_NOW=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format Name,Status --no-header 2>/dev/null \
+        | awk '$2 == "off" {print $1}')
+      STANDBY_COUNT_NOW=$(echo "$STANDBY_NOW" | grep -c . 2>/dev/null || echo 0)
+      if [ "$STANDBY_COUNT_NOW" -gt "$POOL_STANDBY" ]; then
+        EXCESS=$((STANDBY_COUNT_NOW - POOL_STANDBY))
+        echo "  Destroying $EXCESS excess standby lobsters"
+        echo "$STANDBY_NOW" | head -n "$EXCESS" | while read -r NAME; do
+          lobmob-teardown-lobster "$NAME"
+        done
+      fi
+
+      # Step 5: Pool underfilled? Spawn to fill.
+      # Re-count everything
+      CURRENT_IDLE=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format Name,Status --no-header 2>/dev/null \
+        | awk '$2 == "active" {print $1}' | wc -l)
+      CURRENT_STANDBY=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format Name,Status --no-header 2>/dev/null \
+        | awk '$2 == "off" {print $1}' | wc -l)
+      CURRENT_TOTAL=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID --no-header 2>/dev/null | wc -l)
+      POOL_TARGET=$((POOL_ACTIVE + POOL_STANDBY))
+      AVAILABLE=$((CURRENT_IDLE + CURRENT_STANDBY - BUSY_COUNT))
+      if [ "$AVAILABLE" -lt "$POOL_TARGET" ] && [ "$CURRENT_TOTAL" -lt "$MAX_LOBSTERS" ]; then
+        NEED=$((POOL_TARGET - AVAILABLE))
+        CAPACITY=$((MAX_LOBSTERS - CURRENT_TOTAL))
+        SPAWN=$(( NEED < CAPACITY ? NEED : CAPACITY ))
+        echo "  Pool underfilled (available=$AVAILABLE, target=$POOL_TARGET). Spawning $SPAWN lobsters."
+        for (( i=0; i<SPAWN; i++ )); do
+          lobmob-spawn-lobster
+        done
+      fi
+
+      echo "$(date -Iseconds) Pool manager: done"
 
   # PR review script
   - path: /usr/local/bin/lobmob-review-prs
@@ -484,8 +886,8 @@ runcmd:
   - git config --global user.name "lobboss"
   - git config --global user.email "lobboss@lobmob.swarm"
 
-  # Cleanup cron -- every 30 minutes
-  - echo "*/30 * * * * root /usr/local/bin/lobmob-cleanup 2" >> /etc/crontab
+  # Pool manager cron -- every 5 minutes
+  - echo "*/5 * * * * root /usr/local/bin/lobmob-pool-manager >> /var/log/lobmob-pool-manager.log 2>&1" >> /etc/crontab
 
   # PR review cron -- every 2 minutes
   - echo "*/2 * * * * root /usr/local/bin/lobmob-review-prs >> /var/log/lobmob-pr-review.log 2>&1" >> /etc/crontab

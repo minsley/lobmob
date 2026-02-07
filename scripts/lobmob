@@ -35,7 +35,12 @@ Fleet Management:
   teardown <id>       Destroy a specific lobster
   teardown-all        Destroy all lobster droplets
   status              Show fleet status (droplets, WG peers, open PRs)
-  cleanup [hours]     Destroy lobsters older than N hours (default: 2)
+  cleanup [hours]     Pool-aware cleanup (sleep idle, destroy excess standby)
+
+Pool Management:
+  pool [active N] [standby N]   Show or update pool config on lobboss
+  sleep-lobster <name>          Power off a lobster (standby)
+  wake-lobster <name>           Power on a standby lobster
 
 Vault:
   vault-init          Initialize the Obsidian vault GitHub repo
@@ -891,6 +896,73 @@ cmd_prs() {
   gh pr list --repo "$VAULT_REPO" --state open
 }
 
+cmd_pool() {
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed. Run: lobmob deploy"
+    exit 1
+  fi
+
+  if [ $# -eq 0 ]; then
+    # No args: show current pool config and state
+    log "Pool config and state:"
+    lobmob_ssh "root@$LOBBOSS_IP" "grep POOL_ /etc/lobmob/env"
+    lobmob_ssh "root@$LOBBOSS_IP" "lobmob-fleet-status" 2>/dev/null | grep -A 10 "Pool State"
+    return
+  fi
+
+  # Parse args: pool active N standby N
+  local NEW_ACTIVE="" NEW_STANDBY=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      active)  shift; NEW_ACTIVE="$1" ;;
+      standby) shift; NEW_STANDBY="$1" ;;
+      *)       err "Unknown pool arg: $1"; exit 1 ;;
+    esac
+    shift
+  done
+
+  if [ -n "$NEW_ACTIVE" ]; then
+    log "Setting POOL_ACTIVE=$NEW_ACTIVE on lobboss..."
+    lobmob_ssh "root@$LOBBOSS_IP" "sed -i 's/^POOL_ACTIVE=.*/POOL_ACTIVE=$NEW_ACTIVE/' /etc/lobmob/env"
+  fi
+  if [ -n "$NEW_STANDBY" ]; then
+    log "Setting POOL_STANDBY=$NEW_STANDBY on lobboss..."
+    lobmob_ssh "root@$LOBBOSS_IP" "sed -i 's/^POOL_STANDBY=.*/POOL_STANDBY=$NEW_STANDBY/' /etc/lobmob/env"
+  fi
+
+  log "Updated pool config:"
+  lobmob_ssh "root@$LOBBOSS_IP" "grep POOL_ /etc/lobmob/env"
+}
+
+cmd_sleep_lobster() {
+  if [ -z "${1:-}" ]; then
+    err "Usage: lobmob sleep-lobster <lobster-name>"
+    exit 1
+  fi
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed. Run: lobmob deploy"
+    exit 1
+  fi
+  log "Sleeping $1 via lobboss..."
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-sleep-lobster $1"
+}
+
+cmd_wake_lobster() {
+  if [ -z "${1:-}" ]; then
+    err "Usage: lobmob wake-lobster <lobster-name>"
+    exit 1
+  fi
+  LOBBOSS_IP=$(get_lobboss_ip)
+  if [ -z "$LOBBOSS_IP" ]; then
+    err "Lobboss not deployed. Run: lobmob deploy"
+    exit 1
+  fi
+  log "Waking $1 via lobboss..."
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-wake-lobster $1"
+}
+
 # --- Main ---
 
 COMMAND="${1:-help}"
@@ -907,6 +979,9 @@ case "$COMMAND" in
   teardown-all)        cmd_teardown_all ;;
   status)              cmd_status ;;
   cleanup)             cmd_cleanup "$@" ;;
+  pool)                cmd_pool "$@" ;;
+  sleep-lobster)       cmd_sleep_lobster "$@" ;;
+  wake-lobster)        cmd_wake_lobster "$@" ;;
   vault-init)          cmd_vault_init ;;
   vault-sync)          cmd_vault_sync ;;
   sleep)               cmd_sleep ;;

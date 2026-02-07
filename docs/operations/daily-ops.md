@@ -20,12 +20,34 @@ ssh root@<lobboss-ip> lobmob-fleet-status
 
 The lobboss agent also spawns lobsters autonomously when tasks queue up.
 
-## Tearing Down Lobsters
+## Pool Management
+
+The lobster pool keeps pre-provisioned lobsters available for fast task startup.
+Idle lobsters are powered off to standby (~1-2 min wake) instead of destroyed.
 
 ```bash
-./scripts/lobmob teardown lobster-a3f1          # specific lobster
-./scripts/lobmob teardown-all                     # all lobsters
-./scripts/lobmob cleanup 1                        # lobsters older than 1 hour
+./scripts/lobmob pool                            # show pool config and state
+./scripts/lobmob pool active 2 standby 3         # adjust pool sizes
+./scripts/lobmob sleep-lobster lobster-a3f1      # power off a lobster to standby
+./scripts/lobmob wake-lobster lobster-a3f1       # wake a standby lobster
+```
+
+The `lobmob-pool-manager` runs every 5 minutes on lobboss and automatically:
+- Wakes standby lobsters or spawns new ones to maintain POOL_ACTIVE idle lobsters
+- Sleeps excess idle lobsters beyond POOL_ACTIVE
+- Destroys excess standby lobsters beyond POOL_STANDBY
+- Destroys any lobster older than 24h
+
+Check pool manager logs: `ssh root@<lobboss-ip> tail -f /var/log/lobmob-pool-manager.log`
+
+## Tearing Down Lobsters
+
+Prefer sleeping over tearing down — sleeping preserves the disk for fast wake.
+
+```bash
+./scripts/lobmob teardown lobster-a3f1          # permanently destroy a lobster
+./scripts/lobmob teardown-all                     # destroy all lobsters
+./scripts/lobmob cleanup                          # pool-aware cleanup (sleep idle, destroy excess)
 ```
 
 ## Submitting Tasks
