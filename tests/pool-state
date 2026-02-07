@@ -1,0 +1,288 @@
+#!/bin/bash
+# pool-state — verify the lobster pool matches configured targets
+#
+# Usage:
+#   pool-state              Check current pool state against config
+#   pool-state --converge   Run pool-manager first, wait, then check
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+lobmob_ssh() {
+  ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new "$@"
+}
+
+get_lobboss_ip() {
+  terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
+}
+
+# --- Test runner ---
+
+PASS_COUNT=0
+FAIL_COUNT=0
+
+check() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${NC}  $label"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+check_eq() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+  if [ "$actual" = "$expected" ]; then
+    echo -e "  ${GREEN}PASS${NC}  $label  ($actual)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label  (got $actual, expected $expected)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+check_le() {
+  local label="$1"
+  local actual="$2"
+  local limit="$3"
+  if [ "$actual" -le "$limit" ]; then
+    echo -e "  ${GREEN}PASS${NC}  $label  ($actual <= $limit)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo -e "  ${RED}FAIL${NC}  $label  ($actual > $limit)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+# --- Resolve lobboss IP ---
+
+LOBBOSS_IP=$(get_lobboss_ip)
+if [ -z "$LOBBOSS_IP" ]; then
+  echo -e "${RED}Cannot resolve lobboss IP from Terraform state.${NC}"
+  echo "Is lobboss deployed? Run: lobmob deploy"
+  exit 1
+fi
+
+echo ""
+echo -e "${YELLOW}pool-state${NC}  lobboss=$LOBBOSS_IP"
+echo ""
+
+# --- Converge mode: run pool-manager and wait ---
+
+if [ "${1:-}" = "--converge" ]; then
+  echo -e "${CYAN}Running pool-manager to converge...${NC}"
+  lobmob_ssh "root@$LOBBOSS_IP" "lobmob-pool-manager" 2>&1 | sed 's/^/  /'
+  echo ""
+  # Wait for droplet state transitions to settle (power-on/off take a moment to reflect in API)
+  echo -e "${CYAN}Waiting 30s for droplet state to settle...${NC}"
+  sleep 30
+  echo ""
+fi
+
+# --- Read pool config from lobboss ---
+
+echo -e "${CYAN}Pool infrastructure${NC}"
+
+check "SSH to lobboss" \
+  lobmob_ssh -o ConnectTimeout=10 -o BatchMode=yes "root@$LOBBOSS_IP" true
+
+check "Pool manager script exists" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -x /usr/local/bin/lobmob-pool-manager"
+
+check "Sleep script exists" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -x /usr/local/bin/lobmob-sleep-lobster"
+
+check "Wake script exists" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -x /usr/local/bin/lobmob-wake-lobster"
+
+check "Pool manager cron active" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q lobmob-pool-manager /etc/crontab"
+
+check "POOL_ACTIVE configured in env" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q '^POOL_ACTIVE=' /etc/lobmob/env"
+
+check "POOL_STANDBY configured in env" \
+  lobmob_ssh "root@$LOBBOSS_IP" "grep -q '^POOL_STANDBY=' /etc/lobmob/env"
+
+echo ""
+
+# --- Read config values ---
+
+POOL_ACTIVE=$(lobmob_ssh "root@$LOBBOSS_IP" "source /etc/lobmob/env && echo \$POOL_ACTIVE" 2>/dev/null)
+POOL_STANDBY=$(lobmob_ssh "root@$LOBBOSS_IP" "source /etc/lobmob/env && echo \$POOL_STANDBY" 2>/dev/null)
+CONFIG_VERSION=$(lobmob_ssh "root@$LOBBOSS_IP" "md5sum /usr/local/bin/lobmob-spawn-lobster | awk '{print \$1}'" 2>/dev/null)
+LOBSTER_TAG=$(lobmob_ssh "root@$LOBBOSS_IP" "source /etc/lobmob/env && echo \$LOBSTER_TAG" 2>/dev/null)
+
+echo -e "${CYAN}Pool config${NC}  POOL_ACTIVE=$POOL_ACTIVE  POOL_STANDBY=$POOL_STANDBY"
+echo -e "${CYAN}Config version${NC}  ${CONFIG_VERSION:0:12}..."
+echo ""
+
+# --- Count droplets by state ---
+
+DROPLET_DATA=$(lobmob_ssh "root@$LOBBOSS_IP" \
+  "doctl compute droplet list --tag-name '$LOBSTER_TAG' --format ID,Name,Status --no-header 2>/dev/null" || true)
+
+ACTIVE_BUSY=0
+ACTIVE_IDLE=0
+STANDBY=0
+TOTAL=0
+ACTIVE_NAMES=()
+STANDBY_NAMES=()
+
+if [ -n "$DROPLET_DATA" ]; then
+  while read -r ID NAME STATUS; do
+    [ -z "$ID" ] && continue
+    TOTAL=$((TOTAL + 1))
+    if [ "$STATUS" = "off" ]; then
+      STANDBY=$((STANDBY + 1))
+      STANDBY_NAMES+=("$NAME")
+    elif [ "$STATUS" = "active" ]; then
+      # Check if busy by looking for active task files
+      LOBSTER_SHORT=$(echo "$NAME" | sed 's/^lobster-//')
+      IS_BUSY=$(lobmob_ssh "root@$LOBBOSS_IP" \
+        "grep -rl '$LOBSTER_SHORT' /opt/vault/010-tasks/active/ 2>/dev/null | head -1" 2>/dev/null || true)
+      if [ -n "$IS_BUSY" ]; then
+        ACTIVE_BUSY=$((ACTIVE_BUSY + 1))
+      else
+        ACTIVE_IDLE=$((ACTIVE_IDLE + 1))
+        ACTIVE_NAMES+=("$NAME")
+      fi
+    fi
+  done <<< "$DROPLET_DATA"
+fi
+
+echo -e "${CYAN}Pool state${NC}  active-busy=$ACTIVE_BUSY  active-idle=$ACTIVE_IDLE  standby=$STANDBY  total=$TOTAL"
+echo ""
+
+# --- Pool count checks ---
+
+echo -e "${CYAN}Pool counts${NC}"
+
+check_eq "Active-idle matches POOL_ACTIVE" "$ACTIVE_IDLE" "$POOL_ACTIVE"
+check_eq "Standby matches POOL_STANDBY" "$STANDBY" "$POOL_STANDBY"
+
+POOL_TARGET=$((POOL_ACTIVE + POOL_STANDBY))
+AVAILABLE=$((ACTIVE_IDLE + STANDBY))
+check_eq "Available pool (idle+standby) matches target" "$AVAILABLE" "$POOL_TARGET"
+
+check_le "Total lobsters within max limit" "$TOTAL" "10"
+
+echo ""
+
+# --- Config version checks on active lobsters ---
+
+echo -e "${CYAN}Config version (active lobsters)${NC}"
+
+if [ ${#ACTIVE_NAMES[@]} -eq 0 ] && [ "$POOL_ACTIVE" -gt 0 ]; then
+  echo -e "  ${YELLOW}SKIP${NC}  No active lobsters to check"
+else
+  for LNAME in "${ACTIVE_NAMES[@]}"; do
+    # Get WG IP for this lobster
+    LOBSTER_SHORT=$(echo "$LNAME" | sed 's/^lobster-//')
+    WG_IP=$(lobmob_ssh "root@$LOBBOSS_IP" \
+      "wg show wg0 allowed-ips 2>/dev/null | while read PUB ALLOWED; do
+        IP=\$(echo \$ALLOWED | cut -d/ -f1)
+        REMOTE_ID=\$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@\$IP \
+          'cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2' 2>/dev/null || true)
+        if [ \"\$REMOTE_ID\" = \"$LOBSTER_SHORT\" ]; then
+          echo \$IP
+          break
+        fi
+      done" 2>/dev/null || true)
+
+    if [ -z "$WG_IP" ]; then
+      echo -e "  ${YELLOW}SKIP${NC}  $LNAME — could not resolve WG IP"
+      continue
+    fi
+
+    REMOTE_VERSION=$(lobmob_ssh "root@$LOBBOSS_IP" \
+      "ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@$WG_IP \
+        'cat /etc/lobmob/config-version 2>/dev/null'" 2>/dev/null || true)
+
+    check_eq "$LNAME config version matches ($WG_IP)" "$REMOTE_VERSION" "$CONFIG_VERSION"
+  done
+fi
+
+echo ""
+
+# --- Connectivity checks on active lobsters ---
+
+echo -e "${CYAN}Connectivity (active lobsters)${NC}"
+
+if [ ${#ACTIVE_NAMES[@]} -eq 0 ] && [ "$POOL_ACTIVE" -gt 0 ]; then
+  echo -e "  ${YELLOW}SKIP${NC}  No active lobsters to check"
+else
+  for LNAME in "${ACTIVE_NAMES[@]}"; do
+    LOBSTER_SHORT=$(echo "$LNAME" | sed 's/^lobster-//')
+    WG_IP=$(lobmob_ssh "root@$LOBBOSS_IP" \
+      "wg show wg0 allowed-ips 2>/dev/null | while read PUB ALLOWED; do
+        IP=\$(echo \$ALLOWED | cut -d/ -f1)
+        REMOTE_ID=\$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@\$IP \
+          'cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2' 2>/dev/null || true)
+        if [ \"\$REMOTE_ID\" = \"$LOBSTER_SHORT\" ]; then
+          echo \$IP
+          break
+        fi
+      done" 2>/dev/null || true)
+
+    if [ -z "$WG_IP" ]; then
+      echo -e "  ${YELLOW}SKIP${NC}  $LNAME — could not resolve WG IP"
+      continue
+    fi
+
+    check "$LNAME WG ping ($WG_IP)" \
+      lobmob_ssh "root@$LOBBOSS_IP" "ping -c 1 -W 3 $WG_IP"
+
+    check "$LNAME SSH via WG ($WG_IP)" \
+      lobmob_ssh "root@$LOBBOSS_IP" \
+        "ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new root@$WG_IP true"
+  done
+fi
+
+echo ""
+
+# --- Standby checks ---
+
+echo -e "${CYAN}Standby lobsters (powered off)${NC}"
+
+if [ ${#STANDBY_NAMES[@]} -eq 0 ]; then
+  if [ "$POOL_STANDBY" -gt 0 ]; then
+    echo -e "  ${YELLOW}SKIP${NC}  No standby lobsters present"
+  else
+    echo -e "  ${GREEN}PASS${NC}  No standby expected (POOL_STANDBY=0)"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  fi
+else
+  for LNAME in "${STANDBY_NAMES[@]}"; do
+    DROPLET_STATUS=$(lobmob_ssh "root@$LOBBOSS_IP" \
+      "doctl compute droplet list --tag-name '$LOBSTER_TAG' --format Name,Status --no-header 2>/dev/null \
+        | grep '$LNAME' | awk '{print \$2}'" 2>/dev/null || true)
+    check_eq "$LNAME is powered off" "$DROPLET_STATUS" "off"
+  done
+fi
+
+# --- Summary ---
+
+TOTAL_CHECKS=$((PASS_COUNT + FAIL_COUNT))
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo -e "${GREEN}$PASS_COUNT${NC}/$TOTAL_CHECKS passed"
+if [ "$FAIL_COUNT" -gt 0 ]; then
+  echo -e "${RED}$FAIL_COUNT failed${NC}"
+  exit 1
+fi
