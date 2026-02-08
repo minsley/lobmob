@@ -54,6 +54,10 @@ Power:
   sleep               Cull all lobsters then power off lobboss
   wake                Power on lobboss and wait for it to come back
 
+Connection:
+  connect             Connect to swarm via WireGuard + open web UI
+  disconnect          Disconnect WireGuard tunnel
+
 Utilities:
   logs                Tail lobboss cloud-init logs
   flush-logs          Flush event logs on lobboss to the vault
@@ -634,7 +638,19 @@ DOAUTHEOF
   echo -e "${CYAN}║           lobmob is live!                ║${NC}"
   echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
   echo ""
-  echo "  Next steps:"
+
+  read -rp "  Connect to swarm via WireGuard now? [Y/n]: " BS_CONNECT
+  BS_CONNECT="${BS_CONNECT:-Y}"
+  if [[ "$BS_CONNECT" =~ ^[Yy]$ ]]; then
+    cmd_connect
+  else
+    echo ""
+    echo "  Connect later with:"
+    echo "    lobmob connect"
+  fi
+
+  echo ""
+  echo "  Other commands:"
   echo "    lobmob ssh-lobboss        SSH into lobboss"
   echo "    lobmob spawn              Spawn a lobster"
   echo "    lobmob status             Fleet status"
@@ -1076,6 +1092,47 @@ cmd_wake_lobster() {
   lobmob_ssh "root@$LOBBOSS_IP" "lobmob-wake-lobster $1"
 }
 
+cmd_connect() {
+  case "${OSTYPE:-}" in
+    darwin*)
+      bash "$SCRIPT_DIR/connect-mac.sh" "$@"
+      ;;
+    linux*)
+      bash "$SCRIPT_DIR/connect-linux.sh" "$@"
+      ;;
+    msys*|cygwin*|win*)
+      if command -v powershell.exe >/dev/null 2>&1; then
+        powershell.exe -ExecutionPolicy Bypass -File "$SCRIPT_DIR/connect-windows.ps1" "$@"
+      else
+        err "On Windows, run: powershell -ExecutionPolicy Bypass -File scripts\\connect-windows.ps1"
+        exit 1
+      fi
+      ;;
+    *)
+      # Fallback: try to detect
+      if [ "$(uname -s)" = "Darwin" ]; then
+        bash "$SCRIPT_DIR/connect-mac.sh" "$@"
+      elif [ "$(uname -s)" = "Linux" ]; then
+        bash "$SCRIPT_DIR/connect-linux.sh" "$@"
+      else
+        err "Unsupported platform: $(uname -s)"
+        err "Run the appropriate script directly: connect-mac.sh, connect-linux.sh, or connect-windows.ps1"
+        exit 1
+      fi
+      ;;
+  esac
+}
+
+cmd_disconnect() {
+  if sudo wg show lobmob >/dev/null 2>&1; then
+    log "Disconnecting WireGuard tunnel..."
+    sudo wg-quick down lobmob
+    log "Disconnected"
+  else
+    warn "No active lobmob tunnel"
+  fi
+}
+
 # --- Main ---
 
 COMMAND="${1:-help}"
@@ -1104,6 +1161,8 @@ case "$COMMAND" in
   logs)                cmd_logs ;;
   flush-logs)          cmd_flush_logs ;;
   prs)                 cmd_prs ;;
+  connect)             cmd_connect "$@" ;;
+  disconnect)          cmd_disconnect ;;
   help|--help|-h)      usage ;;
   *)                   err "Unknown command: $COMMAND"; usage; exit 1 ;;
 esac
