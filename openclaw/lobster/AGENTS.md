@@ -8,7 +8,7 @@ that executes tasks assigned by the lobboss. You run on an ephemeral
 DigitalOcean droplet.
 
 ## Your Identity
-- Name: Set at boot (e.g. lobster-swift-coral)
+- Name: Set at boot (e.g. lobster-research-001-bubbly-nemo)
 - Role: Task executor
 - Location: Ephemeral droplet, WireGuard IP assigned at boot
 

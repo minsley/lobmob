@@ -18,7 +18,7 @@ $WgDir = "C:\Program Files\WireGuard\Data\Configurations"
 $WgConf = Join-Path $WgDir "lobmob.conf.dpapi"
 $WgConfPlain = Join-Path $env:TEMP "lobmob.conf"
 $ClientIP = "10.0.0.100"
-$WebUrl = "http://10.0.0.1:8080"
+$WebUrl = ""  # resolved after lobboss IP is known
 
 function Log($msg)  { Write-Host "[lobmob] $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "[lobmob] $msg" -ForegroundColor Yellow }
@@ -176,7 +176,11 @@ if (-not $connected) {
 
 # --- Step 4: Open web UI ---
 Log "Step 4 - Web UI"
+$lobbossIP = Get-LobbossIP
+if (-not $lobbossIP) { $lobbossIP = "10.0.0.1" }
+$WebUrl = "https://$lobbossIP"
 try {
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
     $health = Invoke-WebRequest -Uri "$WebUrl/health" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
     if ($health.StatusCode -eq 200) {
         Write-Host "  [ok] Web UI reachable" -ForegroundColor Green

@@ -28,8 +28,8 @@ Idle lobsters are powered off to standby (~1-2 min wake) instead of destroyed.
 ```bash
 ./scripts/lobmob pool                            # show pool config and state
 ./scripts/lobmob pool active 2 standby 3         # adjust pool sizes
-./scripts/lobmob sleep-lobster lobster-swift-coral      # power off a lobster to standby
-./scripts/lobmob wake-lobster lobster-swift-coral       # wake a standby lobster
+./scripts/lobmob sleep-lobster lobster-swe-001-salty-squidward      # power off a lobster to standby
+./scripts/lobmob wake-lobster lobster-swe-001-salty-squidward       # wake a standby lobster
 ```
 
 The `lobmob-pool-manager` runs every 5 minutes on lobboss and automatically:
@@ -45,7 +45,7 @@ Check pool manager logs: `ssh root@<lobboss-ip> tail -f /var/log/lobmob-pool-man
 Prefer sleeping over tearing down — sleeping preserves the disk for fast wake.
 
 ```bash
-./scripts/lobmob teardown lobster-swift-coral          # permanently destroy a lobster
+./scripts/lobmob teardown lobster-swe-001-salty-squidward          # permanently destroy a lobster
 ./scripts/lobmob teardown-all                     # destroy all lobsters
 ./scripts/lobmob cleanup                          # pool-aware cleanup (sleep idle, destroy excess)
 ```
@@ -115,7 +115,7 @@ Then open `vault-local/` in Obsidian.
 
 ```bash
 ./scripts/lobmob ssh-lobster 10.0.0.3         # by WireGuard IP
-./scripts/lobmob ssh-lobster lobster-swift-coral      # by lobster ID (resolved via registry)
+./scripts/lobmob ssh-lobster lobster-swe-001-salty-squidward      # by lobster ID (resolved via registry)
 ```
 
 ## Event Logging
@@ -124,8 +124,8 @@ All operational events (spawns, sleeps, wakes, destroys, convergence) are logged
 
 **Log format:**
 ```
-2026-02-07T03:14:00+00:00 [spawn] lobster-swift-coral droplet=549933580 wg_ip=10.0.0.9
-2026-02-07T03:20:00+00:00 [sleep] lobster-swift-coral droplet=549933580
+2026-02-07T03:14:00+00:00 [spawn] lobster-swe-001-salty-squidward droplet=549933580 wg_ip=10.0.0.9
+2026-02-07T03:20:00+00:00 [sleep] lobster-swe-001-salty-squidward droplet=549933580
 2026-02-07T03:25:00+00:00 [converge] active=2 standby=1 total=3
 ```
 

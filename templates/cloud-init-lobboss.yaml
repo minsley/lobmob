@@ -102,7 +102,11 @@ write_files:
       const { readFileSync, writeFileSync, existsSync } = require('fs');
       const { execSync } = require('child_process');
 
-      const PORT = 8080;
+      const CERT_DIR = '/etc/lobmob/certs';
+      const CERT_FILE = CERT_DIR + '/cert.pem';
+      const KEY_FILE = CERT_DIR + '/key.pem';
+      const HAS_CERTS = existsSync(CERT_FILE) && existsSync(KEY_FILE);
+      const PORT = HAS_CERTS ? 443 : 8080;
       const ENV_FILE = '/etc/lobmob/secrets.env';
       const WEB_ENV = '/etc/lobmob/web.env';
 
@@ -297,7 +301,7 @@ write_files:
           provisioning: '<span class="badge badge-yellow"><span class="dot dot-yellow"></span>Provisioning</span>',
           error: '<span class="badge badge-red"><span class="dot dot-red"></span>Error</span>',
         };
-        return map[status] || `<span class="badge">${'$'}{status}</span>`;
+        return map[status] || `<span class="badge">$${status}</span>`;
       }
 
       function dashboardHtml(statusText) {
@@ -311,19 +315,19 @@ write_files:
         if (lobsters.length > 0) {
           const rows = lobsters.map(l => `
             <tr>
-              <td style="font-weight:500">${'$'}{esc(l.name)}</td>
-              <td>${'$'}{statusBadge(l.status)}</td>
-              <td style="color:var(--text-muted)">${'$'}{esc(l.info)}</td>
+              <td style="font-weight:500">$${esc(l.name)}</td>
+              <td>$${statusBadge(l.status)}</td>
+              <td style="color:var(--text-muted)">$${esc(l.info)}</td>
             </tr>`).join('');
           fleetSection = `
             <div class="fleet-table-wrap">
               <table class="fleet-table">
                 <thead><tr><th>Name</th><th>Status</th><th>Details</th></tr></thead>
-                <tbody>${'$'}{rows}</tbody>
+                <tbody>$${rows}</tbody>
               </table>
             </div>`;
         } else {
-          fleetSection = `<div class="status-raw" id="fleet-raw">${'$'}{esc(statusText)}</div>`;
+          fleetSection = `<div class="status-raw" id="fleet-raw">$${esc(statusText)}</div>`;
         }
 
         return `<!DOCTYPE html>
@@ -332,7 +336,7 @@ write_files:
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>lobmob — Fleet Dashboard</title>
-        <style>${'$'}{CSS}</style>
+        <style>$${CSS}</style>
       </head>
       <body>
         <div class="container">
@@ -349,12 +353,12 @@ write_files:
           <div class="grid">
             <div class="card">
               <div class="card-label">Fleet Size</div>
-              <div class="card-value">${'$'}{totalCount || '—'}</div>
-              <div class="card-sub">${'$'}{activeCount} active</div>
+              <div class="card-value">$${totalCount || '—'}</div>
+              <div class="card-sub">$${activeCount} active</div>
             </div>
             <div class="card">
               <div class="card-label">Uptime</div>
-              <div class="card-value">${'$'}{uptime}</div>
+              <div class="card-value">$${uptime}</div>
               <div class="card-sub">lobboss process</div>
             </div>
             <div class="card">
@@ -366,7 +370,7 @@ write_files:
 
           <div class="section">
             <div class="section-title">🦞 Fleet Status</div>
-            ${'$'}{fleetSection}
+            $${fleetSection}
             <p class="refresh-note" style="margin-top:12px">Auto-refreshes every 30s · <a href="/api/status" style="color:var(--blue);text-decoration:none">API</a></p>
           </div>
 
@@ -404,7 +408,7 @@ write_files:
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>lobmob — OAuth Complete</title>
-        <style>${'$'}{CSS}</style>
+        <style>$${CSS}</style>
       </head>
       <body>
         <div class="container" style="display:flex;align-items:center;justify-content:center;min-height:80vh">
@@ -426,7 +430,7 @@ write_files:
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>lobmob — 404</title>
-        <style>${'$'}{CSS}</style>
+        <style>$${CSS}</style>
       </head>
       <body>
         <div class="container" style="display:flex;align-items:center;justify-content:center;min-height:80vh">
@@ -441,7 +445,7 @@ write_files:
       </html>`;
       }
 
-      const server = http.createServer(async (req, res) => {
+      const handler = async (req, res) => {
         const url = new URL(req.url, `http://$${req.headers.host}`);
 
         if (url.pathname === '/health') {
@@ -464,7 +468,8 @@ write_files:
           if (!clientId) {
             res.writeHead(500); res.end('DO_OAUTH_CLIENT_ID not configured in web.env'); return;
           }
-          const callbackUrl = `http://$${req.headers.host}/oauth/digitalocean/callback`;
+          const proto = HAS_CERTS ? "https" : "http";
+          const callbackUrl = proto + "://" + req.headers.host + "/oauth/digitalocean/callback";
           const authUrl = `https://cloud.digitalocean.com/v1/oauth/authorize?response_type=code&client_id=$${clientId}&redirect_uri=$${encodeURIComponent(callbackUrl)}&scope=read+write`;
           res.writeHead(302, { Location: authUrl });
           res.end();
@@ -475,7 +480,8 @@ write_files:
           const code = url.searchParams.get('code');
           if (!code) { res.writeHead(400); res.end('Missing code parameter'); return; }
           const webEnv = loadEnv(WEB_ENV);
-          const callbackUrl = `http://$${req.headers.host}/oauth/digitalocean/callback`;
+          const proto = HAS_CERTS ? "https" : "http";
+          const callbackUrl = proto + "://" + req.headers.host + "/oauth/digitalocean/callback";
           try {
             const tokenRes = await httpsPost('https://cloud.digitalocean.com/v1/oauth/token', {
               grant_type: 'authorization_code',
@@ -507,7 +513,16 @@ write_files:
         res.writeHead(404, { 'Content-Type': 'text/html' }); res.end(notFoundHtml());
       });
 
-      server.listen(PORT, '${wg_subnet}.1', () => console.log(`lobmob-web listening on ${wg_subnet}.1:$${PORT} (WireGuard only)`));
+      };
+
+      const server = HAS_CERTS
+        ? https.createServer({ cert: readFileSync(CERT_FILE), key: readFileSync(KEY_FILE) }, handler)
+        : http.createServer(handler);
+
+      server.listen(PORT, '0.0.0.0', () => {
+        const proto = HAS_CERTS ? "https" : "http";
+        console.log(`lobmob-web listening on $${proto}://0.0.0.0:$${PORT}`);
+      });
 
   # Web UI systemd service
   - path: /etc/systemd/system/lobmob-web.service
@@ -527,6 +542,59 @@ write_files:
 
       [Install]
       WantedBy=multi-user.target
+
+  # TLS certificate management via Let's Encrypt IP certs (lego)
+  - path: /usr/local/bin/lobmob-cert
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      CERT_DIR="/etc/lobmob/certs"
+      LEGO_DIR="/etc/lobmob/lego"
+      EMAIL="$${ALERT_EMAIL:-admin@lobmob.swarm}"
+      mkdir -p "$$CERT_DIR" "$$LEGO_DIR"
+
+      # Get the reserved (public) IP
+      PUBLIC_IP=$(curl -s http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
+      if [ -z "$$PUBLIC_IP" ]; then
+        echo "ERROR: Could not determine public IP" >&2
+        exit 1
+      fi
+
+      # Install lego if not present
+      if ! command -v lego >/dev/null 2>&1; then
+        LEGO_VERSION="4.21.0"
+        curl -fsSL "https://github.com/go-acme/lego/releases/download/v$${LEGO_VERSION}/lego_v$${LEGO_VERSION}_linux_amd64.tar.gz" \
+          | tar -xz -C /usr/local/bin lego
+        echo "lego installed"
+      fi
+
+      # Issue or renew certificate
+      if [ -f "$$LEGO_DIR/certificates/$$PUBLIC_IP.crt" ]; then
+        lego --path "$$LEGO_DIR" \
+          --email "$$EMAIL" --accept-tos \
+          --domains "$$PUBLIC_IP" --disable-cn \
+          --http --http.port :80 \
+          renew --days 3 --profile shortlived 2>&1 || true
+      else
+        lego --path "$$LEGO_DIR" \
+          --email "$$EMAIL" --accept-tos \
+          --domains "$$PUBLIC_IP" --disable-cn \
+          --http --http.port :80 \
+          run --profile shortlived 2>&1
+      fi
+
+      # Copy certs to the expected location
+      if [ -f "$$LEGO_DIR/certificates/$$PUBLIC_IP.crt" ]; then
+        cp "$$LEGO_DIR/certificates/$$PUBLIC_IP.crt" "$$CERT_DIR/cert.pem"
+        cp "$$LEGO_DIR/certificates/$$PUBLIC_IP.key" "$$CERT_DIR/key.pem"
+        chmod 600 "$$CERT_DIR/key.pem"
+        # Restart web server to pick up new certs
+        systemctl restart lobmob-web 2>/dev/null || true
+        echo "Certificate issued/renewed for $$PUBLIC_IP"
+      else
+        echo "WARNING: No certificate found after lego run" >&2
+      fi
 
   # DO OAuth token refresh script -- run by cron every 25 days
   - path: /usr/local/bin/lobmob-refresh-do-token
@@ -762,17 +830,22 @@ write_files:
       source /etc/lobmob/env
       source /etc/lobmob/secrets.env
 
-      # Friendly name generator (adjective-noun, ocean themed)
-      _ADJECTIVES=(swift bold red blue deep calm wild dark warm cold bright quick keen sly old rusty dusty lucky foggy lazy)
-      _NOUNS=(coral kelp reef tide wave crab shell pearl surf foam sand drift fin cove orca bass pike sole shrimp squid)
+      # Name generator — lobster-TYPE-NNN-adjective-name
+      # Water-themed characters, puns, and pop culture references
+      _ADJECTIVES=(salty briny bubbly soggy drippy splashy crusty sandy misty foamy breezy stormy slippery barnacled sunken rusty mossy silky shiny drifty)
+      _NAMES=(squidward patrick sandy nemo dory marlin ariel flounder moana maui poseidon triton gilligan skipper wanda finn bubbles coral sheldon neptune)
       _gen_name() {
+        local type="$${1:-research}"
         local adj=$${_ADJECTIVES[RANDOM % $${#_ADJECTIVES[@]}]}
-        local noun=$${_NOUNS[RANDOM % $${#_NOUNS[@]}]}
-        echo "$${adj}-$${noun}"
+        local name=$${_NAMES[RANDOM % $${#_NAMES[@]}]}
+        # Get next sequential number for this type
+        local count=$(doctl compute droplet list --tag-name "$${LOBSTER_TAG}-type-$${type}" --format ID --no-header 2>/dev/null | wc -l)
+        local num=$(printf "%03d" $$((count + 1)))
+        echo "$${type}-$${num}-$${adj}-$${name}"
       }
-      LOBSTER_ID="$${1:-$$(_gen_name)}"
-      WG_IP="$${2:-}"
       LOBSTER_TYPE="$${3:-research}"
+      LOBSTER_ID="$${1:-$$(_gen_name $$LOBSTER_TYPE)}"
+      WG_IP="$${2:-}"
 
       # SWE/QA lobsters need at least 2GB RAM (Opus model + dev tools OOM on 1GB)
       SPAWN_SIZE="$$LOBSTER_SIZE"
@@ -1855,4 +1928,7 @@ runcmd:
 
   # GitHub auth refresh cron -- every 45 minutes
   - echo "*/45 * * * * root /usr/local/bin/lobmob-refresh-gh-auth >> /var/log/lobmob-gh-refresh.log 2>&1" >> /etc/crontab
+
+  # TLS cert renewal cron -- every 4 days (certs last 6 days)
+  - echo "0 3 */4 * * root /usr/local/bin/lobmob-cert >> /var/log/lobmob-cert.log 2>&1" >> /etc/crontab
 

@@ -29,7 +29,7 @@ Checks: SSH reachable, cloud-init complete, WireGuard up, tools installed (gh, d
 
 ```bash
 tests/smoke-lobster 10.0.0.3           # by WireGuard IP
-tests/smoke-lobster lobster-swift-coral  # by lobster name (resolved via fleet registry)
+tests/smoke-lobster lobster-swe-001-salty-squidward  # by lobster name (resolved via fleet registry)
 ```
 
 Checks: WireGuard ping (from lobboss), SSH (via ProxyJump), WireGuard interface, tools (gh, node, openclaw), secrets, vault, OpenClaw config, AGENTS.md, git identity.

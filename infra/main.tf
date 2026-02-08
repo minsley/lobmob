@@ -47,6 +47,19 @@ resource "digitalocean_firewall" "lobboss" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
+  # HTTPS (web dashboard)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # HTTP (Let's Encrypt ACME http-01 challenge only)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "80"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
 
   # All outbound
   outbound_rule {

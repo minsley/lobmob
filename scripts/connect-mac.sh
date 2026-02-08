@@ -12,7 +12,7 @@ SECRETS_FILE="$LOBMOB_DIR/secrets.env"
 SSH_KEY="${LOBMOB_SSH_KEY:-$HOME/.ssh/lobmob_ed25519}"
 WG_CONF="/etc/wireguard/lobmob.conf"
 CLIENT_IP="10.0.0.100"
-WEB_URL="http://10.0.0.1:8080"
+WEB_URL=""  # resolved after lobboss IP is known
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[lobmob]${NC} $*"; }
@@ -128,12 +128,17 @@ done
 
 # --- Step 4: Open web UI ---
 log "Step 4 — Web UI"
-if curl -s -o /dev/null -w "%{http_code}" "$WEB_URL/health" 2>/dev/null | grep -q 200; then
+LOBBOSS_IP=$(get_lobboss_ip)
+if [ -z "$LOBBOSS_IP" ]; then
+  LOBBOSS_IP=$(grep Endpoint "$WG_CONF" 2>/dev/null | head -1 | sed 's/.*= *//;s/:.*//')
+fi
+WEB_URL="https://$LOBBOSS_IP"
+if curl -sk -o /dev/null -w "%{http_code}" "$WEB_URL/health" 2>/dev/null | grep -q 200; then
   echo -e "  ${GREEN}✓${NC} Web UI reachable"
   log "Opening $WEB_URL ..."
   open "$WEB_URL"
 else
-  warn "Web UI not responding at $WEB_URL (lobboss may still be starting)"
+  warn "Web UI not responding at $WEB_URL (may need cert setup first)"
   warn "Try: open $WEB_URL"
 fi
 
