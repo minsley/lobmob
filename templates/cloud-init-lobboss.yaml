@@ -1434,6 +1434,25 @@ write_files:
         if [ "$STATUS" = "off" ]; then
           STANDBY+=("$NAME")
         elif [ "$STATUS" = "active" ]; then
+          # Skip lobsters still setting up (no config-version = spawn incomplete)
+          WG_IP=$(wg show wg0 allowed-ips 2>/dev/null | while read -r PK ALLOWED; do
+            IP=$$(echo "$$ALLOWED" | cut -d/ -f1)
+            RID=$$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
+              "root@$$IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
+            if echo "$$NAME" | grep -q "$$RID" 2>/dev/null && [ -n "$$RID" ]; then echo "$$IP"; break; fi
+          done)
+          if [ -n "$$WG_IP" ]; then
+            READY=$$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
+              "root@$$WG_IP" "test -f /etc/lobmob/config-version && echo yes || echo no" 2>/dev/null || echo "no")
+            if [ "$$READY" != "yes" ]; then
+              echo "Skipping $NAME (still provisioning)"
+              continue
+            fi
+          else
+            echo "Skipping $NAME (not reachable over WG — likely still booting)"
+            continue
+          fi
+
           # Check if busy (has active task in vault)
           BUSY=0
           if ls /opt/vault/010-tasks/active/*"$NAME"* 2>/dev/null | grep -q .; then
@@ -1659,27 +1678,47 @@ write_files:
       STANDBY=()
       TOTAL=0
 
+      # Pull vault once for task checks
+      cd /opt/vault 2>/dev/null && git pull origin main --quiet 2>/dev/null || true
+
       while read -r ID NAME STATUS; do
         [ -z "$ID" ] && continue
         TOTAL=$((TOTAL + 1))
         if [ "$STATUS" = "off" ]; then
           STANDBY+=("$NAME")
         elif [ "$STATUS" = "active" ]; then
+          # Skip lobsters still setting up (no config-version = spawn incomplete)
+          # Use ping + SSH to check readiness without scanning all WG peers
+          LOBSTER_READY=0
+          LOBSTER_SHORT=$$(echo "$$NAME" | sed 's/^lobster-//')
+          for PEER_IP in $$(wg show wg0 allowed-ips 2>/dev/null | awk '{print $$2}' | cut -d/ -f1); do
+            RID=$$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
+              "root@$$PEER_IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
+            if [ -n "$$RID" ] && echo "$$NAME" | grep -q "$$RID"; then
+              if ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
+                "root@$$PEER_IP" "test -f /etc/lobmob/config-version" 2>/dev/null; then
+                LOBSTER_READY=1
+              fi
+              break
+            fi
+          done
+          if [ "$$LOBSTER_READY" -eq 0 ]; then
+            echo "  Skipping $$NAME (still provisioning or unreachable)"
+            continue
+          fi
+
           # Check if lobster is busy (assigned to an active task in vault)
           BUSY=0
-          cd /opt/vault 2>/dev/null && git pull origin main --quiet 2>/dev/null || true
-          # Look for task files mentioning this lobster with status: active
-          LOBSTER_SHORT=$(echo "$NAME" | sed 's/^lobster-//')
-          if grep -rl "$LOBSTER_SHORT" /opt/vault/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
+          if grep -rl "$$LOBSTER_SHORT" /opt/vault/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
             BUSY=1
           fi
-          if [ "$BUSY" -eq 1 ]; then
-            ACTIVE_BUSY+=("$NAME")
+          if [ "$$BUSY" -eq 1 ]; then
+            ACTIVE_BUSY+=("$$NAME")
           else
-            ACTIVE_IDLE+=("$NAME")
+            ACTIVE_IDLE+=("$$NAME")
           fi
         fi
-      done <<< "$DROPLETS"
+      done <<< "$$DROPLETS"
 
       BUSY_COUNT=$${#ACTIVE_BUSY[@]}
       IDLE_COUNT=$${#ACTIVE_IDLE[@]}
