@@ -473,7 +473,15 @@ write_files:
       source /etc/lobmob/env
       source /etc/lobmob/secrets.env
 
-      LOBSTER_ID="$${1:-$(openssl rand -hex 4)}"
+      # Friendly name generator (adjective-noun, ocean themed)
+      _ADJECTIVES=(swift bold red blue deep calm wild dark warm cold bright quick keen sly old rusty dusty lucky foggy lazy)
+      _NOUNS=(coral kelp reef tide wave crab shell pearl surf foam sand drift fin cove orca bass pike sole shrimp squid)
+      _gen_name() {
+        local adj=$${_ADJECTIVES[RANDOM % $${#_ADJECTIVES[@]}]}
+        local noun=$${_NOUNS[RANDOM % $${#_NOUNS[@]}]}
+        echo "$${adj}-$${noun}"
+      }
+      LOBSTER_ID="$${1:-$$(_gen_name)}"
       WG_IP="$${2:-}"
 
       if [ -z "$WG_IP" ]; then

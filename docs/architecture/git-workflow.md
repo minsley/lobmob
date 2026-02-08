@@ -12,8 +12,8 @@ lobster-{id}/task-{task-id}
 ```
 
 One branch per task. Examples:
-- `lobster-a3f1/task-2026-02-05-a1b2`
-- `lobster-07cc/task-2026-02-05-c3d4`
+- `lobster-swift-coral/task-2026-02-05-a1b2`
+- `lobster-bold-reef/task-2026-02-05-c3d4`
 
 ## Flow
 
@@ -47,7 +47,7 @@ One branch per task. Examples:
 ```markdown
 ## Task
 - **ID**: task-2026-02-05-a1b2
-- **Lobster**: lobster-a3f1
+- **Lobster**: lobster-swift-coral
 - **Completed**: 2026-02-05T15:30:00Z
 
 ## Results Summary
