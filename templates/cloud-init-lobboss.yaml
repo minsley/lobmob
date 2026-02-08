@@ -396,6 +396,9 @@ write_files:
       # Push secrets to lobster via SSH over WireGuard
       echo "Pushing secrets to lobster via SSH..."
 
+      # Clear stale known_hosts entry (WireGuard IPs get reused across spawns)
+      ssh-keygen -f /root/.ssh/known_hosts -R "$WG_IP" 2>/dev/null || true
+
       # Write secrets.env
       ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<SECRETS
       GH_TOKEN=$GH_TOKEN
