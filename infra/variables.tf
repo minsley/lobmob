@@ -41,3 +41,8 @@ variable "project_name" {
   type        = string
   default     = "lobmob"
 }
+
+variable "alert_email" {
+  description = "Email address for monitoring alerts"
+  type        = string
+}

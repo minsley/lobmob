@@ -295,7 +295,7 @@ write_files:
         source /etc/lobmob/env
       fi
 
-      if [ -n "\${LOBSTER_ID:-}" ]; then
+      if [ -n "\$${LOBSTER_ID:-}" ]; then
         LOG_SUBDIR="020-logs/lobsters/lobster-\$LOBSTER_ID"
         COMMIT_PREFIX="[lobster-\$LOBSTER_ID]"
       else
