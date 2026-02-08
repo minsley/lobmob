@@ -9,6 +9,11 @@ priority: normal
 tags: []
 estimate:
 model:
+type: research
+repo: vault
+related_task:
+pr_number:
+requires_qa: false
 ---
 
 # {{title}}

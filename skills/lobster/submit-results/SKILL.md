@@ -8,9 +8,21 @@ description: Package completed task results into a PR and announce on Discord
 When you have completed a task, use this skill to deliver your results.
 
 ## Prerequisites
-- All result files written to `/opt/vault/` in the correct locations
+- All result files written to the appropriate location
 - Task file frontmatter updated with `status: completed` and `completed_at`
 - Work log entry appended to `020-logs/lobsters/<your-lobster-id>/<date>.md`
+
+## Multi-Repo Tasks (SWE/QA)
+
+If the task has `repo:` set to something other than `vault` (e.g. `lobmob`), you'll have **two PRs**:
+1. **Code PR** — your actual code changes, pushed to the target repo's `develop` branch (see the `code-task` or `verify-task` skill)
+2. **Vault PR** — task file update with results and code PR link, pushed to vault `main`
+
+Create the Code PR first (via the code-task skill), then follow the steps below for the Vault PR. Reference the Code PR URL in the vault task file's Result section.
+
+## Vault-Only Tasks (Research)
+
+For standard research/writing tasks where `repo: vault`, follow all steps below as normal — there's only one PR.
 
 ## Steps
 

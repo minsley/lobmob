@@ -21,23 +21,34 @@ When a new message arrives in **#task-queue**:
 
 ### Phase 2 — Propose
 
-1. Draft task details from the request: title, objective, acceptance criteria, priority, tags, estimate (minutes), model
+1. Draft task details from the request: title, objective, acceptance criteria, priority, tags, estimate (minutes), model, type, repo
+   - **Type:** Determine the lobster type needed:
+     - `research` — research, writing, documentation, analysis (default)
+     - `swe` — code changes, features, bug fixes, refactoring
+     - `qa` — code review, testing, verification of SWE PRs
+   - **Repo:** Determine where the work happens:
+     - `vault` — work lives in the vault repo (default for research tasks)
+     - `lobmob` — code changes to the lobmob project itself (default for SWE tasks)
+     - `owner/repo` — arbitrary GitHub repo
    - **Estimate:** If the user provides a time estimate, use it. Otherwise, generate your own based on task complexity. Use round numbers: 15, 30, 45, 60, 90, 120, 180, 240
-   - **Model:** If the user specifies a model, use it. Otherwise, choose based on the task:
-     - `anthropic/claude-opus-4-6` — complex coding, architecture, multi-file refactors
-     - `anthropic/claude-sonnet-4-5` — standard coding tasks, analysis, most work (default)
-     - `anthropic/claude-haiku-4-5` — simple/mechanical tasks, formatting, data entry
+   - **Model:** If the user specifies a model, use it. Otherwise, infer from type:
+     - `swe` tasks default to `anthropic/claude-opus-4-6`
+     - `research` and `qa` tasks default to `anthropic/claude-sonnet-4-5`
+     - `anthropic/claude-haiku-4-5` — only for simple/mechanical tasks
      - Non-Anthropic models (e.g. `openai/o3`, `google/gemini-2.5-pro`) are also supported if appropriate
+   - **requires_qa:** Set to `true` for SWE tasks that change important code. Set to `false` for minor changes.
 2. Post a **Task Proposal** as a top-level message in **#task-queue**:
 
 ```
 **[lobboss]** **Task Proposal**
 
 > **Title:** <title>
+> **Type:** <research|swe|qa> → **Repo:** <vault|lobmob|owner/repo>
 > **Priority:** <priority>
 > **Tags:** <tag1>, <tag2>
 > **Estimate:** <N> min
 > **Model:** <model>
+> **QA Required:** <yes|no>
 >
 > **Objective**
 > <objective text>
@@ -72,6 +83,9 @@ priority: <priority>
 tags: [<tags>]
 estimate: <minutes>
 model: <model>
+type: <research|swe|qa>
+repo: <vault|lobmob|owner/repo>
+requires_qa: <true|false>
 discord_thread_id: <thread-id>
 ---
 
@@ -108,22 +122,23 @@ _Pending_
 
 ### Choosing a Lobster
 
-Pick the best available lobster using this priority order:
+Read the task's `type` field. **Only consider lobsters of the matching type.** Check lobster types by reading their `/etc/lobmob/env` via SSH or by querying DO tags (`lobmob-type-<type>`).
 
-1. **Active-idle lobster** — running, no current task. Immediate assignment.
+Pick the best available lobster of the correct type using this priority order:
+
+1. **Active-idle lobster** — running, no current task, correct type. Immediate assignment.
    - If multiple are idle, prefer one already configured with the task's model.
 
-2. **Active-busy lobster** — running, already working on a task. May accept a second task if ALL of these are true:
+2. **Active-busy lobster** — running, correct type, already on a task. May accept a second task if ALL:
    - The lobster's current model matches the new task's model (no model switch mid-task).
-   - The lobster's current task has an `estimate` of **30 min or less**, OR you judge based on progress posts that the remaining work is under ~2 minutes (i.e. less than the time to wake a standby lobster).
-   - If neither condition is met, the lobster is too busy — skip it.
+   - The lobster's current task has an `estimate` of **30 min or less**, OR you judge based on progress posts that the remaining work is under ~2 minutes.
+   - If neither condition is met, skip it.
 
-3. **Standby lobster** — powered off, wake takes ~1-2 minutes. Run `lobmob-wake-lobster <name>` and assign once it's ready.
-   - Prefer waking a lobster that was last configured with the task's model.
+3. **Standby lobster** — powered off, correct type. Run `lobmob-wake-lobster <name>` (~1-2 min).
+   - Prefer one last configured with the task's model.
 
-4. **Spawn a new lobster** — takes 5-8 minutes. Only do this if:
-   - No idle or standby lobsters exist, OR
-   - All pool lobsters are busy with long tasks and none match the task's model.
+4. **Spawn a new lobster** — takes 5-8 minutes. Run `lobmob-spawn-lobster <name> '' <type>`.
+   - Only if no idle or standby lobsters of the correct type exist.
    - Respect `MAX_LOBSTERS` — if at the limit, the task must wait.
 
 ### Configuring the Model
@@ -145,7 +160,7 @@ ssh -i /root/.ssh/lobster_admin root@<wg_ip> \
 2. Commit and push to main
 3. Post in the **task's thread** (read `discord_thread_id` from the task file):
    ```
-   **[lobboss]** Assigned to **lobster-<id>** (model: <model>).
+   **[lobboss]** Assigned to **lobster-<id>** (type: <type>, model: <model>, repo: <repo>).
    @lobster-<id> — pull main and read `010-tasks/active/<task-id>.md` for details.
    ```
 
