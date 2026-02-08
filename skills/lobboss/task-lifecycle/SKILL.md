@@ -21,7 +21,10 @@ When a new message arrives in **#task-queue**:
 
 ### Phase 2 — Propose
 
-1. Draft task details from the request: title, objective, acceptance criteria, priority, tags
+1. Draft task details from the request: title, objective, acceptance criteria, priority, tags, estimate (minutes)
+   - If the user provides a time estimate, use it
+   - If not, generate your own estimate based on the task complexity (in minutes)
+   - Use round numbers: 15, 30, 45, 60, 90, 120, 180, 240
 2. Post a **Task Proposal** as a top-level message in **#task-queue**:
 
 ```
@@ -30,6 +33,7 @@ When a new message arrives in **#task-queue**:
 > **Title:** <title>
 > **Priority:** <priority>
 > **Tags:** <tag1>, <tag2>
+> **Estimate:** <N> min
 >
 > **Objective**
 > <objective text>
@@ -62,6 +66,7 @@ assigned_at:
 completed_at:
 priority: <priority>
 tags: [<tags>]
+estimate: <minutes>
 discord_thread_id: <thread-id>
 ---
 
@@ -118,15 +123,18 @@ When you check on tasks (periodically or when prompted), look for stalled tasks:
 
 For each task in `010-tasks/active/` with `status: active`:
 
-1. Read `assigned_at` from the frontmatter
+1. Read `assigned_at` and `estimate` from the frontmatter
 2. Calculate elapsed time since assignment
-3. Check for an open PR:
+3. Determine timeout thresholds:
+   - If `estimate` is set: **warning** at `estimate + 15` min, **failure** at `estimate * 2` min
+   - If `estimate` is empty: **warning** at 45 min, **failure** at 90 min (defaults)
+4. Check for an open PR:
    ```bash
    gh pr list --state open --json number,title,headRefName | grep "<task-id>"
    ```
    If a PR exists, the lobster is in submit/review phase — do not flag as timed out.
 
-4. **Warning (45+ minutes, no PR, no recent PROGRESS post)**:
+5. **Warning (elapsed > warning threshold, no PR, no recent PROGRESS post)**:
    Post in the **task's thread**:
    ```
    **[lobboss]** Timeout warning: Task <task-id> has been active for <N> minutes with no recent progress from <lobster-id>.
@@ -137,7 +145,7 @@ For each task in `010-tasks/active/` with `status: active`:
    **[lobboss]** Timeout warning: <task-id> assigned to <lobster-id> for <N> min, no progress.
    ```
 
-5. **Failure (90+ minutes, no PR)**:
+6. **Failure (elapsed > failure threshold, no PR)**:
    SSH to the lobster to check if it's still working:
    ```bash
    ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
