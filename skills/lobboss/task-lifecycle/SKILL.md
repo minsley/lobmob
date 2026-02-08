@@ -267,6 +267,33 @@ Your job after the PR is merged (via the `review-prs` skill):
 3. Commit and push
 4. Post in the **task's thread**: `**[lobboss]** Task complete. PR merged.`
 
+## Auto-Creating QA Verification Tasks
+
+When a SWE lobster opens a PR and announces it in the task thread:
+
+1. Read the original SWE task file. Check the `requires_qa` field.
+2. If `requires_qa: true` (or the task involves important code changes):
+   a. Create a new QA task using the standard task creation flow (Phase 3), with:
+      ```yaml
+      type: qa
+      repo: <same repo as the SWE task>
+      related_task: <swe-task-id>
+      pr_number: <the PR number from the SWE lobster's announcement>
+      model: anthropic/claude-sonnet-4-5
+      ```
+      Title: `Verify: <original task title>`
+      Objective: `Review and test PR #<number> from <swe-lobster-id>.`
+      Acceptance criteria: Code review completed, tests pass, no security issues, verification report posted.
+   b. Assign the QA task to a QA lobster (follow "Choosing a Lobster" with type=qa).
+   c. Post in the **original SWE task's thread**:
+      ```
+      **[lobboss]** QA verification task created: <qa-task-id>
+      Assigning to a QA lobster for review before merge.
+      ```
+3. If `requires_qa: false` — skip QA, proceed directly with your own review via the `review-prs` skill.
+
+**Important:** Do NOT merge the SWE PR until QA completes (if requires_qa is true). Wait for the QA lobster's verification report. If QA reports PASS → merge. If QA reports FAIL → request changes from the SWE lobster.
+
 ## Failing a Task
 
 If a lobster reports failure or times out:
