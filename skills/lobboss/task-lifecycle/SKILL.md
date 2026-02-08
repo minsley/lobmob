@@ -106,20 +106,44 @@ _Pending_
 
 ## Assigning a Task
 
-1. Choose a lobster — prefer idle lobsters, or spawn a new one if needed
-2. If the task has a `model` set and it differs from the lobster's current model, update the lobster's OpenClaw config before assignment:
-   ```bash
-   ssh -i /root/.ssh/lobster_admin root@<wg_ip> \
-     "jq '.agents.defaults.model.primary = \"<model>\"' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json"
-   ```
-3. Update the task frontmatter:
+### Choosing a Lobster
+
+Pick the best available lobster using this priority order:
+
+1. **Active-idle lobster** — running, no current task. Immediate assignment.
+   - If multiple are idle, prefer one already configured with the task's model.
+
+2. **Active-busy lobster** — running, already working on a task. May accept a second task if ALL of these are true:
+   - The lobster's current model matches the new task's model (no model switch mid-task).
+   - The lobster's current task has an `estimate` of **30 min or less**, OR you judge based on progress posts that the remaining work is under ~2 minutes (i.e. less than the time to wake a standby lobster).
+   - If neither condition is met, the lobster is too busy — skip it.
+
+3. **Standby lobster** — powered off, wake takes ~1-2 minutes. Run `lobmob-wake-lobster <name>` and assign once it's ready.
+   - Prefer waking a lobster that was last configured with the task's model.
+
+4. **Spawn a new lobster** — takes 5-8 minutes. Only do this if:
+   - No idle or standby lobsters exist, OR
+   - All pool lobsters are busy with long tasks and none match the task's model.
+   - Respect `MAX_LOBSTERS` — if at the limit, the task must wait.
+
+### Configuring the Model
+
+If the task has a `model` set and it differs from the chosen lobster's current model, update the lobster's OpenClaw config before assignment:
+```bash
+ssh -i /root/.ssh/lobster_admin root@<wg_ip> \
+  "jq '.agents.defaults.model.primary = \"<model>\"' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json"
+```
+
+### Recording the Assignment
+
+1. Update the task frontmatter:
    ```yaml
    status: active
    assigned_to: lobster-<id>
    assigned_at: <ISO timestamp>
    ```
-4. Commit and push to main
-5. Post in the **task's thread** (read `discord_thread_id` from the task file):
+2. Commit and push to main
+3. Post in the **task's thread** (read `discord_thread_id` from the task file):
    ```
    **[lobboss]** Assigned to **lobster-<id>** (model: <model>).
    @lobster-<id> — pull main and read `010-tasks/active/<task-id>.md` for details.
