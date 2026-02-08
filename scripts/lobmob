@@ -208,6 +208,8 @@ _seed_vault() {
   cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/ 2>/dev/null || true
   cp "$PROJECT_DIR/openclaw/lobboss/AGENTS.md" 040-fleet/lobboss-AGENTS.md 2>/dev/null || true
   cp "$PROJECT_DIR/openclaw/lobster/AGENTS.md" 040-fleet/lobster-AGENTS.md 2>/dev/null || true
+  cp "$PROJECT_DIR/openclaw/lobster-swe/AGENTS.md" 040-fleet/lobster-swe-AGENTS.md 2>/dev/null || true
+  cp "$PROJECT_DIR/openclaw/lobster-qa/AGENTS.md" 040-fleet/lobster-qa-AGENTS.md 2>/dev/null || true
   git add -A
   git commit -m "Add OpenClaw skills for fleet distribution" 2>/dev/null || true
   git push origin main 2>/dev/null || git push -u origin main 2>/dev/null || true

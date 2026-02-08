@@ -347,6 +347,7 @@ write_files:
       fi
       echo "$$GH_AUTH_TOKEN" | gh auth login --with-token
       gh auth setup-git
+      gh config set git_protocol https
       echo "GitHub CLI: authenticated"
 
       # Re-set git identity (gh auth setup-git clobbers .gitconfig)
@@ -484,6 +485,14 @@ write_files:
       LOBSTER_ID="$${1:-$$(_gen_name)}"
       WG_IP="$${2:-}"
       LOBSTER_TYPE="$${3:-research}"
+
+      # SWE/QA lobsters need at least 2GB RAM (Opus model + dev tools OOM on 1GB)
+      SPAWN_SIZE="$$LOBSTER_SIZE"
+      if [ "$$LOBSTER_TYPE" = "swe" ] || [ "$$LOBSTER_TYPE" = "qa" ]; then
+        case "$$SPAWN_SIZE" in
+          s-1vcpu-1gb) SPAWN_SIZE="s-1vcpu-2gb" ;;
+        esac
+      fi
 
       if [ -z "$WG_IP" ]; then
         EXISTING=$(wg show wg0 allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1 | sort -t. -k4 -n | tail -1)
@@ -700,7 +709,7 @@ write_files:
       RESPONSE=$(doctl compute droplet create \
         "lobster-$LOBSTER_ID" \
         --region "$REGION" \
-        --size "$LOBSTER_SIZE" \
+        --size "$SPAWN_SIZE" \
         --image ubuntu-24-04-x64 \
         --ssh-keys "$SSH_KEY_ID" \
         --vpc-uuid "$VPC_UUID" \
@@ -789,6 +798,7 @@ write_files:
       fi
       echo "\$GH_AUTH_TOKEN" | gh auth login --with-token
       gh auth setup-git
+      gh config set git_protocol https
 
       # Re-set git identity (gh auth setup-git clobbers .gitconfig)
       git config --global user.name "lobster-$LOBSTER_ID"
