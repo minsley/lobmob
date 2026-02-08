@@ -108,19 +108,34 @@ write_files:
 
       # Configure OpenClaw
       mkdir -p /root/.openclaw/skills
-      cat > /root/.openclaw/config.json <<OCEOF
-      {
-        "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
-        "anthropicApiKey": "$ANTHROPIC_API_KEY",
-        "channels": {
-          "discord": {
-            "enabled": true,
-            "token": "$DISCORD_BOT_TOKEN"
-          }
-        }
-      }
-      OCEOF
-      chmod 600 /root/.openclaw/config.json
+
+      # Run openclaw onboard (creates openclaw.json)
+      timeout 30 openclaw onboard \
+        --non-interactive --accept-risk --workspace /opt/vault 2>/dev/null || true
+
+      # Create .env
+      echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" > /root/.openclaw/.env
+      chmod 600 /root/.openclaw/.env
+
+      # Ensure openclaw.json exists (fallback if onboard hung)
+      if [ ! -f /root/.openclaw/openclaw.json ]; then
+        echo '{"gateway":{"port":18789,"mode":"local","bind":"loopback"}}' > /root/.openclaw/openclaw.json
+      fi
+
+      # Patch openclaw.json with Discord channels + agent config
+      jq --arg token "$DISCORD_BOT_TOKEN" '{
+        channels: { discord: { enabled: true, token: $token, groupPolicy: "allowlist",
+          guilds: { "467002962456084481": { slug: "mattcave", requireMention: false,
+            reactionNotifications: "own",
+            channels: { "task-queue": {allow:true}, "swarm-control": {allow:true}, "swarm-logs": {allow:true} }
+          }}
+        }},
+        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }},
+        gateway: { port: 18789, mode: "local", bind: "loopback" }
+      } * .' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json
+
+      # Remove old config.json if it exists
+      rm -f /root/.openclaw/config.json
 
       # Copy lobboss skills and AGENTS.md from vault
       cp -r /opt/vault/040-fleet/lobboss-skills/* /root/.openclaw/skills/ 2>/dev/null || true
@@ -131,6 +146,32 @@ write_files:
         ssh-keygen -t ed25519 -C "lobboss-to-lobster" -f /root/.ssh/lobster_admin -N "" -q
         echo "SSH keypair for lobster access: generated"
       fi
+
+      # Write systemd service for OpenClaw gateway
+      cat > /etc/systemd/system/openclaw-gateway.service <<'SVCEOF'
+      [Unit]
+      Description=OpenClaw Gateway
+      After=network.target wg-quick@wg0.service
+      Wants=wg-quick@wg0.service
+
+      [Service]
+      Type=simple
+      WorkingDirectory=/opt/vault
+      EnvironmentFile=/root/.openclaw/.env
+      ExecStart=/usr/bin/env openclaw gateway --port 18789
+      Restart=on-failure
+      RestartSec=10
+      StandardOutput=append:/var/log/openclaw-gateway.log
+      StandardError=append:/var/log/openclaw-gateway.log
+
+      [Install]
+      WantedBy=multi-user.target
+      SVCEOF
+      systemctl daemon-reload
+      systemctl enable openclaw-gateway
+      systemctl start openclaw-gateway
+
+      echo "OpenClaw: configured and gateway started"
 
       # Remove provision marker
       rm -f /etc/lobmob/.awaiting-secrets
@@ -285,6 +326,28 @@ write_files:
       # Flush cron -- every 15 minutes
       echo "*/15 * * * * root /usr/local/bin/lobmob-flush-logs >> /var/log/lobmob-flush.log 2>&1" >> /etc/crontab
 
+      # Systemd service for OpenClaw gateway (started after secrets provisioned)
+      cat > /etc/systemd/system/openclaw-gateway.service <<'SVCEOF'
+      [Unit]
+      Description=OpenClaw Gateway
+      After=network.target wg-quick@wg0.service
+      Wants=wg-quick@wg0.service
+
+      [Service]
+      Type=simple
+      WorkingDirectory=/opt/vault
+      EnvironmentFile=/root/.openclaw/.env
+      ExecStart=/usr/bin/env openclaw gateway --port 18789
+      Restart=on-failure
+      RestartSec=10
+      StandardOutput=append:/var/log/openclaw-gateway.log
+      StandardError=append:/var/log/openclaw-gateway.log
+
+      [Install]
+      WantedBy=multi-user.target
+      SVCEOF
+      systemctl daemon-reload
+
       # Signal awaiting secrets
       touch /etc/lobmob/.awaiting-secrets
 
@@ -358,38 +421,52 @@ write_files:
       gh repo clone "$VAULT_REPO" /opt/vault 2>/dev/null || (cd /opt/vault && git pull origin main)
       cd /opt/vault && git checkout main
 
-      # OpenClaw config
-      cat > /root/.openclaw/config.json <<OCEOF
-      {
-        "defaultModel": "anthropic:claude-sonnet-4-5-20250929",
-        "anthropicApiKey": "\$ANTHROPIC_API_KEY",
-        "channels": {
-          "discord": {
-            "enabled": true,
-            "token": "\$DISCORD_BOT_TOKEN"
-          }
-        }
-      }
-      OCEOF
-      chmod 600 /root/.openclaw/config.json
+      # OpenClaw setup -- full automated configuration
+      mkdir -p /root/.openclaw/skills
 
-      # Copy lobster skills
+      # Step 1: Run openclaw onboard (creates openclaw.json)
+      # May hang over SSH -- timeout + || true handles this
+      timeout 30 openclaw onboard \
+        --non-interactive --accept-risk --workspace /opt/vault 2>/dev/null || true
+
+      # Step 2: Create .env (API key loaded by gateway via EnvironmentFile)
+      echo "ANTHROPIC_API_KEY=\$ANTHROPIC_API_KEY" > /root/.openclaw/.env
+      chmod 600 /root/.openclaw/.env
+
+      # Step 3: Ensure openclaw.json exists (fallback if onboard hung)
+      if [ ! -f /root/.openclaw/openclaw.json ]; then
+        echo '{"gateway":{"port":18789,"mode":"local","bind":"loopback"}}' > /root/.openclaw/openclaw.json
+      fi
+
+      # Step 4: Patch openclaw.json with Discord channels + agent config
+      jq --arg token "\$DISCORD_BOT_TOKEN" '{
+        channels: { discord: { enabled: true, token: \$token, groupPolicy: "allowlist",
+          guilds: { "467002962456084481": { slug: "mattcave", requireMention: false,
+            reactionNotifications: "own",
+            channels: { "task-queue": {allow:true}, "swarm-control": {allow:true}, "swarm-logs": {allow:true} }
+          }}
+        }},
+        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }},
+        gateway: { port: 18789, mode: "local", bind: "loopback" }
+      } * .' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json
+
+      # Step 5: Remove old config.json if it exists (superseded by openclaw.json)
+      rm -f /root/.openclaw/config.json
+
+      # Step 6: Copy lobster skills from vault
       cp -r /opt/vault/040-fleet/lobster-skills/* /root/.openclaw/skills/ 2>/dev/null || true
 
-      # Write lobster AGENTS.md
+      # Step 7: Write lobster AGENTS.md (metadata only -- system prompt comes from vault)
       cat > /root/.openclaw/AGENTS.md <<AGENTEOF
       ---
       name: lobster-$LOBSTER_ID
       model: anthropic:claude-sonnet-4-5-20250929
       ---
-      You are lobster-$LOBSTER_ID in the lobmob swarm. Your WireGuard IP is $WG_IP.
-      You execute tasks assigned by lobboss via Discord #swarm-control.
-      When you complete a task:
-      1. Write results to the vault repo under /opt/vault/
-      2. Create a PR using the submit-results skill
-      3. Post a summary with PR link to #results
-      Report failures honestly. Self-destruct when idle too long.
       AGENTEOF
+
+      # Step 8: Start gateway via systemd
+      systemctl enable openclaw-gateway
+      systemctl start openclaw-gateway
 
       # Mark secrets provisioned
       rm -f /etc/lobmob/.awaiting-secrets

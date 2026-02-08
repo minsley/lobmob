@@ -106,11 +106,20 @@ check "Secrets provisioned (.awaiting-secrets absent)" \
 check "Vault cloned" \
   lobster_ssh "test -d /opt/vault/.git"
 
-check "OpenClaw config exists" \
-  lobster_ssh "test -f /root/.openclaw/config.json"
+check "OpenClaw config exists (openclaw.json)" \
+  lobster_ssh "test -f /root/.openclaw/openclaw.json"
+
+check "OpenClaw .env exists" \
+  lobster_ssh "test -f /root/.openclaw/.env"
 
 check "AGENTS.md exists" \
   lobster_ssh "test -f /root/.openclaw/AGENTS.md"
+
+check "Gateway service running" \
+  lobster_ssh "systemctl is-active openclaw-gateway"
+
+check "Gateway log exists" \
+  lobster_ssh "test -f /var/log/openclaw-gateway.log"
 
 check "Git identity configured" \
   lobster_ssh "git config --global user.name | grep -q ."

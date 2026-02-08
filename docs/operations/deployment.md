@@ -87,11 +87,12 @@ Adjust after deploy if needed:
 The pool manager cron runs every 5 minutes and will start filling the pool
 automatically after the first `lobmob spawn`.
 
-## Step 5: Configure OpenClaw + Discord
+## Step 5: Configure Discord
 
 1. Invite the bot to your Discord server (if not done during setup)
 2. Create channels: `#task-queue`, `#swarm-control`, `#swarm-logs`
-3. Set up OpenClaw on the lobboss — see [[operations/openclaw-setup]] for the full procedure
+
+OpenClaw is configured automatically during provisioning. The `lobmob-provision` script runs `openclaw onboard`, writes Discord channel config, and starts the gateway as a systemd service. See [[operations/openclaw-setup]] for troubleshooting details.
 
 ## Step 6: Test a Lobster
 
@@ -101,18 +102,18 @@ automatically after the first `lobmob spawn`.
 ```
 
 The spawn process:
-1. Lobboss creates a droplet with secret-free cloud-init (WireGuard + packages)
+1. Lobboss creates a droplet with secret-free cloud-init (WireGuard + packages + systemd service)
 2. Waits for WireGuard connectivity over the mesh
 3. Waits for cloud-init to complete
 4. SSHes into the lobster over WireGuard to push secrets
-5. Authenticates gh, clones vault, configures OpenClaw
+5. Authenticates gh, clones vault, configures OpenClaw, starts the gateway
 
 Verify with the smoke test:
 ```bash
 tests/smoke-lobster 10.0.0.3
 ```
 
-Then set up OpenClaw on the lobster — see [[operations/openclaw-setup]].
+The gateway runs as a systemd service (`openclaw-gateway`) and restarts automatically on failure. Check its status with `systemctl status openclaw-gateway` on the lobster.
 
 For full end-to-end testing, see [[operations/testing]].
 

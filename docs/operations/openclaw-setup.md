@@ -116,7 +116,7 @@ openclaw cron list      # Should show progress-check job
 | Skills | `skills/manager/` | `skills/worker/` |
 | Workspace | `/opt/vault` (writes to main) | `/opt/vault` (writes to branches, submits PRs) |
 | Discord role | Assigns tasks in #swarm-control | Listens for assignments, posts results |
-| Gateway persistence | Needs to be kept running (use systemd or cron) | Ephemeral — started for task execution |
+| Gateway persistence | systemd service (`openclaw-gateway`) | systemd service (`openclaw-gateway`) |
 
 ## Known Issues
 
@@ -135,13 +135,33 @@ Setting `agents.defaults.model` to a string like `"anthropic/claude-sonnet-4-5"`
 ### `config.json` vs `openclaw.json`
 The spawn script writes `/root/.openclaw/config.json` (an older format with embedded secrets). The `openclaw onboard` command creates `openclaw.json` (current format). When both exist, `openclaw.json` takes precedence. The `config.json` can be safely removed after onboard.
 
-## Automating OpenClaw Setup
+## Automated Setup (Lobsters)
 
-Currently, the spawn script (`lobmob-spawn-lobster`) does basic provisioning and writes a `config.json`, but does not run `openclaw onboard` or start the gateway. A future improvement would be to:
+The spawn script (`lobmob-spawn-lobster`) now fully automates OpenClaw setup during provisioning:
 
-1. Run `openclaw onboard` during provisioning
-2. Write Discord config into `openclaw.json` directly (bypassing the broken CLI)
-3. Create a systemd service for the gateway
-4. Have the lobster agent start automatically and listen for task assignments
+1. Runs `openclaw onboard` to create `openclaw.json`
+2. Creates `.env` with the API key
+3. Patches `openclaw.json` with Discord channel config via `jq` (bypassing the broken CLI)
+4. Writes a metadata-only `AGENTS.md`
+5. Installs and starts `openclaw-gateway.service` via systemd
 
-Until then, OpenClaw setup on new lobsters requires manual steps after spawn.
+The gateway starts automatically after provisioning and restarts on failure (systemd `Restart=on-failure`). Logs go to `/var/log/openclaw-gateway.log`.
+
+Manual steps from this page are only needed for troubleshooting or when re-configuring an existing node.
+
+## Gateway systemd Service
+
+Both lobboss and lobsters run the gateway via systemd:
+
+```bash
+# Check status
+systemctl status openclaw-gateway
+
+# View logs
+tail -f /var/log/openclaw-gateway.log
+
+# Restart after config changes
+systemctl restart openclaw-gateway
+```
+
+The service file is at `/etc/systemd/system/openclaw-gateway.service`. It uses `EnvironmentFile=/root/.openclaw/.env` to load the API key at runtime.
