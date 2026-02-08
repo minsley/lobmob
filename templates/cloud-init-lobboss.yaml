@@ -557,6 +557,7 @@ write_files:
       cat > /etc/lobmob/env <<ENVEOF
       LOBSTER_ID=$LOBSTER_ID
       WG_IP=$WG_IP
+      VAULT_REPO=$VAULT_REPO
       ENVEOF
 
       # Event logger
@@ -750,7 +751,8 @@ write_files:
 
       # Clone vault
       source /etc/lobmob/env
-      gh repo clone "$VAULT_REPO" /opt/vault 2>/dev/null || (cd /opt/vault && git pull origin main)
+      if [ -d /opt/vault ] && [ ! -d /opt/vault/.git ]; then rm -rf /opt/vault; fi
+      gh repo clone "$VAULT_REPO" /opt/vault 2>/dev/null || (cd /opt/vault && git stash 2>/dev/null; git pull origin main --rebase; git stash pop 2>/dev/null || true)
       cd /opt/vault && git checkout main
 
       # OpenClaw setup -- full automated configuration
