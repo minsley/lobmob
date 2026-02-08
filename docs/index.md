@@ -10,6 +10,8 @@ OpenClaw agent swarm management system for DigitalOcean.
 - [[operations/daily-ops]] — Day-to-day fleet operations
 - [[operations/testing]] — Test scripts and end-to-end verification
 - [[operations/openclaw-setup]] — OpenClaw configuration on nodes
+- [[operations/token-management]] — API tokens, GitHub App, DO OAuth
+- [[operations/web-ui]] — Web UI for OAuth and management
 - [[reference/discord-protocol]] — Message formats and channel usage
 - [[reference/vault-structure]] — Obsidian vault layout and conventions
 - [[reference/cli]] — lobmob CLI reference

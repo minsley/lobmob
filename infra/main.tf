@@ -47,6 +47,13 @@ resource "digitalocean_firewall" "lobboss" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
+  # Web UI (OAuth callbacks, management dashboard)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "8080"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
   # All outbound
   outbound_rule {
     protocol              = "tcp"
@@ -131,13 +138,115 @@ resource "digitalocean_droplet" "lobboss" {
     vpc_uuid     = digitalocean_vpc.swarm.id
     lobster_tag  = digitalocean_tag.lobster.name
   })
+
+  # Cloud-init only runs at creation time. Script updates are deployed via
+  # `lobmob provision-secrets` over SSH, so user_data changes should NOT
+  # trigger droplet replacement.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
+}
+
+# --- Reserved IP ---
+# Static IP for lobboss — survives droplet recreates, keeps WireGuard stable
+
+resource "digitalocean_reserved_ip" "lobboss" {
+  region = var.region
+}
+
+resource "digitalocean_reserved_ip_assignment" "lobboss" {
+  ip_address = digitalocean_reserved_ip.lobboss.ip_address
+  droplet_id = digitalocean_droplet.lobboss.id
+}
+
+# --- Project ---
+# Groups all lobmob resources in the DO console.
+# Note: reserved IP excluded from resources due to provider bug (floatingip URN drift).
+# Lobsters are assigned via doctl in the spawn script.
+
+resource "digitalocean_project" "lobmob" {
+  name        = var.project_name
+  description = "OpenClaw agent swarm"
+  purpose     = "Operational / Developer tooling"
+  environment = "Production"
+  resources = [
+    digitalocean_droplet.lobboss.urn,
+  ]
+}
+
+# --- Monitoring Alerts ---
+
+resource "digitalocean_monitor_alert" "lobboss_cpu" {
+  description = "lobboss CPU > 90% for 5m"
+  type        = "v1/insights/droplet/cpu"
+  compare     = "GreaterThan"
+  value       = 90
+  window      = "5m"
+  enabled     = true
+  entities    = [digitalocean_droplet.lobboss.id]
+  alerts { email = [var.alert_email] }
+}
+
+resource "digitalocean_monitor_alert" "lobboss_memory" {
+  description = "lobboss memory > 90% for 5m"
+  type        = "v1/insights/droplet/memory_utilization_percent"
+  compare     = "GreaterThan"
+  value       = 90
+  window      = "5m"
+  enabled     = true
+  entities    = [digitalocean_droplet.lobboss.id]
+  alerts { email = [var.alert_email] }
+}
+
+resource "digitalocean_monitor_alert" "lobboss_disk" {
+  description = "lobboss disk > 85% for 10m"
+  type        = "v1/insights/droplet/disk_utilization_percent"
+  compare     = "GreaterThan"
+  value       = 85
+  window      = "10m"
+  enabled     = true
+  entities    = [digitalocean_droplet.lobboss.id]
+  alerts { email = [var.alert_email] }
+}
+
+resource "digitalocean_monitor_alert" "lobster_cpu" {
+  description = "Lobster fleet CPU > 90% for 5m"
+  type        = "v1/insights/droplet/cpu"
+  compare     = "GreaterThan"
+  value       = 90
+  window      = "5m"
+  enabled     = true
+  tags        = [digitalocean_tag.lobster.name]
+  alerts { email = [var.alert_email] }
+}
+
+resource "digitalocean_monitor_alert" "lobster_memory" {
+  description = "Lobster fleet memory > 90% for 5m"
+  type        = "v1/insights/droplet/memory_utilization_percent"
+  compare     = "GreaterThan"
+  value       = 90
+  window      = "5m"
+  enabled     = true
+  tags        = [digitalocean_tag.lobster.name]
+  alerts { email = [var.alert_email] }
+}
+
+resource "digitalocean_monitor_alert" "lobster_disk" {
+  description = "Lobster fleet disk > 85% for 10m"
+  type        = "v1/insights/droplet/disk_utilization_percent"
+  compare     = "GreaterThan"
+  value       = 85
+  window      = "10m"
+  enabled     = true
+  tags        = [digitalocean_tag.lobster.name]
+  alerts { email = [var.alert_email] }
 }
 
 # --- Outputs ---
 
 output "lobboss_ip" {
-  value       = digitalocean_droplet.lobboss.ipv4_address
-  description = "Lobboss droplet public IP"
+  value       = digitalocean_reserved_ip.lobboss.ip_address
+  description = "Lobboss reserved (static) public IP"
 }
 
 output "lobboss_private_ip" {
@@ -153,4 +262,9 @@ output "vpc_id" {
 output "lobster_firewall_id" {
   value       = digitalocean_firewall.lobster.id
   description = "Firewall applied to lobster droplets"
+}
+
+output "project_id" {
+  value       = digitalocean_project.lobmob.id
+  description = "DO Project ID for lobmob"
 }
