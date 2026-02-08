@@ -219,7 +219,7 @@ write_files:
         res.writeHead(404); res.end('Not found');
       });
 
-      server.listen(PORT, '0.0.0.0', () => console.log(`lobmob-web listening on port $${PORT}`));
+      server.listen(PORT, '10.0.0.1', () => console.log(`lobmob-web listening on 10.0.0.1:$${PORT} (WireGuard only)`));
 
   # Web UI systemd service
   - path: /etc/systemd/system/lobmob-web.service

@@ -47,12 +47,6 @@ resource "digitalocean_firewall" "lobboss" {
     source_addresses = ["0.0.0.0/0", "::/0"]
   }
 
-  # Web UI (OAuth callbacks, management dashboard)
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "8080"
-    source_addresses = ["0.0.0.0/0", "::/0"]
-  }
 
   # All outbound
   outbound_rule {
