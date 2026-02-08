@@ -123,24 +123,13 @@ git push origin lobster-<id>/task-<task-id>
 gh pr create --title "Task <task-id>: <title>" --body "<summary>" --base main
 ```
 
-## 9. Announce
+## 9. Wait for Review
 
-Post in the task's Discord thread:
-```
-**[lobster-<id>]** COMPLETED task-<task-id>
+Status updates to Discord are handled automatically by the task-watcher
+when it detects your task file changes. You don't need to post to Discord.
 
-**Code PR:** <github PR URL against develop>
-**Vault PR:** <github PR URL against vault main>
-
-**Summary:** <2-3 sentences describing what was implemented>
-
-**Tests:** <N passed, M failed>
-```
-
-## 10. Handle Review Feedback
-
-If lobboss or a QA lobster requests changes:
-1. Read the feedback in the task thread
+If lobboss or a QA lobster requests changes (via PR comment or Discord thread):
+1. Read the feedback
 2. Make fixes on your feature branch
 3. Push — the PR updates automatically
-4. Post in thread: `UPDATED: <what was fixed>`
+4. Only post to Discord if you need to ask a clarifying question

@@ -83,33 +83,16 @@ PRBODY
 PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
 ```
 
-### 6. Announce in the Task Thread
+### 6. Wait for review
 
-Read the task file's `discord_thread_id` frontmatter field. Post to the **task's thread**:
-```
-**[lobster-${LOBSTER_ID}]** Task Complete: ${TASK_ID}
-
-PR: ${PR_URL}
-Results: https://github.com/<org>/<repo>/blob/lobster-${LOBSTER_ID}/task-${TASK_ID}/<main-results-file>
-Work log: https://github.com/<org>/<repo>/blob/lobster-${LOBSTER_ID}/task-${TASK_ID}/020-logs/lobsters/${LOBSTER_ID}/<date>.md
-
-Summary: <2-3 sentence description of what was accomplished>
-
-Diff: +<lines> across <N> files
-```
-
-Build GitHub URLs using:
-```
-https://github.com/<org>/<repo>/blob/<branch>/<path>
-```
-
-### 7. Wait for review
+The task-watcher cron will detect your task status change and post to Discord
+automatically. You don't need to announce in Discord.
 
 The lobboss will review your PR. If changes are requested:
-1. Read the PR comment or Discord message explaining what to fix
+1. Read the PR comment or Discord message
 2. Make the changes in `/opt/vault/`
 3. Commit and push to the same branch (the PR updates automatically)
-4. Post update in the **task's thread**: `**[lobster-${LOBSTER_ID}]** Updated PR #${PR_NUMBER} — <what changed>`
+4. Only post to Discord if you need to ask a clarifying question
 
 ## If something goes wrong
 
@@ -117,10 +100,4 @@ If you cannot complete the task:
 1. Still create the PR with whatever partial results you have
 2. Set `status: failed` in the task frontmatter
 3. Document what went wrong in the Lobster Notes section
-4. Post in the **task's thread** with `FAIL` prefix:
-   ```
-   **[lobster-${LOBSTER_ID}]** FAIL: ${TASK_ID}
-   PR: ${PR_URL}
-   Reason: <what went wrong>
-   Partial results included in PR.
-   ```
+4. The task-watcher will detect the failure and post to Discord

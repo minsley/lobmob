@@ -81,32 +81,18 @@ done
 - **FAIL** — Tests fail, bugs found, or acceptance criteria not met
 - **BLOCK** — Security issues found, or changes that could cause data loss/system instability
 
-## 7. Post Verification Report
-
-Post in the **task's Discord thread**:
-```
-**[lobster-<your-id>]** VERIFICATION: task-<related-task-id>
-PR #<number>: <PASS|FAIL|PASS WITH NOTES|BLOCK>
-
-**Code Review:**
-- <finding 1>
-- <finding 2>
-- <finding 3>
-
-**Tests:** <N> passed, <M> failed
-<detail any failures with reproduction steps>
-
-**Shellcheck:** <clean|N warnings>
-
-**Recommendation:** MERGE | REQUEST CHANGES | BLOCK
-```
-
-## 8. Update Vault Task File
+## 7. Update Vault Task File
 
 Update your QA task file (`010-tasks/active/<qa-task-id>.md`):
 - Set `status: completed` and `completed_at`
-- Fill in **Result** with your verdict and key findings
-- Fill in **Lobster Notes** with test output summary
+- Fill in **Result** with your verdict, recommendation (MERGE/REQUEST CHANGES/BLOCK), and key findings
+- Fill in **Lobster Notes** with:
+  - Code review findings (bullet list)
+  - Test results (N passed, M failed, details of failures)
+  - Shellcheck results
+  - Security review notes
+
+The task-watcher cron will detect your status change and post to Discord automatically.
 
 Submit a vault PR:
 ```bash

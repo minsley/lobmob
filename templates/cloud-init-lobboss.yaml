@@ -831,17 +831,20 @@ write_files:
       source /etc/lobmob/secrets.env
 
       # Name generator — lobster-TYPE-NNN-adjective-name
-      # Water-themed characters, puns, and pop culture references
-      _ADJECTIVES=(salty briny bubbly soggy drippy splashy crusty sandy misty foamy breezy stormy slippery barnacled sunken rusty mossy silky shiny drifty)
-      _NAMES=(squidward patrick sandy nemo dory marlin ariel flounder moana maui poseidon triton gilligan skipper wanda finn bubbles coral sheldon neptune)
+      # ~100 adjectives x ~100 water-themed character names
+      _ADJECTIVES=(salty briny bubbly soggy drippy splashy crusty sandy misty foamy breezy stormy slippery barnacled sunken rusty mossy silky shiny drifty tidal murky frothy ancient sunlit moonlit frozen steamy tropical arctic volcanic washed beached stranded marooned anchored capsized listing rolling pitching drifting cruising sailing surfing diving plunging sinking floating bobbing swaying rocking tumbling churning swirling rippling cresting breaking lapping ebbing flowing surging rushing gushing trickling dripping seeping wading paddling rowing sculling trawling tangled knotted braided coiled rigged masted keeled hulled planked craggy pearly abyssal coastal offshore inshore brackish saline brisk gusty balmy humid dewy hazy overcast squalling thundering howling whistling glassy choppy roiling frothing sparkling shimmering glistening gleaming luminous phosphorescent bioluminescent)
+      _NAMES=(squidward patrick sandy nemo dory marlin ariel flounder moana maui poseidon triton gilligan skipper wanda finn bubbles coral sheldon neptune aquaman mera namor calypso davy scylla amphitrite oceanus tethys nereus proteus glaucus lorelei undine sedna yemaya ryujin tangaroa ponyo ursula sebastian flotsam jetsam scuttle grimsby eric melody crush squirt bruce anchor chum gill bloat peach jacques gurgle deb nigel gerald hank destiny bailey becky fluke rudder smee hook wendy splash ripley darwin flipper willy shamu echo wahoo barracuda hammerhead stingray nautilus kraken leviathan jaws quint brody hooper ahab ishmael queequeg starbuck pip nessie selkie kelpie morgan drake kelvin marina oceana pearl reef cove fjord atoll lagoon estuary delta shoal caspian baltic coral anemone urchin abalone conch clam mussel oyster scallop starfish)
       _gen_name() {
         local type="$${1:-research}"
         local adj=$${_ADJECTIVES[RANDOM % $${#_ADJECTIVES[@]}]}
         local name=$${_NAMES[RANDOM % $${#_NAMES[@]}]}
-        # Get next sequential number for this type
-        local count=$(doctl compute droplet list --tag-name "$${LOBSTER_TAG}-type-$${type}" --format ID --no-header 2>/dev/null | wc -l)
-        local num=$(printf "%03d" $$((count + 1)))
-        echo "$${type}-$${num}-$${adj}-$${name}"
+        # Find lowest unused number among currently running lobsters
+        local existing=$(doctl compute droplet list --tag-name "$${LOBSTER_TAG}" --format Name --no-header 2>/dev/null)
+        local num=1
+        while echo "$$existing" | grep -q "lobster-$${type}-$(printf "%03d" $$num)-" 2>/dev/null; do
+          num=$$((num + 1))
+        done
+        echo "$${type}-$(printf "%03d" $$num)-$${adj}-$${name}"
       }
       LOBSTER_TYPE="$${3:-research}"
       LOBSTER_ID="$${1:-$$(_gen_name $$LOBSTER_TYPE)}"
@@ -1892,6 +1895,136 @@ write_files:
       # Truncate local log on success
       : > "$LOG_FILE"
 
+  # Weekly snapshot of lobboss droplet for disaster recovery
+  - path: /usr/local/bin/lobmob-snapshot
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      source /etc/lobmob/env
+      source /etc/lobmob/secrets.env
+
+      SNAPSHOT_NAME="lobboss-$$(date +%Y%m%d-%H%M)"
+      MAX_SNAPSHOTS=4
+
+      # Get lobboss droplet ID from DO metadata
+      DROPLET_ID=$$(curl -s http://169.254.169.254/metadata/v1/id)
+      if [ -z "$$DROPLET_ID" ]; then
+        echo "ERROR: Could not get droplet ID from metadata"
+        exit 1
+      fi
+
+      echo "Creating snapshot: $$SNAPSHOT_NAME for droplet $$DROPLET_ID"
+      doctl compute droplet-action snapshot "$$DROPLET_ID" \
+        --snapshot-name "$$SNAPSHOT_NAME" --wait 2>&1
+
+      echo "Snapshot created: $$SNAPSHOT_NAME"
+      lobmob-log snapshot "$$SNAPSHOT_NAME droplet=$$DROPLET_ID"
+
+      # Prune old snapshots (keep only MAX_SNAPSHOTS most recent)
+      SNAPSHOTS=$$(doctl compute snapshot list \
+        --resource droplet \
+        --format ID,Name,CreatedAt \
+        --no-header 2>/dev/null \
+        | grep "lobboss-" \
+        | sort -k3 -r)
+
+      COUNT=0
+      echo "$$SNAPSHOTS" | while read -r snap_id snap_name snap_date rest; do
+        COUNT=$$((COUNT + 1))
+        if [ $$COUNT -gt $$MAX_SNAPSHOTS ]; then
+          echo "Pruning old snapshot: $$snap_name ($$snap_id)"
+          doctl compute snapshot delete "$$snap_id" --force 2>/dev/null || true
+        fi
+      done
+
+  # Task status watcher — polls task files for changes and posts Discord updates
+  # Eliminates the need for lobsters to post routine status updates via LLM
+  - path: /usr/local/bin/lobmob-task-watcher
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      VAULT_DIR="/opt/vault"
+      STATE_DIR="/var/lib/lobmob/task-state"
+      LOG="/var/log/lobmob-task-watcher.log"
+      mkdir -p "$$STATE_DIR"
+
+      # Pull latest vault
+      cd "$$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
+
+      # Check each active task file for status changes
+      for task_file in "$$VAULT_DIR"/010-tasks/active/*.md; do
+        [ -f "$$task_file" ] || continue
+        task_id=$$(basename "$$task_file" .md)
+        state_file="$$STATE_DIR/$${task_id}.state"
+
+        # Extract key frontmatter fields
+        status=$$(grep "^status:" "$$task_file" | head -1 | awk '{print $$2}')
+        assigned=$$(grep "^assigned_to:" "$$task_file" | head -1 | sed 's/assigned_to: *//')
+        thread_id=$$(grep "^discord_thread_id:" "$$task_file" | head -1 | awk '{print $$2}')
+
+        # Build current state string
+        current="status=$$status assigned=$$assigned"
+
+        # Compare with last known state
+        previous=""
+        if [ -f "$$state_file" ]; then
+          previous=$$(cat "$$state_file")
+        fi
+
+        if [ "$$current" != "$$previous" ]; then
+          echo "$$current" > "$$state_file"
+
+          # Skip if no thread_id (can't post to Discord without it)
+          if [ -z "$$thread_id" ]; then continue; fi
+
+          # Determine what changed and compose message
+          msg=""
+          prev_status=$$(echo "$$previous" | grep -o 'status=[^ ]*' | cut -d= -f2)
+          prev_assigned=$$(echo "$$previous" | grep -o 'assigned=[^ ]*' | cut -d= -f2)
+
+          if [ "$$status" = "active" ] && [ "$$prev_status" != "active" ] && [ -n "$$assigned" ]; then
+            msg="Task **$$task_id** assigned to **$$assigned**"
+          elif [ "$$status" = "completed" ] && [ "$$prev_status" != "completed" ]; then
+            msg="Task **$$task_id** completed by **$$assigned**"
+          elif [ "$$status" = "failed" ] && [ "$$prev_status" != "failed" ]; then
+            msg="Task **$$task_id** failed (assigned to **$$assigned**)"
+          elif [ "$$status" = "queued" ] && [ "$$prev_status" = "active" ]; then
+            msg="Task **$$task_id** re-queued"
+          fi
+
+          if [ -n "$$msg" ]; then
+            echo "$$(date -Iseconds) $$msg" >> "$$LOG"
+            # Post to Discord thread via OpenClaw gateway API
+            GW_TOKEN=$$(jq -r '.gateway.auth.token // empty' /root/.openclaw/openclaw.json 2>/dev/null)
+            if [ -n "$$GW_TOKEN" ]; then
+              curl -s -X POST "http://127.0.0.1:18789/api/channels/discord/send" \
+                -H "Authorization: Bearer $$GW_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d "{\"threadId\": \"$$thread_id\", \"content\": \"$$msg\"}" 2>/dev/null || true
+            fi
+          fi
+        fi
+      done
+
+      # Also check for completed/failed tasks that should be moved
+      for task_file in "$$VAULT_DIR"/010-tasks/active/*.md; do
+        [ -f "$$task_file" ] || continue
+        status=$$(grep "^status:" "$$task_file" | head -1 | awk '{print $$2}')
+        if [ "$$status" = "completed" ] || [ "$$status" = "failed" ]; then
+          task_id=$$(basename "$$task_file" .md)
+          dest="$$VAULT_DIR/010-tasks/$$status/$$task_id.md"
+          if [ ! -f "$$dest" ]; then
+            mv "$$task_file" "$$dest"
+            cd "$$VAULT_DIR" && git add -A && git commit -m "[task-watcher] Move $$task_id to $$status" --quiet 2>/dev/null
+            git push origin main --quiet 2>/dev/null || true
+            rm -f "$$STATE_DIR/$${task_id}.state"
+            echo "$$(date -Iseconds) Moved $$task_id to $$status" >> "$$LOG"
+          fi
+        fi
+      done
+
   # Awaiting secrets marker
   - path: /etc/lobmob/.awaiting-secrets
     content: "Secrets not yet provisioned. Run: lobmob deploy\n"
@@ -1931,4 +2064,10 @@ runcmd:
 
   # TLS cert renewal cron -- every 4 days (certs last 6 days)
   - echo "0 3 */4 * * root /usr/local/bin/lobmob-cert >> /var/log/lobmob-cert.log 2>&1" >> /etc/crontab
+
+  # Task status watcher -- every 2 minutes (detects task changes, posts to Discord, moves completed tasks)
+  - echo "*/2 * * * * root /usr/local/bin/lobmob-task-watcher >> /var/log/lobmob-task-watcher.log 2>&1" >> /etc/crontab
+
+  # Weekly snapshot of lobboss (prod only, requires doctl auth)
+  - echo "0 4 * * 0 root /usr/local/bin/lobmob-snapshot >> /var/log/lobmob-snapshot.log 2>&1" >> /etc/crontab
 
