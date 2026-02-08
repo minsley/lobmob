@@ -39,6 +39,7 @@
 - Holds all secrets (DO token, Discord bot token, API keys)
 - Spawns/destroys lobsters via `doctl`
 - Reviews and merges lobster PRs
+- Runs a `watchdog` agent (Haiku) that monitors lobster health every 5 minutes
 - Pushes directly to `main` for task creation and fleet registry updates
 
 ### Lobster Droplets

@@ -147,6 +147,26 @@ ssh root@<lobboss-ip> lobmob-flush-logs  # same, directly
 
 Logs are also flushed automatically before sleep and destroy (best-effort for destroys).
 
+## Progress Monitoring
+
+Lobsters post `PROGRESS` milestones in task threads during execution. The watchdog
+agent (Haiku, runs every 5 min on lobboss via OpenClaw cron) SSHes to active lobsters
+and checks gateway log activity. If a lobster is stale (no gateway activity for 10+
+min), it posts warnings in the task thread and #swarm-logs.
+
+The lobboss task-lifecycle also monitors for timeouts: 45 min warning, 90 min failure
+threshold (if no PROGRESS posts and no open PR).
+
+**Manual watchdog trigger:**
+```bash
+ssh root@<lobboss-ip>
+source /etc/lobmob/secrets.env
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY openclaw agent --agent watchdog \
+  --message "Check on active lobsters and report progress"
+```
+
+**Check watchdog cron:** `openclaw cron list`
+
 ## Monitoring
 
 - **Discord #swarm-logs** — fleet events in real time

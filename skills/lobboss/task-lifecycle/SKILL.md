@@ -110,6 +110,41 @@ _Pending_
    @lobster-<id> — pull main and read `010-tasks/active/<task-id>.md` for details.
    ```
 
+## Monitoring Active Tasks
+
+When you check on tasks (periodically or when prompted), look for stalled tasks:
+
+### Timeout Detection
+
+For each task in `010-tasks/active/` with `status: active`:
+
+1. Read `assigned_at` from the frontmatter
+2. Calculate elapsed time since assignment
+3. Check for an open PR:
+   ```bash
+   gh pr list --state open --json number,title,headRefName | grep "<task-id>"
+   ```
+   If a PR exists, the lobster is in submit/review phase — do not flag as timed out.
+
+4. **Warning (45+ minutes, no PR, no recent PROGRESS post)**:
+   Post in the **task's thread**:
+   ```
+   Timeout warning: Task <task-id> has been active for <N> minutes with no recent progress from <lobster-id>.
+   @<lobster-id> — please post a status update or submit your PR.
+   ```
+   Post to **#swarm-logs** (channel `1469216945764175946`):
+   ```
+   Timeout warning: <task-id> assigned to <lobster-id> for <N> min, no progress.
+   ```
+
+5. **Failure (90+ minutes, no PR)**:
+   SSH to the lobster to check if it's still working:
+   ```bash
+   ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+     root@<wg_ip> "tail -1 /tmp/openclaw-gateway.log 2>/dev/null || echo NO_LOG"
+   ```
+   If the lobster appears dead, consider failing the task (follow "Failing a Task" below).
+
 ## Completing a Task (via PR)
 
 You do NOT move the task file yourself. The lobster will:

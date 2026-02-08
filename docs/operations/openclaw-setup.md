@@ -74,6 +74,40 @@ ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY openclaw agent --agent main --message "Chec
 
 This runs synchronously and returns when the agent finishes.
 
+## Setting Up the Watchdog Agent (Lobboss Only)
+
+After the gateway is running on lobboss, set up the watchdog monitoring agent:
+
+```bash
+source /etc/lobmob/secrets.env
+
+# Register watchdog agent (Haiku model for low cost)
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY openclaw agents add watchdog \
+  --workspace /opt/vault \
+  --model "anthropic/claude-haiku-4-5" \
+  --non-interactive
+
+# Copy AGENTS.md (from vault distribution or SCP'd file)
+cp /opt/vault/040-fleet/watchdog-AGENTS.md /root/.openclaw/agents/watchdog/agent/AGENTS.md 2>/dev/null || true
+
+# Copy watchdog skill
+mkdir -p /root/.openclaw/skills/check-progress
+cp /opt/vault/040-fleet/watchdog-skills/check-progress/SKILL.md /root/.openclaw/skills/check-progress/SKILL.md 2>/dev/null || true
+
+# Add cron job (every 5 minutes)
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY openclaw cron add \
+  --name progress-check \
+  --every 5m \
+  --agent watchdog \
+  --message "Check on active lobsters and report progress"
+```
+
+Verify:
+```bash
+openclaw agents list    # Should show main + watchdog
+openclaw cron list      # Should show progress-check job
+```
+
 ## Lobboss vs Lobster Differences
 
 | Aspect | Lobboss | Lobster |

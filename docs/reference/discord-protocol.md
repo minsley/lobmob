@@ -73,6 +73,21 @@ Assigned to **lobster-<id>**.
 ACK <task-id> lobster-<id>
 ```
 
+### Thread: Progress Update (lobster → task thread)
+```
+PROGRESS <task-id>: <brief milestone message>
+```
+
+### Thread: Watchdog Alert (watchdog → task thread + #swarm-logs)
+```
+WATCHDOG: <lobster-id> appears stale on task <task-id> — no gateway activity for <N> minutes.
+```
+
+### Thread: Timeout Warning (lobboss → task thread + #swarm-logs)
+```
+Timeout warning: Task <task-id> has been active for <N> minutes with no recent progress from <lobster-id>.
+```
+
 ### Thread: PR Announcement (lobster → task thread)
 ```
 Task Complete: <task-id>
