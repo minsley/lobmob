@@ -21,10 +21,13 @@ When a new message arrives in **#task-queue**:
 
 ### Phase 2 — Propose
 
-1. Draft task details from the request: title, objective, acceptance criteria, priority, tags, estimate (minutes)
-   - If the user provides a time estimate, use it
-   - If not, generate your own estimate based on the task complexity (in minutes)
-   - Use round numbers: 15, 30, 45, 60, 90, 120, 180, 240
+1. Draft task details from the request: title, objective, acceptance criteria, priority, tags, estimate (minutes), model
+   - **Estimate:** If the user provides a time estimate, use it. Otherwise, generate your own based on task complexity. Use round numbers: 15, 30, 45, 60, 90, 120, 180, 240
+   - **Model:** If the user specifies a model, use it. Otherwise, choose based on the task:
+     - `anthropic/claude-opus-4-6` — complex coding, architecture, multi-file refactors
+     - `anthropic/claude-sonnet-4-5` — standard coding tasks, analysis, most work (default)
+     - `anthropic/claude-haiku-4-5` — simple/mechanical tasks, formatting, data entry
+     - Non-Anthropic models (e.g. `openai/o3`, `google/gemini-2.5-pro`) are also supported if appropriate
 2. Post a **Task Proposal** as a top-level message in **#task-queue**:
 
 ```
@@ -34,6 +37,7 @@ When a new message arrives in **#task-queue**:
 > **Priority:** <priority>
 > **Tags:** <tag1>, <tag2>
 > **Estimate:** <N> min
+> **Model:** <model>
 >
 > **Objective**
 > <objective text>
@@ -67,6 +71,7 @@ completed_at:
 priority: <priority>
 tags: [<tags>]
 estimate: <minutes>
+model: <model>
 discord_thread_id: <thread-id>
 ---
 
@@ -102,16 +107,21 @@ _Pending_
 ## Assigning a Task
 
 1. Choose a lobster — prefer idle lobsters, or spawn a new one if needed
-2. Update the task frontmatter:
+2. If the task has a `model` set and it differs from the lobster's current model, update the lobster's OpenClaw config before assignment:
+   ```bash
+   ssh -i /root/.ssh/lobster_admin root@<wg_ip> \
+     "jq '.agents.defaults.model.primary = \"<model>\"' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json"
+   ```
+3. Update the task frontmatter:
    ```yaml
    status: active
    assigned_to: lobster-<id>
    assigned_at: <ISO timestamp>
    ```
-3. Commit and push to main
-4. Post in the **task's thread** (read `discord_thread_id` from the task file):
+4. Commit and push to main
+5. Post in the **task's thread** (read `discord_thread_id` from the task file):
    ```
-   **[lobboss]** Assigned to **lobster-<id>**.
+   **[lobboss]** Assigned to **lobster-<id>** (model: <model>).
    @lobster-<id> — pull main and read `010-tasks/active/<task-id>.md` for details.
    ```
 
