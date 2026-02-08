@@ -24,7 +24,7 @@ resource "digitalocean_ssh_key" "lobmob" {
 resource "digitalocean_vpc" "swarm" {
   name     = "${var.project_name}-vpc"
   region   = var.region
-  ip_range = "10.100.0.0/24"
+  ip_range = var.vpc_cidr
 }
 
 # --- Cloud Firewall ---
@@ -73,7 +73,7 @@ resource "digitalocean_firewall" "lobster" {
   inbound_rule {
     protocol         = "tcp"
     port_range       = "22"
-    source_addresses = ["10.0.0.1/32"]
+    source_addresses = ["${var.wg_subnet}.1/32"]
   }
 
   # WireGuard
@@ -124,13 +124,15 @@ resource "digitalocean_droplet" "lobboss" {
   tags     = [digitalocean_tag.lobboss.id]
 
   user_data = templatefile("${path.module}/../templates/cloud-init-lobboss.yaml", {
-    vault_repo   = var.vault_repo
-    project_name = var.project_name
-    lobster_size = var.worker_size
-    region       = var.region
-    ssh_key_id   = digitalocean_ssh_key.lobmob.id
-    vpc_uuid     = digitalocean_vpc.swarm.id
-    lobster_tag  = digitalocean_tag.lobster.name
+    vault_repo        = var.vault_repo
+    project_name      = var.project_name
+    lobster_size      = var.worker_size
+    region            = var.region
+    ssh_key_id        = digitalocean_ssh_key.lobmob.id
+    vpc_uuid          = digitalocean_vpc.swarm.id
+    lobster_tag       = digitalocean_tag.lobster.name
+    wg_subnet         = var.wg_subnet
+    discord_channels  = var.discord_channels
   })
 
   # Cloud-init only runs at creation time. Script updates are deployed via
@@ -162,7 +164,7 @@ resource "digitalocean_project" "lobmob" {
   name        = var.project_name
   description = "OpenClaw agent swarm"
   purpose     = "Operational / Developer tooling"
-  environment = "Production"
+  environment = var.environment == "prod" ? "Production" : "Development"
   resources = [
     digitalocean_droplet.lobboss.urn,
   ]
@@ -171,6 +173,7 @@ resource "digitalocean_project" "lobmob" {
 # --- Monitoring Alerts ---
 
 resource "digitalocean_monitor_alert" "lobboss_cpu" {
+  count       = var.enable_monitoring ? 1 : 0
   description = "lobboss CPU > 90% for 5m"
   type        = "v1/insights/droplet/cpu"
   compare     = "GreaterThan"
@@ -182,6 +185,7 @@ resource "digitalocean_monitor_alert" "lobboss_cpu" {
 }
 
 resource "digitalocean_monitor_alert" "lobboss_memory" {
+  count       = var.enable_monitoring ? 1 : 0
   description = "lobboss memory > 90% for 5m"
   type        = "v1/insights/droplet/memory_utilization_percent"
   compare     = "GreaterThan"
@@ -193,6 +197,7 @@ resource "digitalocean_monitor_alert" "lobboss_memory" {
 }
 
 resource "digitalocean_monitor_alert" "lobboss_disk" {
+  count       = var.enable_monitoring ? 1 : 0
   description = "lobboss disk > 85% for 10m"
   type        = "v1/insights/droplet/disk_utilization_percent"
   compare     = "GreaterThan"
@@ -204,6 +209,7 @@ resource "digitalocean_monitor_alert" "lobboss_disk" {
 }
 
 resource "digitalocean_monitor_alert" "lobster_cpu" {
+  count       = var.enable_monitoring ? 1 : 0
   description = "Lobster fleet CPU > 90% for 5m"
   type        = "v1/insights/droplet/cpu"
   compare     = "GreaterThan"
@@ -215,6 +221,7 @@ resource "digitalocean_monitor_alert" "lobster_cpu" {
 }
 
 resource "digitalocean_monitor_alert" "lobster_memory" {
+  count       = var.enable_monitoring ? 1 : 0
   description = "Lobster fleet memory > 90% for 5m"
   type        = "v1/insights/droplet/memory_utilization_percent"
   compare     = "GreaterThan"
@@ -226,6 +233,7 @@ resource "digitalocean_monitor_alert" "lobster_memory" {
 }
 
 resource "digitalocean_monitor_alert" "lobster_disk" {
+  count       = var.enable_monitoring ? 1 : 0
   description = "Lobster fleet disk > 85% for 10m"
   type        = "v1/insights/droplet/disk_utilization_percent"
   compare     = "GreaterThan"

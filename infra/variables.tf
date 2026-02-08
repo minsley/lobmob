@@ -46,3 +46,41 @@ variable "alert_email" {
   description = "Email address for monitoring alerts"
   type        = string
 }
+
+variable "environment" {
+  description = "Environment name (prod or dev)"
+  type        = string
+  default     = "prod"
+}
+
+variable "vpc_cidr" {
+  description = "VPC CIDR block"
+  type        = string
+  default     = "10.100.0.0/24"
+}
+
+variable "wg_subnet" {
+  description = "WireGuard subnet prefix (e.g. 10.0.0 for 10.0.0.0/24)"
+  type        = string
+  default     = "10.0.0"
+}
+
+variable "discord_channels" {
+  description = "Discord channel names for the swarm"
+  type = object({
+    task_queue    = string
+    swarm_control = string
+    swarm_logs    = string
+  })
+  default = {
+    task_queue    = "task-queue"
+    swarm_control = "swarm-control"
+    swarm_logs    = "swarm-logs"
+  }
+}
+
+variable "enable_monitoring" {
+  description = "Whether to create monitoring alerts"
+  type        = bool
+  default     = true
+}

@@ -5,8 +5,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INFRA_DIR="$PROJECT_DIR/infra"
-SECRETS_FILE="$PROJECT_DIR/secrets.env"
 LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
+
+# Environment: prod (default) or dev
+LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+# Parse --env flag from any position in args
+_ARGS=()
+for _arg in "$@"; do
+  if [ "${_PREV_WAS_ENV:-}" = "1" ]; then
+    LOBMOB_ENV="$_arg"
+    _PREV_WAS_ENV=""
+  elif [ "$_arg" = "--env" ] || [ "$_arg" = "-e" ]; then
+    _PREV_WAS_ENV=1
+  else
+    _ARGS+=("$_arg")
+  fi
+done
+set -- "${_ARGS[@]+"${_ARGS[@]}"}"
+
+if [ "$LOBMOB_ENV" = "dev" ]; then
+  SECRETS_FILE="$PROJECT_DIR/secrets-dev.env"
+  TFVARS_FILE="$INFRA_DIR/dev.tfvars"
+else
+  SECRETS_FILE="$PROJECT_DIR/secrets.env"
+  TFVARS_FILE="$INFRA_DIR/prod.tfvars"
+fi
 
 # Colors
 RED='\033[0;31m'
@@ -21,7 +44,10 @@ err()  { echo -e "${RED}[lobmob]${NC} $*" >&2; }
 
 usage() {
   cat <<EOF
-Usage: lobmob <command> [options]
+Usage: lobmob [--env prod|dev] <command> [options]
+
+Environment:
+  --env, -e             Select environment (default: prod, or set LOBMOB_ENV)
 
 Infrastructure:
   bootstrap           Interactive wizard — full setup from scratch
@@ -107,6 +133,7 @@ ensure_ssh_key() {
 }
 
 get_lobboss_ip() {
+  terraform -chdir="$INFRA_DIR" workspace select "$LOBMOB_ENV" 2>/dev/null || true
   terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
 }
 
@@ -699,9 +726,10 @@ cmd_init() {
 cmd_deploy() {
   load_secrets
 
-  log "Deploying lobboss via Terraform..."
+  log "Deploying lobboss via Terraform ($LOBMOB_ENV)..."
   cd "$INFRA_DIR"
-  terraform plan -out=tfplan
+  terraform workspace select "$LOBMOB_ENV" 2>/dev/null || terraform workspace new "$LOBMOB_ENV"
+  terraform plan -var-file="$TFVARS_FILE" -out=tfplan
   echo ""
   read -rp "Apply this plan? [y/N] " confirm
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then

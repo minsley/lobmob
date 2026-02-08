@@ -21,7 +21,7 @@ write_files:
     content: |
       [Interface]
       PrivateKey = __WG_PRIVATE_KEY__
-      Address = 10.0.0.1/24
+      Address = ${wg_subnet}.1/24
       ListenPort = 51820
       SaveConfig = true
 
@@ -219,7 +219,7 @@ write_files:
         res.writeHead(404); res.end('Not found');
       });
 
-      server.listen(PORT, '10.0.0.1', () => console.log(`lobmob-web listening on 10.0.0.1:$${PORT} (WireGuard only)`));
+      server.listen(PORT, '${wg_subnet}.1', () => console.log(`lobmob-web listening on ${wg_subnet}.1:$${PORT} (WireGuard only)`));
 
   # Web UI systemd service
   - path: /etc/systemd/system/lobmob-web.service
@@ -400,7 +400,7 @@ write_files:
         channels: { discord: { enabled: true, token: $token, groupPolicy: "allowlist",
           guilds: { "467002962456084481": { slug: "mattcave", requireMention: false,
             reactionNotifications: "own",
-            channels: { "task-queue": {allow:true}, "swarm-control": {allow:true}, "swarm-logs": {allow:true} }
+            channels: { "${discord_channels.task_queue}": {allow:true}, "${discord_channels.swarm_control}": {allow:true}, "${discord_channels.swarm_logs}": {allow:true} }
           }}
         }},
         agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }}
@@ -486,9 +486,9 @@ write_files:
 
       if [ -z "$WG_IP" ]; then
         EXISTING=$(wg show wg0 allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1 | sort -t. -k4 -n | tail -1)
-        LAST_OCTET=$(echo "$${EXISTING:-10.0.0.1}" | cut -d. -f4)
+        LAST_OCTET=$(echo "$${EXISTING:-${wg_subnet}.1}" | cut -d. -f4)
         NEXT_OCTET=$((LAST_OCTET + 1))
-        WG_IP="10.0.0.$${NEXT_OCTET}"
+        WG_IP="${wg_subnet}.$${NEXT_OCTET}"
       fi
 
       # Read lobboss SSH public key for injecting into lobster authorized_keys
@@ -521,7 +521,7 @@ write_files:
 
       [Peer]
       PublicKey = $LOBBOSS_WG_PUBKEY
-      AllowedIPs = 10.0.0.0/24
+      AllowedIPs = ${wg_subnet}.0/24
       Endpoint = $LOBBOSS_PUB_IP:51820
       PersistentKeepalive = 25
       WGEOF
@@ -814,7 +814,7 @@ write_files:
         channels: { discord: { enabled: true, token: \$token, groupPolicy: "allowlist",
           guilds: { "467002962456084481": { slug: "mattcave", requireMention: false,
             reactionNotifications: "own",
-            channels: { "task-queue": {allow:true}, "swarm-control": {allow:true}, "swarm-logs": {allow:true} }
+            channels: { "${discord_channels.task_queue}": {allow:true}, "${discord_channels.swarm_control}": {allow:true}, "${discord_channels.swarm_logs}": {allow:true} }
           }}
         }},
         agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }}
