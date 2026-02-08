@@ -119,10 +119,12 @@ write_files:
 
       # Ensure openclaw.json exists (fallback if onboard hung)
       if [ ! -f /root/.openclaw/openclaw.json ]; then
-        echo '{"gateway":{"port":18789,"mode":"local","bind":"loopback"}}' > /root/.openclaw/openclaw.json
+        GW_TOKEN=$(openssl rand -hex 24)
+        echo "{\"gateway\":{\"port\":18789,\"mode\":\"local\",\"bind\":\"loopback\",\"auth\":{\"mode\":\"token\",\"token\":\"$GW_TOKEN\"}}}" > /root/.openclaw/openclaw.json
       fi
 
       # Patch openclaw.json with Discord channels + agent config
+      # Note: don't include gateway block -- openclaw onboard already sets it with auth token
       jq --arg token "$DISCORD_BOT_TOKEN" '{
         channels: { discord: { enabled: true, token: $token, groupPolicy: "allowlist",
           guilds: { "467002962456084481": { slug: "mattcave", requireMention: false,
@@ -130,8 +132,7 @@ write_files:
             channels: { "task-queue": {allow:true}, "swarm-control": {allow:true}, "swarm-logs": {allow:true} }
           }}
         }},
-        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }},
-        gateway: { port: 18789, mode: "local", bind: "loopback" }
+        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }}
       } * .' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json
 
       # Remove old config.json if it exists
@@ -438,10 +439,12 @@ write_files:
 
       # Step 3: Ensure openclaw.json exists (fallback if onboard hung)
       if [ ! -f /root/.openclaw/openclaw.json ]; then
-        echo '{"gateway":{"port":18789,"mode":"local","bind":"loopback"}}' > /root/.openclaw/openclaw.json
+        GW_TOKEN=\$(openssl rand -hex 24)
+        echo "{\"gateway\":{\"port\":18789,\"mode\":\"local\",\"bind\":\"loopback\",\"auth\":{\"mode\":\"token\",\"token\":\"\$GW_TOKEN\"}}}" > /root/.openclaw/openclaw.json
       fi
 
       # Step 4: Patch openclaw.json with Discord channels + agent config
+      # Note: don't include gateway block -- openclaw onboard already sets it with auth token
       jq --arg token "\$DISCORD_BOT_TOKEN" '{
         channels: { discord: { enabled: true, token: \$token, groupPolicy: "allowlist",
           guilds: { "467002962456084481": { slug: "mattcave", requireMention: false,
@@ -449,8 +452,7 @@ write_files:
             channels: { "task-queue": {allow:true}, "swarm-control": {allow:true}, "swarm-logs": {allow:true} }
           }}
         }},
-        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }},
-        gateway: { port: 18789, mode: "local", bind: "loopback" }
+        agents: { defaults: { model: { primary: "anthropic/claude-sonnet-4-5" }, workspace: "/opt/vault" }}
       } * .' /root/.openclaw/openclaw.json > /tmp/oc.tmp && mv /tmp/oc.tmp /root/.openclaw/openclaw.json
 
       # Step 5: Remove old config.json if it exists (superseded by openclaw.json)
