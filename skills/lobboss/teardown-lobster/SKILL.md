@@ -41,7 +41,7 @@ this automatically — only use teardown for permanent removal.
    ```bash
    lobmob-teardown-lobster <lobster-name>
    ```
-   where `<lobster-name>` is the droplet name like `lobmob-lobster-a3f1`.
+   where `<lobster-name>` is the droplet name like `lobster-swift-coral`.
 
 3. The script will:
    - Remove the lobster's WireGuard peer from the lobboss
