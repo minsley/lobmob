@@ -8,6 +8,7 @@ completed_at:
 priority: normal
 tags: []
 estimate:
+model:
 ---
 
 # {{title}}
