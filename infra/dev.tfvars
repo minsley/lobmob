@@ -1,5 +1,5 @@
 vault_repo            = "minsley/lobmob-vault-dev"
-wg_lobboss_public_key = "__GENERATE_WITH_lobmob_init__"
+wg_lobboss_public_key = "lFITIx1WqnD7A0lx7E9U2IQs76RZ9kVLzYn1Pa71lyk="
 ssh_pub_key_path      = "/Users/matt/.ssh/lobmob_ed25519.pub"
 region                = "nyc3"
 project_name          = "lobmob-dev"
