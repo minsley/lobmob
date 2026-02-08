@@ -47,6 +47,51 @@ write_files:
         IdentityFile /root/.ssh/vault_key
         StrictHostKeyChecking accept-new
 
+  # GitHub App token generator -- produces 1-hour installation tokens from PEM
+  # Falls back gracefully if App not configured (returns empty, callers use PAT)
+  - path: /usr/local/bin/lobmob-gh-token
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      # Load config
+      if [ -f /etc/lobmob/env ]; then source /etc/lobmob/env; fi
+
+      APP_ID="$${GH_APP_ID:-}"
+      INSTALL_ID="$${GH_APP_INSTALL_ID:-}"
+      PEM_FILE="$${GH_APP_PEM:-/etc/lobmob/gh-app.pem}"
+
+      if [ -z "$$APP_ID" ] || [ -z "$$INSTALL_ID" ] || [ ! -f "$$PEM_FILE" ]; then
+        exit 1
+      fi
+
+      # Base64url encode (RFC 4648 section 5)
+      b64url() { openssl enc -base64 -A | tr '+/' '-_' | tr -d '='; }
+
+      NOW=$$(date +%s)
+      IAT=$$((NOW - 60))
+      EXP=$$((NOW + 540))
+
+      HEADER="eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+      PAYLOAD=$$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$$IAT" "$$EXP" "$$APP_ID" | b64url)
+      SIGNATURE=$$(printf '%s' "$${HEADER}.$${PAYLOAD}" | openssl dgst -binary -sha256 -sign "$$PEM_FILE" | b64url)
+      JWT="$${HEADER}.$${PAYLOAD}.$${SIGNATURE}"
+
+      RESPONSE=$$(curl -s -X POST \
+        -H "Authorization: Bearer $$JWT" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/app/installations/$${INSTALL_ID}/access_tokens")
+
+      if [[ "$$RESPONSE" =~ \"token\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+        echo "$${BASH_REMATCH[1]}"
+      else
+        echo "ERROR: Failed to get installation token" >&2
+        echo "$$RESPONSE" >&2
+        exit 1
+      fi
+
   # Provision script -- called by `lobmob deploy` via SSH after secrets are pushed
   - path: /usr/local/bin/lobmob-provision
     permissions: "0755"
@@ -58,12 +103,17 @@ write_files:
 
       # Validate secrets exist
       source /etc/lobmob/secrets.env 2>/dev/null || { echo "ERROR: /etc/lobmob/secrets.env not found"; exit 1; }
-      for VAR in DO_TOKEN GH_TOKEN DISCORD_BOT_TOKEN ANTHROPIC_API_KEY; do
+      for VAR in DO_TOKEN DISCORD_BOT_TOKEN ANTHROPIC_API_KEY; do
         if [ -z "$${!VAR:-}" ]; then
-          echo "ERROR: $VAR not set in secrets.env"
+          echo "ERROR: $$VAR not set in secrets.env"
           exit 1
         fi
       done
+      # GH_TOKEN is optional if GitHub App is configured
+      if [ -z "$${GH_TOKEN:-}" ] && [ ! -f /etc/lobmob/gh-app.pem ]; then
+        echo "ERROR: Neither GH_TOKEN nor GitHub App PEM configured"
+        exit 1
+      fi
 
       # Validate deploy key
       if [ ! -f /root/.ssh/vault_key ]; then
@@ -82,8 +132,18 @@ write_files:
         exit 1
       fi
 
-      # Authenticate GitHub CLI
-      echo "$GH_TOKEN" | gh auth login --with-token
+      # Authenticate GitHub CLI (prefer App token, fall back to PAT)
+      GH_AUTH_TOKEN=""
+      if command -v lobmob-gh-token >/dev/null 2>&1; then
+        GH_AUTH_TOKEN=$$(lobmob-gh-token 2>/dev/null || true)
+      fi
+      if [ -z "$$GH_AUTH_TOKEN" ]; then
+        GH_AUTH_TOKEN="$$GH_TOKEN"
+        echo "GitHub CLI: using PAT"
+      else
+        echo "GitHub CLI: using App installation token"
+      fi
+      echo "$$GH_AUTH_TOKEN" | gh auth login --with-token
       gh auth setup-git
       echo "GitHub CLI: authenticated"
 
@@ -429,13 +489,34 @@ write_files:
       ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
       SECRETS
 
+      # Push GitHub App PEM and token script if configured
+      if [ -f /etc/lobmob/gh-app.pem ]; then
+        scp -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new \
+          /etc/lobmob/gh-app.pem "root@$WG_IP:/etc/lobmob/gh-app.pem"
+        scp -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new \
+          /usr/local/bin/lobmob-gh-token "root@$WG_IP:/usr/local/bin/lobmob-gh-token"
+        ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+          "chmod 600 /etc/lobmob/gh-app.pem && chmod 755 /usr/local/bin/lobmob-gh-token"
+        # Push App config to lobster env
+        source /etc/lobmob/env
+        ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
+          "echo 'GH_APP_ID=$${GH_APP_ID:-}' >> /etc/lobmob/env; echo 'GH_APP_INSTALL_ID=$${GH_APP_INSTALL_ID:-}' >> /etc/lobmob/env"
+      fi
+
       # Authenticate gh and clone vault
       ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" bash <<PROVISION
       set -euo pipefail
       source /etc/lobmob/secrets.env
 
-      # GitHub auth
-      echo "\$GH_TOKEN" | gh auth login --with-token
+      # GitHub auth (prefer App token, fall back to PAT)
+      GH_AUTH_TOKEN=""
+      if command -v lobmob-gh-token >/dev/null 2>&1; then
+        GH_AUTH_TOKEN=\$(lobmob-gh-token 2>/dev/null || true)
+      fi
+      if [ -z "\$GH_AUTH_TOKEN" ]; then
+        GH_AUTH_TOKEN="\$GH_TOKEN"
+      fi
+      echo "\$GH_AUTH_TOKEN" | gh auth login --with-token
       gh auth setup-git
 
       # Re-set git identity (gh auth setup-git clobbers .gitconfig)

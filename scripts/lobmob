@@ -398,12 +398,41 @@ cmd_bootstrap() {
     echo ""
   fi
 
-  echo "  Create a fine-grained PAT at: https://github.com/settings/personal-access-tokens/new"
-  echo "  Scope to the vault repo. Permissions: Contents (rw), Pull requests (rw), Metadata (r)"
+  echo "  GitHub authentication method:"
+  echo "    1) GitHub App (recommended — auto-renewing 1-hour tokens)"
+  echo "    2) Fine-grained PAT (manual renewal)"
   echo ""
-  read -rsp "  GitHub PAT: " BS_GH_TOKEN; echo ""
-  if [ -z "$BS_GH_TOKEN" ]; then
-    err "GitHub token is required"; exit 1
+  read -rp "  Choice [1]: " BS_GH_METHOD
+  BS_GH_METHOD="${BS_GH_METHOD:-1}"
+
+  BS_GH_TOKEN=""
+  BS_GH_APP_ID=""
+  BS_GH_APP_INSTALL_ID=""
+  BS_GH_APP_PEM_B64=""
+
+  if [ "$BS_GH_METHOD" = "1" ]; then
+    echo ""
+    echo "  Create a GitHub App at: https://github.com/settings/apps/new"
+    echo "  Permissions: Contents (rw), Pull requests (rw), Metadata (r)"
+    echo "  Install on the vault repo, download the PEM private key."
+    echo ""
+    read -rp "  App ID: " BS_GH_APP_ID
+    read -rp "  Installation ID: " BS_GH_APP_INSTALL_ID
+    read -rp "  Path to PEM file: " BS_GH_PEM_PATH
+    if [ -z "$BS_GH_APP_ID" ] || [ -z "$BS_GH_APP_INSTALL_ID" ] || [ ! -f "$BS_GH_PEM_PATH" ]; then
+      err "App ID, Installation ID, and valid PEM path are all required"; exit 1
+    fi
+    BS_GH_APP_PEM_B64=$(base64 < "$BS_GH_PEM_PATH" | tr -d '\n')
+    echo -e "  ${GREEN}✓${NC} GitHub App configured"
+  else
+    echo ""
+    echo "  Create a fine-grained PAT at: https://github.com/settings/personal-access-tokens/new"
+    echo "  Scope to the vault repo. Permissions: Contents (rw), Pull requests (rw), Metadata (r)"
+    echo ""
+    read -rsp "  GitHub PAT: " BS_GH_TOKEN; echo ""
+    if [ -z "$BS_GH_TOKEN" ]; then
+      err "GitHub token is required"; exit 1
+    fi
   fi
   echo ""
 
@@ -518,6 +547,14 @@ ANTHROPIC_API_KEY=$BS_ANTHROPIC_KEY
 VAULT_DEPLOY_KEY_B64=$BS_DEPLOY_KEY_B64
 WG_LOBBOSS_PRIVATE_KEY=$BS_WG_PRIVKEY
 SECRETSEOF
+    # Append GitHub App config if present
+    if [ -n "$BS_GH_APP_ID" ]; then
+      cat >> "$SECRETS_FILE" <<GHAPPEOF
+GH_APP_ID=$BS_GH_APP_ID
+GH_APP_INSTALL_ID=$BS_GH_APP_INSTALL_ID
+GH_APP_PEM_B64=$BS_GH_APP_PEM_B64
+GHAPPEOF
+    fi
     chmod 600 "$SECRETS_FILE"
     echo -e "  ${GREEN}✓${NC} secrets.env written"
   fi
@@ -657,11 +694,23 @@ cmd_provision_secrets_to() {
   # 1. Push secrets.env (service tokens)
   lobmob_ssh "root@$HOST" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<EOF
 DO_TOKEN=$DO_TOKEN
-GH_TOKEN=$GH_TOKEN
+GH_TOKEN=${GH_TOKEN:-}
 DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 EOF
   log "  secrets.env: pushed"
+
+  # 1b. Push GitHub App PEM if configured
+  if [ -n "${GH_APP_PEM_B64:-}" ]; then
+    echo "$GH_APP_PEM_B64" | base64 -d | \
+      lobmob_ssh "root@$HOST" "cat > /etc/lobmob/gh-app.pem && chmod 600 /etc/lobmob/gh-app.pem"
+    # Write App config to env
+    lobmob_ssh "root@$HOST" bash <<GHAPP
+echo "GH_APP_ID=${GH_APP_ID}" >> /etc/lobmob/env
+echo "GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}" >> /etc/lobmob/env
+GHAPP
+    log "  GitHub App PEM + config: pushed"
+  fi
 
   # 2. Push vault deploy key
   echo "$VAULT_DEPLOY_KEY_B64" | base64 -d | \
