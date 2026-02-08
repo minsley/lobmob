@@ -371,6 +371,27 @@ cmd_bootstrap() {
   echo -e "  ${GREEN}✓${NC} Token valid"
   echo ""
 
+  BS_DO_OAUTH_CLIENT_ID=""
+  BS_DO_OAUTH_CLIENT_SECRET=""
+  echo "  Optional: configure DO OAuth for auto-renewing tokens"
+  echo "  Create an app at: https://cloud.digitalocean.com/account/api/applications"
+  echo "  (You can set the callback URL after deployment)"
+  echo ""
+  read -rp "  Set up DO OAuth now? [y/N]: " BS_DO_OAUTH
+  BS_DO_OAUTH="${BS_DO_OAUTH:-N}"
+  if [[ "$BS_DO_OAUTH" =~ ^[Yy]$ ]]; then
+    read -rp "  OAuth Client ID: " BS_DO_OAUTH_CLIENT_ID
+    read -rsp "  OAuth Client Secret: " BS_DO_OAUTH_CLIENT_SECRET; echo ""
+    if [ -n "$BS_DO_OAUTH_CLIENT_ID" ] && [ -n "$BS_DO_OAUTH_CLIENT_SECRET" ]; then
+      echo -e "  ${GREEN}✓${NC} DO OAuth configured"
+    else
+      warn "  Skipping OAuth — both Client ID and Secret are required"
+      BS_DO_OAUTH_CLIENT_ID=""
+      BS_DO_OAUTH_CLIENT_SECRET=""
+    fi
+  fi
+  echo ""
+
   echo "  Choose a region (nyc1, nyc3, sfo3, ams3, lon1, fra1, sgp1, blr1, tor1, syd1)"
   read -rp "  Region [nyc3]: " BS_REGION
   BS_REGION="${BS_REGION:-nyc3}"
@@ -503,7 +524,7 @@ cmd_bootstrap() {
   echo ""
 
   # ── Step 7: Optional overrides ───────────────────────────────────────
-  log "Step 7/10 — Droplet sizing"
+  log "Step 7/10 — Droplet sizing and monitoring"
   echo "  Defaults: lobboss s-2vcpu-4gb (\$24/mo), lobster s-1vcpu-2gb (\$12/mo)"
   read -rp "  Customize sizes? [y/N]: " BS_CUSTOM_SIZES
   BS_CUSTOM_SIZES="${BS_CUSTOM_SIZES:-N}"
@@ -515,6 +536,12 @@ cmd_bootstrap() {
     BS_MANAGER_SIZE="${BS_MANAGER_SIZE:-s-2vcpu-4gb}"
     read -rp "  Lobster size [s-1vcpu-2gb]: " BS_WORKER_SIZE
     BS_WORKER_SIZE="${BS_WORKER_SIZE:-s-1vcpu-2gb}"
+  fi
+  echo ""
+  echo "  Monitoring alerts will be sent to your email for CPU/memory/disk issues."
+  read -rp "  Alert email: " BS_ALERT_EMAIL
+  if [ -z "$BS_ALERT_EMAIL" ]; then
+    err "Alert email is required for monitoring"; exit 1
   fi
   echo ""
 
@@ -555,6 +582,13 @@ GH_APP_INSTALL_ID=$BS_GH_APP_INSTALL_ID
 GH_APP_PEM_B64=$BS_GH_APP_PEM_B64
 GHAPPEOF
     fi
+    # Append DO OAuth config if present
+    if [ -n "$BS_DO_OAUTH_CLIENT_ID" ]; then
+      cat >> "$SECRETS_FILE" <<DOAUTHEOF
+DO_OAUTH_CLIENT_ID=$BS_DO_OAUTH_CLIENT_ID
+DO_OAUTH_CLIENT_SECRET=$BS_DO_OAUTH_CLIENT_SECRET
+DOAUTHEOF
+    fi
     chmod 600 "$SECRETS_FILE"
     echo -e "  ${GREEN}✓${NC} secrets.env written"
   fi
@@ -581,6 +615,7 @@ GHAPPEOF
       if [ -n "$BS_WORKER_SIZE" ]; then
         echo "worker_size           = \"$BS_WORKER_SIZE\""
       fi
+      echo "alert_email           = \"$BS_ALERT_EMAIL\""
     } > "$INFRA_DIR/terraform.tfvars"
     echo -e "  ${GREEN}✓${NC} terraform.tfvars written"
   fi
@@ -710,6 +745,15 @@ echo "GH_APP_ID=${GH_APP_ID}" >> /etc/lobmob/env
 echo "GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}" >> /etc/lobmob/env
 GHAPP
     log "  GitHub App PEM + config: pushed"
+  fi
+
+  # 1c. Push DO OAuth web.env if configured
+  if [ -n "${DO_OAUTH_CLIENT_ID:-}" ]; then
+    lobmob_ssh "root@$HOST" "cat > /etc/lobmob/web.env && chmod 600 /etc/lobmob/web.env" <<WEBENV
+DO_OAUTH_CLIENT_ID=$DO_OAUTH_CLIENT_ID
+DO_OAUTH_CLIENT_SECRET=$DO_OAUTH_CLIENT_SECRET
+WEBENV
+    log "  web.env (DO OAuth): pushed"
   fi
 
   # 2. Push vault deploy key
