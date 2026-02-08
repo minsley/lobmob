@@ -2,7 +2,7 @@
 
 Tracking doc for the multi-phase project to isolate lobmob in DigitalOcean, automate token renewal, and build a management web UI.
 
-## Status: In Progress
+## Status: Code Complete — Awaiting Deploy
 
 ## Why
 

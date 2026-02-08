@@ -88,7 +88,19 @@ check "Git identity configured" \
   lobmob_ssh "root@$LOBBOSS_IP" "git config --global user.name | grep -q ."
 
 check "OpenClaw config exists" \
-  lobmob_ssh "root@$LOBBOSS_IP" "test -f /root/.openclaw/config.json"
+  lobmob_ssh "root@$LOBBOSS_IP" "test -f /root/.openclaw/openclaw.json"
+
+check "OpenClaw .env exists" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -f /root/.openclaw/.env"
+
+check "OpenClaw gateway running" \
+  lobmob_ssh "root@$LOBBOSS_IP" "systemctl is-active openclaw-gateway"
+
+check "GH token script exists" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -f /usr/local/bin/lobmob-gh-token"
+
+check "Web UI script exists" \
+  lobmob_ssh "root@$LOBBOSS_IP" "test -f /usr/local/bin/lobmob-web"
 
 check "Cron: cleanup" \
   lobmob_ssh "root@$LOBBOSS_IP" "grep -q lobmob-cleanup /etc/crontab"

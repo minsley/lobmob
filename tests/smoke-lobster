@@ -124,6 +124,9 @@ check "Gateway log exists" \
 check "Git identity configured" \
   lobster_ssh "git config --global user.name | grep -q ."
 
+check "GitHub CLI authenticated" \
+  lobster_ssh "gh auth status 2>&1 | grep -q 'Logged in'"
+
 # --- Summary ---
 
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
