@@ -95,6 +95,13 @@ write_files:
       doctl auth init -t "$DO_TOKEN"
       echo "doctl: authenticated"
 
+      # Look up DO project ID and append to env
+      PROJECT_ID=$$(doctl projects list --format ID,Name --no-header | grep "$${PROJECT_NAME}" | awk '{print $$1}')
+      if [ -n "$$PROJECT_ID" ]; then
+        echo "DO_PROJECT_ID=$$PROJECT_ID" >> /etc/lobmob/env
+        echo "DO project: $$PROJECT_ID"
+      fi
+
       # Clone vault repo
       source /etc/lobmob/env
       if [ ! -d /opt/vault/.git ]; then
@@ -375,6 +382,11 @@ write_files:
 
       DROPLET_ID=$(echo "$RESPONSE" | jq -r '.[0].id')
       DROPLET_IP=$(echo "$RESPONSE" | jq -r '.[0].networks.v4[] | select(.type=="public") | .ip_address')
+
+      # Assign lobster to DO project
+      if [ -n "$${DO_PROJECT_ID:-}" ]; then
+        doctl projects resources assign "$$DO_PROJECT_ID" --resource="do:droplet:$$DROPLET_ID" 2>/dev/null || true
+      fi
 
       # Add lobster as WireGuard peer on lobboss
       wg set wg0 peer "$LOBSTER_WG_PUBKEY" allowed-ips "$WG_IP/32" endpoint "$DROPLET_IP:51820"
