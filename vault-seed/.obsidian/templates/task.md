@@ -7,6 +7,7 @@ assigned_at:
 completed_at:
 priority: normal
 tags: []
+estimate:
 ---
 
 # {{title}}
