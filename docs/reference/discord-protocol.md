@@ -88,6 +88,11 @@ WATCHDOG: <lobster-id> appears stale on task <task-id> — no gateway activity f
 Timeout warning: Task <task-id> has been active for <N> minutes with no recent progress from <lobster-id>.
 ```
 
+### Thread: Task Re-queued (lobboss → task thread)
+```
+Task <task-id> re-queued — <lobster-id> is offline. Will reassign.
+```
+
 ### Thread: PR Announcement (lobster → task thread)
 ```
 Task Complete: <task-id>

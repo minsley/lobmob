@@ -145,6 +145,55 @@ For each task in `010-tasks/active/` with `status: active`:
    ```
    If the lobster appears dead, consider failing the task (follow "Failing a Task" below).
 
+## Recovering Orphaned Tasks
+
+When checking active tasks, also look for tasks assigned to lobsters that no longer
+exist or are offline. Cross-reference `assigned_to` against the fleet registry at
+`/opt/vault/040-fleet/registry.md`.
+
+### Detection
+
+```bash
+cd /opt/vault && git pull origin main
+```
+
+For each task in `010-tasks/active/` with `status: active` and `assigned_to` set:
+1. Look up the lobster in `040-fleet/registry.md`
+2. If the lobster is `offline`, `destroyed`, or missing from the registry entirely → orphaned
+
+### Decision Logic
+
+For each orphaned task:
+
+1. **Check for an open PR:**
+   ```bash
+   gh pr list --state open --json number,title,headRefName | grep "<task-id>"
+   ```
+   If a PR exists → leave the task as-is. The PR can still be reviewed and merged
+   even though the lobster is gone. Post a note in the task thread:
+   ```
+   Note: <lobster-id> is offline, but PR #<number> is open. Proceeding with review.
+   ```
+
+2. **No PR, assigned < 30 min ago** → re-queue:
+   - Update frontmatter: `status: queued`, clear `assigned_to` and `assigned_at`
+   - Add a note: `Re-queued: <lobster-id> went offline before completion.`
+   - Commit and push
+   - Post in task thread: `Task <task-id> re-queued — <lobster-id> is offline. Will reassign.`
+   - Assign to another lobster
+
+3. **No PR, assigned >= 30 min ago** → fail and re-create:
+   - Check if the lobster's branch exists: `git ls-remote origin "lobster-*/task-<task-id>"`
+   - If partial work exists on the branch, note it
+   - Follow "Failing a Task" below with reason: `<lobster-id> went offline after <N> min, no PR submitted`
+   - Create a **new** task referencing the failed one (include a note about partial work if any)
+
+### When to Run This
+
+- When the watchdog posts a `WATCHDOG:` alert about an unreachable or stale lobster
+- When you notice orphaned tasks during normal task management
+- After any bulk teardown event
+
 ## Completing a Task (via PR)
 
 You do NOT move the task file yourself. The lobster will:
