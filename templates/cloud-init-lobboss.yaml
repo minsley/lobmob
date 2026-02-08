@@ -390,15 +390,25 @@ write_files:
 
       # Wait for cloud-init to finish
       echo "Waiting for cloud-init to complete on lobster..."
-      ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
-        "cloud-init status --wait" 2>/dev/null || true
-      echo "Cloud-init: done"
+
+      # Clear stale known_hosts first (WireGuard IPs get reused across spawns)
+      ssh-keygen -f /root/.ssh/known_hosts -R "$WG_IP" 2>/dev/null || true
+
+      # Poll for the .awaiting-secrets marker (last thing cloud-init writes)
+      for i in $(seq 1 60); do
+        if ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+          "root@$WG_IP" "test -f /etc/lobmob/.awaiting-secrets" 2>/dev/null; then
+          echo "Cloud-init: done (marker found after $((i * 5))s)"
+          break
+        fi
+        if [ "$i" -eq 60 ]; then
+          echo "WARNING: cloud-init marker not found after 300s, proceeding anyway"
+        fi
+        sleep 5
+      done
 
       # Push secrets to lobster via SSH over WireGuard
       echo "Pushing secrets to lobster via SSH..."
-
-      # Clear stale known_hosts entry (WireGuard IPs get reused across spawns)
-      ssh-keygen -f /root/.ssh/known_hosts -R "$WG_IP" 2>/dev/null || true
 
       # Write secrets.env
       ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" "cat > /etc/lobmob/secrets.env && chmod 600 /etc/lobmob/secrets.env" <<SECRETS
