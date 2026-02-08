@@ -138,6 +138,13 @@ resource "digitalocean_droplet" "lobboss" {
     vpc_uuid     = digitalocean_vpc.swarm.id
     lobster_tag  = digitalocean_tag.lobster.name
   })
+
+  # Cloud-init only runs at creation time. Script updates are deployed via
+  # `lobmob provision-secrets` over SSH, so user_data changes should NOT
+  # trigger droplet replacement.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
 # --- Reserved IP ---

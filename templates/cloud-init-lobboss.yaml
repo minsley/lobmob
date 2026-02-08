@@ -357,21 +357,23 @@ write_files:
       doctl auth init -t "$DO_TOKEN"
       echo "doctl: authenticated"
 
+      # Clone vault repo
+      source /etc/lobmob/env
+
       # Look up DO project ID and append to env
       PROJECT_ID=$$(doctl projects list --format ID,Name --no-header | grep "$${PROJECT_NAME}" | awk '{print $$1}')
       if [ -n "$$PROJECT_ID" ]; then
         echo "DO_PROJECT_ID=$$PROJECT_ID" >> /etc/lobmob/env
         echo "DO project: $$PROJECT_ID"
       fi
-
-      # Clone vault repo
-      source /etc/lobmob/env
       if [ ! -d /opt/vault/.git ]; then
         gh repo clone "$VAULT_REPO" /opt/vault
         cd /opt/vault && git checkout main
         echo "Vault: cloned"
       else
-        cd /opt/vault && git pull origin main
+        cd /opt/vault && git stash 2>/dev/null || true
+        git pull origin main --rebase 2>/dev/null || true
+        git stash pop 2>/dev/null || true
         echo "Vault: updated"
       fi
 
