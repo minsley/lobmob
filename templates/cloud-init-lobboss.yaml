@@ -1077,7 +1077,7 @@ write_files:
         --image ubuntu-24-04-x64 \
         --ssh-keys "$SSH_KEY_ID" \
         --vpc-uuid "$VPC_UUID" \
-        --tag-name "$LOBSTER_TAG,$${LOBSTER_TAG}-type-$${LOBSTER_TYPE}" \
+        --tag-name "$LOBSTER_TAG,$${LOBSTER_TAG}-type-$${LOBSTER_TYPE},$${LOBSTER_TAG}-initializing" \
         --user-data "$LOBSTER_USERDATA" \
         --wait \
         --format ID,PublicIPv4 \
@@ -1263,6 +1263,10 @@ write_files:
       ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
         "echo '$CONFIG_VERSION' > /etc/lobmob/config-version"
 
+      # Transition from initializing -> active (swap tags)
+      doctl compute droplet tag "$DROPLET_ID" --tag-name "$${LOBSTER_TAG}-active" 2>/dev/null || true
+      doctl compute droplet untag "$DROPLET_ID" --tag-name "$${LOBSTER_TAG}-initializing" 2>/dev/null || true
+
       lobmob-log spawn "lobster-$LOBSTER_ID type=$LOBSTER_TYPE droplet=$DROPLET_ID wg_ip=$WG_IP"
 
       # Output lobster info as JSON
@@ -1405,11 +1409,11 @@ write_files:
       POOL_ACTIVE="$${POOL_ACTIVE:-1}"
       POOL_STANDBY="$${POOL_STANDBY:-2}"
       HARD_MAX_HOURS=24
-      NOW=$(date +%s)
+      NOW=$$(date +%s)
 
-      # Get all lobster droplets
-      DROPLETS=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,Status,Created --no-header 2>/dev/null)
-      if [ -z "$DROPLETS" ]; then
+      # Only manage fully-provisioned lobsters (tagged -active, not -initializing)
+      DROPLETS=$$(doctl compute droplet list --tag-name "$${LOBSTER_TAG}-active" --format ID,Name,Status,Created --no-header 2>/dev/null)
+      if [ -z "$$DROPLETS" ]; then
         exit 0
       fi
 
@@ -1422,44 +1426,25 @@ write_files:
 
       while read -r ID NAME STATUS CREATED; do
         # Hard ceiling: destroy ANY lobster older than 24h
-        CREATED_TS=$(date -d "$CREATED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" +%s 2>/dev/null)
-        AGE_HOURS=$(( (NOW - CREATED_TS) / 3600 ))
-        if [ "$AGE_HOURS" -ge "$HARD_MAX_HOURS" ]; then
-          echo "Destroying lobster $NAME (age: $${AGE_HOURS}h exceeds $${HARD_MAX_HOURS}h ceiling)"
-          lobmob-teardown-lobster "$NAME"
-          AGED_OUT=$((AGED_OUT + 1))
+        CREATED_TS=$$(date -d "$$CREATED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$$CREATED" +%s 2>/dev/null)
+        AGE_HOURS=$$(( (NOW - CREATED_TS) / 3600 ))
+        if [ "$$AGE_HOURS" -ge "$$HARD_MAX_HOURS" ]; then
+          echo "Destroying lobster $$NAME (age: $${AGE_HOURS}h exceeds $${HARD_MAX_HOURS}h ceiling)"
+          lobmob-teardown-lobster "$$NAME"
+          AGED_OUT=$$((AGED_OUT + 1))
           continue
         fi
 
-        if [ "$STATUS" = "off" ]; then
-          STANDBY+=("$NAME")
-        elif [ "$STATUS" = "active" ]; then
-          # Skip lobsters still setting up (no config-version = spawn incomplete)
-          WG_IP=$(wg show wg0 allowed-ips 2>/dev/null | while read -r PK ALLOWED; do
-            IP=$$(echo "$$ALLOWED" | cut -d/ -f1)
-            RID=$$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
-              "root@$$IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
-            if echo "$$NAME" | grep -q "$$RID" 2>/dev/null && [ -n "$$RID" ]; then echo "$$IP"; break; fi
-          done)
-          if [ -n "$$WG_IP" ]; then
-            READY=$$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
-              "root@$$WG_IP" "test -f /etc/lobmob/config-version && echo yes || echo no" 2>/dev/null || echo "no")
-            if [ "$$READY" != "yes" ]; then
-              echo "Skipping $NAME (still provisioning)"
-              continue
-            fi
-          else
-            echo "Skipping $NAME (not reachable over WG — likely still booting)"
-            continue
-          fi
-
+        if [ "$$STATUS" = "off" ]; then
+          STANDBY+=("$$NAME")
+        elif [ "$$STATUS" = "active" ]; then
           # Check if busy (has active task in vault)
           BUSY=0
-          if ls /opt/vault/010-tasks/active/*"$NAME"* 2>/dev/null | grep -q .; then
+          if ls /opt/vault/010-tasks/active/*"$$NAME"* 2>/dev/null | grep -q .; then
             BUSY=1
           fi
-          if [ "$BUSY" -eq 0 ]; then
-            ACTIVE_IDLE+=("$NAME")
+          if [ "$$BUSY" -eq 0 ]; then
+            ACTIVE_IDLE+=("$$NAME")
           fi
         fi
       done <<< "$DROPLETS"
@@ -1670,8 +1655,9 @@ write_files:
 
       echo "$(date -Iseconds) Pool manager: target active-idle=$POOL_ACTIVE standby=$POOL_STANDBY"
 
-      # Get all lobster droplets
-      DROPLETS=$(doctl compute droplet list --tag-name "$LOBSTER_TAG" --format ID,Name,Status --no-header 2>/dev/null)
+      # Get only fully-provisioned lobsters (tagged -active, not -initializing)
+      DROPLETS=$(doctl compute droplet list --tag-name "$${LOBSTER_TAG}-active" --format ID,Name,Status --no-header 2>/dev/null)
+      INITIALIZING=$(doctl compute droplet list --tag-name "$${LOBSTER_TAG}-initializing" --format Name --no-header 2>/dev/null | wc -l | tr -d ' ')
 
       ACTIVE_BUSY=()
       ACTIVE_IDLE=()
@@ -1682,33 +1668,14 @@ write_files:
       cd /opt/vault 2>/dev/null && git pull origin main --quiet 2>/dev/null || true
 
       while read -r ID NAME STATUS; do
-        [ -z "$ID" ] && continue
-        TOTAL=$((TOTAL + 1))
-        if [ "$STATUS" = "off" ]; then
-          STANDBY+=("$NAME")
-        elif [ "$STATUS" = "active" ]; then
-          # Skip lobsters still setting up (no config-version = spawn incomplete)
-          # Use ping + SSH to check readiness without scanning all WG peers
-          LOBSTER_READY=0
-          LOBSTER_SHORT=$$(echo "$$NAME" | sed 's/^lobster-//')
-          for PEER_IP in $$(wg show wg0 allowed-ips 2>/dev/null | awk '{print $$2}' | cut -d/ -f1); do
-            RID=$$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
-              "root@$$PEER_IP" "cat /etc/lobmob/env 2>/dev/null | grep LOBSTER_ID | cut -d= -f2" 2>/dev/null || true)
-            if [ -n "$$RID" ] && echo "$$NAME" | grep -q "$$RID"; then
-              if ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
-                "root@$$PEER_IP" "test -f /etc/lobmob/config-version" 2>/dev/null; then
-                LOBSTER_READY=1
-              fi
-              break
-            fi
-          done
-          if [ "$$LOBSTER_READY" -eq 0 ]; then
-            echo "  Skipping $$NAME (still provisioning or unreachable)"
-            continue
-          fi
-
+        [ -z "$$ID" ] && continue
+        TOTAL=$$((TOTAL + 1))
+        if [ "$$STATUS" = "off" ]; then
+          STANDBY+=("$$NAME")
+        elif [ "$$STATUS" = "active" ]; then
           # Check if lobster is busy (assigned to an active task in vault)
           BUSY=0
+          LOBSTER_SHORT=$$(echo "$$NAME" | sed 's/^lobster-//')
           if grep -rl "$$LOBSTER_SHORT" /opt/vault/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
             BUSY=1
           fi
@@ -1724,7 +1691,7 @@ write_files:
       IDLE_COUNT=$${#ACTIVE_IDLE[@]}
       STANDBY_COUNT=$${#STANDBY[@]}
 
-      echo "  Current: active-busy=$BUSY_COUNT active-idle=$IDLE_COUNT standby=$STANDBY_COUNT total=$TOTAL"
+      echo "  Current: active-busy=$$BUSY_COUNT active-idle=$$IDLE_COUNT standby=$$STANDBY_COUNT initializing=$$INITIALIZING total=$$((TOTAL + INITIALIZING))"
 
       # Current config version
       CONFIG_VERSION=$(md5sum /usr/local/bin/lobmob-spawn-lobster 2>/dev/null | awk '{print $1}')
