@@ -1,0 +1,14 @@
+[Unit]
+Description=lobmob Web UI
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /usr/local/bin/lobmob-web
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/lobmob-web.log
+StandardError=append:/var/log/lobmob-web.log
+
+[Install]
+WantedBy=multi-user.target
