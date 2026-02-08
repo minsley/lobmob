@@ -1,8 +1,10 @@
 # Secrets — NEVER commit these
 secrets.env
+secrets-*.env
 infra/terraform.tfvars
 infra/*.tfstate
 infra/*.tfstate.backup
+infra/terraform.tfstate.d/
 infra/.terraform/
 infra/.terraform.lock.hcl
 infra/tfplan
