@@ -5,7 +5,8 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                      DISCORD SERVER                          │
-│  #task-queue   #swarm-control   #results   #swarm-logs       │
+│  #task-queue        #swarm-control        #swarm-logs        │
+│  (threads per task)                                          │
 └──────┬───────────────────────────────────────┬───────────────┘
        │                                       │
        ▼                                       ▼
@@ -49,10 +50,9 @@
 - Delivers results as [[architecture/git-workflow|pull requests]]
 
 ### Discord Server
-- **#task-queue** — humans/external systems post work requests
-- **#swarm-control** — lobboss assigns tasks, requests PR revisions
-- **#results** — lobsters announce completed PRs with summaries and links
-- **#swarm-logs** — lobboss posts merge events, fleet status, errors
+- **#task-queue** — task lifecycle; one parent message per task with a thread for all updates (proposal, confirmation, assignment, results, PR review)
+- **#swarm-control** — user commands to lobboss for fleet management (spawn, converge, pool config)
+- **#swarm-logs** — fleet events: spawns, merges, convergence, teardowns, fleet status
 
 ### GitHub Vault Repo
 - Obsidian vault with [[reference/vault-structure|structured directories]]

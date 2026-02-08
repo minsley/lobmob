@@ -8,7 +8,7 @@ OpenClaw agent swarm management system for DigitalOcean. A persistent manager ag
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                      DISCORD SERVER                          │
-│  #task-queue   #swarm-control   #results   #swarm-logs       │
+│  #task-queue        #swarm-control        #swarm-logs        │
 └──────┬───────────────────────────────────────┬───────────────┘
        │                                       │
        ▼                                       ▼

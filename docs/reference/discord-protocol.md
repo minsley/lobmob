@@ -4,14 +4,33 @@
 
 | Channel | Who writes | Purpose |
 |---|---|---|
-| #task-queue | Humans, lobboss | Work requests and task proposals |
-| #swarm-control | Lobboss, lobsters | Task assignment and coordination |
-| #results | Lobsters | PR announcements with summaries |
-| #swarm-logs | Lobboss | Fleet events, merge confirmations |
+| #task-queue | Humans, lobboss, lobsters | Task lifecycle — one parent message per task, all updates in threads |
+| #swarm-control | Humans, lobboss | User commands for fleet management (spawn, converge, pool config, wake/sleep) |
+| #swarm-logs | Lobboss | Fleet events — spawns, merges, convergence, teardowns, fleet status |
+
+## Thread-Based Task Lifecycle
+
+Each task gets a single parent message in **#task-queue** with a thread underneath.
+All task communication (proposals, confirmation, assignment, ACK, progress, results,
+PR review) happens in that thread. The `discord_thread_id` is stored in the task
+file frontmatter so any agent can post to it.
+
+### Flow
+
+1. User posts request in #task-queue
+2. Lobboss posts **Task Proposal** as a top-level message
+3. Lobboss creates a thread on the proposal (named `Task: <title>`)
+4. User confirms/changes/cancels in the thread
+5. On confirmation: task file created with `discord_thread_id`, confirmation posted in thread
+6. Assignment posted in thread
+7. Lobster ACKs in thread
+8. Results/PR announced in thread
+9. PR review feedback in thread
+10. Merge confirmation in thread + event to #swarm-logs
 
 ## Message Formats
 
-### Task Proposal (lobboss → #task-queue)
+### Task Proposal (lobboss → #task-queue, top-level)
 ```
 **Task Proposal**
 
@@ -25,36 +44,36 @@
 > **Acceptance Criteria**
 > - <criterion 1>
 > - <criterion 2>
+```
 
+### Thread: Confirmation Prompt (lobboss → task thread)
+```
 Reply **go** to create, **cancel** to discard, or describe changes.
 ```
 
-### Task Confirmed (lobboss → #task-queue)
+### Thread: Task Created (lobboss → task thread)
 ```
 Task created: **<task-id>**
-Title: <title>
 I'll assign it to a lobster shortly.
 ```
 
-### Task Cancelled (lobboss → #task-queue)
+### Thread: Task Cancelled (lobboss → task thread)
 ```
 Task cancelled.
 ```
 
-### Task Assignment (lobboss → #swarm-control)
+### Thread: Assignment (lobboss → task thread)
 ```
-@lobster-<id> TASK: <task-id>
-Title: <title>
-File: 010-tasks/active/<task-id>.md
-Pull main for full details.
+Assigned to **lobster-<id>**.
+@lobster-<id> — pull main and read `010-tasks/active/<task-id>.md` for details.
 ```
 
-### Task Acknowledgment (lobster → #swarm-control)
+### Thread: ACK (lobster → task thread)
 ```
 ACK <task-id> lobster-<id>
 ```
 
-### PR Announcement (lobster → #results)
+### Thread: PR Announcement (lobster → task thread)
 ```
 Task Complete: <task-id>
 
@@ -66,22 +85,26 @@ Summary: <2-3 sentences>
 Diff: +<lines> across <N> files
 ```
 
-### Task Failure (lobster → #results)
+### Thread: Task Failure (lobster → task thread)
 ```
 FAIL: <task-id>
-
 PR: <github PR url>
 Reason: <what went wrong>
 Partial results included in PR.
 ```
 
-### PR Revision Request (lobboss → #swarm-control)
+### Thread: PR Revision Request (lobboss → task thread)
 ```
 @lobster-<id> PR #<number> needs revision: <brief reason>.
 Please fix and push to your branch.
 ```
 
-### Merge Confirmation (lobboss → #swarm-logs)
+### Thread: Task Complete (lobboss → task thread)
+```
+Task complete. PR merged.
+```
+
+### Merge Event (lobboss → #swarm-logs)
 ```
 Merged PR #<number> (<task-id>) from <lobster-id>. Branch cleaned up.
 ```
@@ -94,7 +117,7 @@ Tasks: X queued, Y active, Z completed today
 Open PRs: N
 ```
 
-### Lobster Online (lobster → #swarm-control)
+### Lobster Online (lobboss → #swarm-logs)
 ```
 Lobster <lobster-id> online at <wireguard_ip>.
 Ready for task assignment.

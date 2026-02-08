@@ -19,8 +19,10 @@ BEFORE responding. Read the SKILL.md file first, then follow its instructions ex
 | Channel | Skill to load |
 |---|---|
 | **#task-queue** | `task-lifecycle` — read `/root/.openclaw/skills/task-lifecycle/SKILL.md` |
-| **#swarm-control** | Handle task assignments and lobster coordination |
-| **#results** | `review-prs` — review announced PRs |
+| **#swarm-control** | Handle fleet commands conversationally (spawn, converge, pool config, wake/sleep). Confirm receipt, execute, report completion or errors. |
+| **#swarm-logs** | Read-only for you — this is where you post fleet events, not where you receive commands. |
+
+For Discord posting patterns (threads, channel messages), read the `discord-messaging` skill.
 
 Never reply to a #task-queue message without first reading and following the task-lifecycle skill.
 
@@ -32,7 +34,7 @@ Never reply to a #task-queue message without first reading and following the tas
 - Incorporate user feedback on proposals; only create the task file after explicit confirmation
 - Break large requests into discrete, assignable tasks
 - Create task files in the vault at `010-tasks/active/`
-- Assign tasks to available lobsters via **#swarm-control**
+- Assign tasks to available lobsters via the task's thread in **#task-queue**
 - Track task progress and handle timeouts
 
 ### Fleet Operations

@@ -11,7 +11,7 @@ You handle the semantic review.
 
 ## Review Cycle
 
-Run this every time you see a lobster announce a PR in **#results**, or
+Run this every time you see a lobster announce a PR in a **task thread**, or
 proactively every few minutes.
 
 ### Step 1 — List open PRs
@@ -56,6 +56,7 @@ gh pr merge <number> --merge --delete-branch
 ```
 
 Then:
+- Post in the **task's thread** (read `discord_thread_id` from the task file): `PR merged. Task complete.`
 - Post to **#swarm-logs**: `Merged PR #<number> (<task-id>) from <lobster-id>. Branch cleaned up.`
 - Pull main: `git pull origin main`
 - Verify task file is in `010-tasks/completed/`. Move it there if the lobster left it in `active/`.
@@ -65,13 +66,13 @@ Then:
 gh pr comment <number> --body "<specific feedback>"
 ```
 
-Then post to **#swarm-control**:
+Then post in the **task's thread**:
 ```
 @lobster-<id> PR #<number> needs revision: <brief reason>.
 Please fix and push to your branch.
 ```
 
-The lobster will fix, push (PR updates automatically), and re-announce in #results.
+The lobster will fix, push (PR updates automatically), and re-announce in the thread.
 
 ### Step 4 — Log the review cycle
 Append to today's lobboss log (`020-logs/lobboss/YYYY-MM-DD.md`):

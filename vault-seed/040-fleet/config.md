@@ -28,7 +28,6 @@ updated:
 ## Discord Channels
 | Channel | Purpose |
 |---|---|
-| #task-queue | Incoming work requests |
-| #swarm-control | Task assignments, lobboss-lobster coordination |
-| #results | Lobster PR announcements |
-| #swarm-logs | Fleet events, merge confirmations, status reports |
+| #task-queue | Task lifecycle — one parent message per task, all updates in threads |
+| #swarm-control | User commands to lobboss for fleet management |
+| #swarm-logs | Fleet events — spawns, merges, convergence, teardowns, status |

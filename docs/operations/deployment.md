@@ -90,7 +90,7 @@ automatically after the first `lobmob spawn`.
 ## Step 5: Configure OpenClaw + Discord
 
 1. Invite the bot to your Discord server (if not done during setup)
-2. Create channels: `#task-queue`, `#swarm-control`, `#results`, `#swarm-logs`
+2. Create channels: `#task-queue`, `#swarm-control`, `#swarm-logs`
 3. Set up OpenClaw on the lobboss — see [[operations/openclaw-setup]] for the full procedure
 
 ## Step 6: Test a Lobster

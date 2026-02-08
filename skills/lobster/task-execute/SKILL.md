@@ -9,16 +9,16 @@ This is your main workflow when the lobboss assigns you a task.
 
 ## 1. Receive Assignment
 
-You'll see a message in **#swarm-control** like:
+You'll see a message in a **task thread** under #task-queue like:
 ```
-@lobster-<your-id> TASK: <task-id>
-Title: <title>
-File: 010-tasks/active/<task-id>.md
-Pull main for full details.
+Assigned to **lobster-<your-id>**.
+@lobster-<your-id> — pull main and read `010-tasks/active/<task-id>.md` for details.
 ```
 
 ## 2. Acknowledge
-Post to **#swarm-control**:
+
+Read the task file to get the `discord_thread_id` from the frontmatter.
+Post your ACK in the **task's thread**:
 ```
 ACK <task-id> lobster-<your-id>
 ```
@@ -76,15 +76,15 @@ When done:
 Use the `submit-results` skill to:
 1. Push your branch
 2. Create a PR
-3. Announce in **#results** with the PR link and summary
+3. Announce in the **task's thread** with the PR link and summary
 
 ## 9. Handle Feedback
 
 If the lobboss requests changes on your PR:
-1. Read the feedback (Discord message or PR comment)
+1. Read the feedback in the task's thread or PR comment
 2. Make fixes on the same branch
 3. Commit and push
-4. Re-announce in **#results**
+4. Post an update in the **task's thread**
 
 ## Failure
 
@@ -92,4 +92,4 @@ If you cannot complete the task:
 1. Document what went wrong in the task file and work log
 2. Set `status: failed` in the frontmatter
 3. Still submit a PR with partial results
-4. Announce with `FAIL` prefix in **#results**
+4. Announce with `FAIL` prefix in the **task's thread**

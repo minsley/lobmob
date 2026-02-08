@@ -22,11 +22,11 @@ One branch per task. Examples:
 2. Lobster pulls main, creates task branch
 3. Lobster does work, commits results to branch
 4. Lobster pushes branch, opens PR
-5. Lobster announces PR in #results with summary + links
+5. Lobster announces PR in the task's thread with summary + links
 6. Lobboss reviews PR (automated checks + semantic review)
-7. Lobboss merges or requests changes
-8. If changes requested: lobster fixes, pushes (PR auto-updates), re-announces
-9. On merge: lobboss confirms in #swarm-logs, cleans up branch
+7. Lobboss merges or requests changes (feedback in task thread)
+8. If changes requested: lobster fixes, pushes (PR auto-updates), posts update in thread
+9. On merge: lobboss confirms in the task's thread + event to #swarm-logs
 ```
 
 ## What the Lobboss Pushes to Main
@@ -64,7 +64,7 @@ One branch per task. Examples:
 - [x] Another criterion
 ```
 
-## Discord Announcement (posted to #results)
+## Discord Announcement (posted to task's thread in #task-queue)
 
 ```
 Task Complete: task-2026-02-05-a1b2

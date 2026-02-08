@@ -96,11 +96,10 @@ lobboss via SSH over WireGuard — never via cloud-init.
 
 ### Server Setup
 - [ ] Create a Discord server (or use existing)
-- [ ] Create four text channels:
-  - `#task-queue` — where humans post work requests
-  - `#swarm-control` — lobboss-lobster coordination
-  - `#results` — lobsters post PR announcements
-  - `#swarm-logs` — lobboss posts fleet events
+- [ ] Create three text channels:
+  - `#task-queue` — task lifecycle (threads per task)
+  - `#swarm-control` — user commands to lobboss for fleet management
+  - `#swarm-logs` — fleet events (spawns, merges, convergence)
 - [ ] Invite the bot to the server:
   - Developer Portal → OAuth2 → URL Generator
   - Scopes: `bot`

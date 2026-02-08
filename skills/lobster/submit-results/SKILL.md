@@ -71,9 +71,9 @@ PRBODY
 PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
 ```
 
-### 6. Announce on Discord
+### 6. Announce in the Task Thread
 
-Post to **#results**:
+Read the task file's `discord_thread_id` frontmatter field. Post to the **task's thread**:
 ```
 Task Complete: ${TASK_ID}
 
@@ -97,7 +97,7 @@ The lobboss will review your PR. If changes are requested:
 1. Read the PR comment or Discord message explaining what to fix
 2. Make the changes in `/opt/vault/`
 3. Commit and push to the same branch (the PR updates automatically)
-4. Re-announce in **#results**: `Updated PR #${PR_NUMBER} — <what changed>`
+4. Post update in the **task's thread**: `Updated PR #${PR_NUMBER} — <what changed>`
 
 ## If something goes wrong
 
@@ -105,7 +105,7 @@ If you cannot complete the task:
 1. Still create the PR with whatever partial results you have
 2. Set `status: failed` in the task frontmatter
 3. Document what went wrong in the Lobster Notes section
-4. Post to **#results** with `FAIL` prefix:
+4. Post in the **task's thread** with `FAIL` prefix:
    ```
    FAIL: ${TASK_ID}
    PR: ${PR_URL}

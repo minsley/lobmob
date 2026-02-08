@@ -49,7 +49,7 @@ See the **pool-management** skill for full details.
    - Edit `/opt/vault/040-fleet/registry.md` to add the new lobster entry
    - Commit and push to main
 
-7. Announce in **#swarm-control**:
+7. Announce in **#swarm-logs**:
    ```
    Lobster <lobster-id> online at <wireguard_ip> (droplet <droplet_id>).
    Ready for task assignment.
