@@ -20,7 +20,7 @@ Assigned to **lobster-<your-id>**.
 Read the task file to get the `discord_thread_id` from the frontmatter.
 Post your ACK in the **task's thread**:
 ```
-ACK <task-id> lobster-<your-id>
+**[lobster-<your-id>]** ACK <task-id>
 ```
 
 ## Progress Posting
@@ -33,7 +33,7 @@ As you work through this task, post brief milestone updates in the **task's thre
   "action": "thread-reply",
   "channel": "discord",
   "threadId": "<discord_thread_id from task frontmatter>",
-  "text": "PROGRESS <task-id>: <milestone message>"
+  "text": "**[lobster-<your-id>]** PROGRESS <task-id>: <milestone message>"
 }
 ```
 
@@ -41,10 +41,10 @@ Post at these milestones (one message each, keep it to one line):
 
 | When | Message |
 |---|---|
-| After reading and understanding the task (step 3) | `PROGRESS <task-id>: Task understood. Starting work.` |
-| When beginning research or information gathering | `PROGRESS <task-id>: Researching — <what you're looking into>` |
-| When actively building, writing, or executing | `PROGRESS <task-id>: Working — <brief description>` |
-| When finalizing results (step 7) | `PROGRESS <task-id>: Finalizing results and preparing PR.` |
+| After reading and understanding the task (step 3) | `**[lobster-<id>]** PROGRESS <task-id>: Task understood. Starting work.` |
+| When beginning research or information gathering | `**[lobster-<id>]** PROGRESS <task-id>: Researching — <what you're looking into>` |
+| When actively building, writing, or executing | `**[lobster-<id>]** PROGRESS <task-id>: Working — <brief description>` |
+| When finalizing results (step 7) | `**[lobster-<id>]** PROGRESS <task-id>: Finalizing results and preparing PR.` |
 
 Do NOT post more than one message per phase. These are heartbeat-level updates,
 not detailed reports. Save detail for the PR summary and work log.

@@ -87,7 +87,7 @@ For stale lobsters:
   "action": "thread-reply",
   "channel": "discord",
   "threadId": "<discord_thread_id>",
-  "text": "WATCHDOG: <lobster-name> appears stale on task <task-id> — no gateway activity for <N> minutes."
+  "text": "**[watchdog]** <lobster-name> appears stale on task <task-id> — no gateway activity for <N> minutes."
 }
 ```
 
@@ -97,7 +97,7 @@ For unreachable lobsters:
   "action": "thread-reply",
   "channel": "discord",
   "threadId": "<discord_thread_id>",
-  "text": "WATCHDOG: <lobster-name> unreachable (ping failed) on task <task-id>."
+  "text": "**[watchdog]** <lobster-name> unreachable (ping failed) on task <task-id>."
 }
 ```
 
@@ -108,7 +108,7 @@ For unreachable lobsters:
   "action": "send",
   "channel": "discord",
   "to": "channel:1469216945764175946",
-  "text": "WATCHDOG: <lobster-name> stale — no gateway activity for <N> min (task <task-id>)"
+  "text": "**[watchdog]** <lobster-name> stale — no gateway activity for <N> min (task <task-id>)"
 }
 ```
 

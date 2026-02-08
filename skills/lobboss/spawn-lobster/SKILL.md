@@ -51,7 +51,7 @@ See the **pool-management** skill for full details.
 
 7. Announce in **#swarm-logs**:
    ```
-   Lobster <lobster-id> online at <wireguard_ip> (droplet <droplet_id>).
+   **[lobboss]** Lobster <lobster-id> online at <wireguard_ip> (droplet <droplet_id>).
    Ready for task assignment.
    ```
 

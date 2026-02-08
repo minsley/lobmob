@@ -25,7 +25,7 @@ When a new message arrives in **#task-queue**:
 2. Post a **Task Proposal** as a top-level message in **#task-queue**:
 
 ```
-**Task Proposal**
+**[lobboss]** **Task Proposal**
 
 > **Title:** <title>
 > **Priority:** <priority>
@@ -40,11 +40,11 @@ When a new message arrives in **#task-queue**:
 ```
 
 3. Create a **thread** on the proposal message (thread name: `Task: <short title>`)
-4. Post in the thread: `Reply **go** to create, **cancel** to discard, or describe changes.`
+4. Post in the thread: `**[lobboss]** Reply **go** to create, **cancel** to discard, or describe changes.`
 5. Wait for user response in the thread:
    - **Confirmation** (e.g. "go", "yes", "looks good", "create it") → Phase 3
    - **Changes** (e.g. "change priority to high") → post revised proposal in the thread, ask again
-   - **Cancellation** (e.g. "cancel", "nevermind") → reply "Task cancelled." in the thread
+   - **Cancellation** (e.g. "cancel", "nevermind") → reply "**[lobboss]** Task cancelled." in the thread
 
 ### Phase 3 — Create
 
@@ -90,7 +90,7 @@ _Pending_
    ```
 5. Post in the thread:
    ```
-   Task created: **<task-id>**
+   **[lobboss]** Task created: **<task-id>**
    I'll assign it to a lobster shortly.
    ```
 
@@ -106,7 +106,7 @@ _Pending_
 3. Commit and push to main
 4. Post in the **task's thread** (read `discord_thread_id` from the task file):
    ```
-   Assigned to **lobster-<id>**.
+   **[lobboss]** Assigned to **lobster-<id>**.
    @lobster-<id> — pull main and read `010-tasks/active/<task-id>.md` for details.
    ```
 
@@ -129,12 +129,12 @@ For each task in `010-tasks/active/` with `status: active`:
 4. **Warning (45+ minutes, no PR, no recent PROGRESS post)**:
    Post in the **task's thread**:
    ```
-   Timeout warning: Task <task-id> has been active for <N> minutes with no recent progress from <lobster-id>.
+   **[lobboss]** Timeout warning: Task <task-id> has been active for <N> minutes with no recent progress from <lobster-id>.
    @<lobster-id> — please post a status update or submit your PR.
    ```
    Post to **#swarm-logs** (channel `1469216945764175946`):
    ```
-   Timeout warning: <task-id> assigned to <lobster-id> for <N> min, no progress.
+   **[lobboss]** Timeout warning: <task-id> assigned to <lobster-id> for <N> min, no progress.
    ```
 
 5. **Failure (90+ minutes, no PR)**:
@@ -172,14 +172,14 @@ For each orphaned task:
    If a PR exists → leave the task as-is. The PR can still be reviewed and merged
    even though the lobster is gone. Post a note in the task thread:
    ```
-   Note: <lobster-id> is offline, but PR #<number> is open. Proceeding with review.
+   **[lobboss]** Note: <lobster-id> is offline, but PR #<number> is open. Proceeding with review.
    ```
 
 2. **No PR, assigned < 30 min ago** → re-queue:
    - Update frontmatter: `status: queued`, clear `assigned_to` and `assigned_at`
    - Add a note: `Re-queued: <lobster-id> went offline before completion.`
    - Commit and push
-   - Post in task thread: `Task <task-id> re-queued — <lobster-id> is offline. Will reassign.`
+   - Post in task thread: `**[lobboss]** Task <task-id> re-queued — <lobster-id> is offline. Will reassign.`
    - Assign to another lobster
 
 3. **No PR, assigned >= 30 min ago** → fail and re-create:
@@ -208,7 +208,7 @@ Your job after the PR is merged (via the `review-prs` skill):
    git mv "010-tasks/active/<task-id>.md" "010-tasks/completed/<task-id>.md"
    ```
 3. Commit and push
-4. Post in the **task's thread**: `Task complete. PR merged.`
+4. Post in the **task's thread**: `**[lobboss]** Task complete. PR merged.`
 
 ## Failing a Task
 
@@ -220,5 +220,5 @@ If a lobster reports failure or times out:
    ```bash
    gh pr close <number> --comment "Task failed/timed out"
    ```
-5. Post in the **task's thread**: `Task failed. <brief reason>`
+5. Post in the **task's thread**: `**[lobboss]** Task failed. <brief reason>`
 6. Decide whether to re-queue (create a new task referencing the failed one)

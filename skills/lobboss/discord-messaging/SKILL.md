@@ -16,6 +16,19 @@ common patterns. Other skills reference this for posting instructions.
 | **#swarm-control** | User commands to lobboss (fleet management) |
 | **#swarm-logs** | Fleet events (spawns, merges, convergence, status) |
 
+## Agent Name Prefix
+
+All Discord messages MUST start with your agent name in bold brackets so humans
+can tell who posted. The bot username is shared across all agents.
+
+| Agent | Prefix |
+|---|---|
+| lobboss | `**[lobboss]**` |
+| lobster | `**[lobster-<your-id>]**` |
+| watchdog | `**[watchdog]**` |
+
+Example: `**[lobboss]** Task created: **task-2026-02-07-a1b2**`
+
 ## Sending a Message to a Channel
 
 Use the `message` tool with action `send`:

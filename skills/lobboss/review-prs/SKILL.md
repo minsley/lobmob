@@ -56,8 +56,8 @@ gh pr merge <number> --merge --delete-branch
 ```
 
 Then:
-- Post in the **task's thread** (read `discord_thread_id` from the task file): `PR merged. Task complete.`
-- Post to **#swarm-logs**: `Merged PR #<number> (<task-id>) from <lobster-id>. Branch cleaned up.`
+- Post in the **task's thread** (read `discord_thread_id` from the task file): `**[lobboss]** PR merged. Task complete.`
+- Post to **#swarm-logs**: `**[lobboss]** Merged PR #<number> (<task-id>) from <lobster-id>. Branch cleaned up.`
 - Pull main: `git pull origin main`
 - Verify task file is in `010-tasks/completed/`. Move it there if the lobster left it in `active/`.
 
@@ -68,7 +68,7 @@ gh pr comment <number> --body "<specific feedback>"
 
 Then post in the **task's thread**:
 ```
-@lobster-<id> PR #<number> needs revision: <brief reason>.
+**[lobboss]** @lobster-<id> PR #<number> needs revision: <brief reason>.
 Please fix and push to your branch.
 ```
 

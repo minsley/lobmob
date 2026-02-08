@@ -75,7 +75,7 @@ PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
 
 Read the task file's `discord_thread_id` frontmatter field. Post to the **task's thread**:
 ```
-Task Complete: ${TASK_ID}
+**[lobster-${LOBSTER_ID}]** Task Complete: ${TASK_ID}
 
 PR: ${PR_URL}
 Results: https://github.com/<org>/<repo>/blob/lobster-${LOBSTER_ID}/task-${TASK_ID}/<main-results-file>
@@ -97,7 +97,7 @@ The lobboss will review your PR. If changes are requested:
 1. Read the PR comment or Discord message explaining what to fix
 2. Make the changes in `/opt/vault/`
 3. Commit and push to the same branch (the PR updates automatically)
-4. Post update in the **task's thread**: `Updated PR #${PR_NUMBER} — <what changed>`
+4. Post update in the **task's thread**: `**[lobster-${LOBSTER_ID}]** Updated PR #${PR_NUMBER} — <what changed>`
 
 ## If something goes wrong
 
@@ -107,7 +107,7 @@ If you cannot complete the task:
 3. Document what went wrong in the Lobster Notes section
 4. Post in the **task's thread** with `FAIL` prefix:
    ```
-   FAIL: ${TASK_ID}
+   **[lobster-${LOBSTER_ID}]** FAIL: ${TASK_ID}
    PR: ${PR_URL}
    Reason: <what went wrong>
    Partial results included in PR.

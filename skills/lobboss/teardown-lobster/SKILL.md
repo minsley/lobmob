@@ -53,7 +53,7 @@ this automatically — only use teardown for permanent removal.
 
 5. Announce in **#swarm-logs**:
    ```
-   Lobster <lobster-id> decommissioned. Droplet destroyed.
+   **[lobboss]** Lobster <lobster-id> decommissioned. Droplet destroyed.
    ```
 
 ## When to Teardown
@@ -76,7 +76,7 @@ When a task needs to be re-assigned because its lobster was torn down:
 3. Commit and push to main
 4. Post in the **task's thread** (using `discord_thread_id`):
    ```
-   Task <task-id> re-queued — <lobster-name> was torn down. Will reassign to another lobster.
+   **[lobboss]** Task <task-id> re-queued — <lobster-name> was torn down. Will reassign to another lobster.
    ```
 5. Assign the task to another lobster (follow the task-lifecycle skill "Assigning a Task")
 
