@@ -35,7 +35,7 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   assigned_at=$(fm assigned_at "$task_file")
   estimate=$(fm estimate "$task_file")
   assigned_to=$(fm assigned_to "$task_file")
-  thread_id=$(fm discord_thread_id "$task_file")
+  thread_id=$(fm discord_thread_id "$task_file" | tr -d '"')
   task_id=$(basename "$task_file" .md)
 
   [ -n "$assigned_at" ] || continue
@@ -102,7 +102,7 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
 
   # Lobster is gone — orphaned task
   task_id=$(basename "$task_file" .md)
-  thread_id=$(fm discord_thread_id "$task_file")
+  thread_id=$(fm discord_thread_id "$task_file" | tr -d '"')
   assigned_at=$(fm assigned_at "$task_file")
   assigned_ts=$(date -d "$assigned_at" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$assigned_at" +%s 2>/dev/null || echo 0)
   elapsed_min=$(( (NOW - assigned_ts) / 60 ))
@@ -145,11 +145,12 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   task_id=$(basename "$task_file" .md)
   task_type=$(fm type "$task_file")
   task_type="${task_type:-research}"
-  thread_id=$(fm discord_thread_id "$task_file")
+  thread_id=$(fm discord_thread_id "$task_file" | tr -d '"')
 
   # Find an idle lobster of the correct type
+  # Note: doctl --tag-name doesn't support AND queries, so query by type and filter by active
   IDLE_LOBSTER=""
-  for lobster in $(doctl compute droplet list --tag-name "${LOBSTER_TAG}-active,${LOBSTER_TAG}-type-${task_type}" --format Name --no-header 2>/dev/null); do
+  for lobster in $(doctl compute droplet list --tag-name "${LOBSTER_TAG}-type-${task_type}" --format Name,Status --no-header 2>/dev/null | awk '$2=="active"{print $1}'); do
     # Check it's not busy (no active task assigned to it)
     lobster_short=$(echo "$lobster" | sed 's/^lobster-//')
     if ! grep -rl "$lobster_short" "$VAULT_DIR"/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
