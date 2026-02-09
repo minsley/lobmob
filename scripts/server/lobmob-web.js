@@ -166,7 +166,17 @@ const CSS = `
     display: flex; justify-content: space-between; align-items: center;
     font-size: 12px; color: var(--text-muted);
   }
-  .refresh-note { font-size: 12px; color: var(--text-muted); }
+  .refresh-note { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .btn-refresh {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+    cursor: pointer; transition: all 0.2s;
+  }
+  .btn-refresh:hover { background: var(--surface-hover); color: var(--text); border-color: rgba(228,230,237,0.15); }
+  .btn-refresh:active { transform: scale(0.97); }
+  .btn-refresh.spinning svg { animation: spin 0.8s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   .loading { animation: pulse 1.5s ease-in-out infinite; }
   @media (max-width: 640px) {
@@ -273,7 +283,17 @@ function dashboardHtml(statusText) {
     <div class="section">
 <div class="section-title">🦞 Fleet Status</div>
 ${fleetSection}
-<p class="refresh-note" style="margin-top:12px">Auto-refreshes every 30s · <a href="/api/status" style="color:var(--blue);text-decoration:none">API</a></p>
+<div class="refresh-note" style="margin-top:12px">
+  <span id="last-updated">Last updated: just now</span>
+  <button class="btn-refresh" id="refresh-btn" onclick="manualRefresh()" title="Refresh now">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+    Refresh
+  </button>
+  <span>·</span>
+  <span>Auto-refreshes every 30s</span>
+  <span>·</span>
+  <a href="/api/status" style="color:var(--blue);text-decoration:none">API</a>
+</div>
     </div>
 
     <div class="section">
@@ -290,14 +310,34 @@ ${fleetSection}
     </footer>
   </div>
   <script>
-    setInterval(async () => {
-try {
-  const r = await fetch('/api/status');
-  if (!r.ok) return;
-  // Reload page on successful fetch to update fleet data
-  location.reload();
-} catch {}
-    }, 30000);
+    let lastUpdatedAt = Date.now();
+
+    function updateTimestamp() {
+      const el = document.getElementById('last-updated');
+      if (!el) return;
+      const ago = Math.round((Date.now() - lastUpdatedAt) / 1000);
+      if (ago < 5) el.textContent = 'Last updated: just now';
+      else if (ago < 60) el.textContent = 'Last updated: ' + ago + 's ago';
+      else el.textContent = 'Last updated: ' + Math.floor(ago / 60) + 'm ago';
+    }
+
+    async function doRefresh() {
+      try {
+        const r = await fetch('/api/status');
+        if (!r.ok) return;
+        lastUpdatedAt = Date.now();
+        location.reload();
+      } catch {}
+    }
+
+    async function manualRefresh() {
+      const btn = document.getElementById('refresh-btn');
+      if (btn) btn.classList.add('spinning');
+      await doRefresh();
+    }
+
+    setInterval(updateTimestamp, 5000);
+    setInterval(doRefresh, 30000);
   </script>
 </body>
 </html>`;
