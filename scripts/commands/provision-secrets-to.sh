@@ -1,6 +1,28 @@
 # HOST must be set by caller before sourcing this file
 HOST="${HOST:?HOST must be set}"
 
+# Wait for cloud-init to fully complete (runcmd installs gh, node, doctl)
+log "Waiting for cloud-init on $HOST..."
+for _ci_i in $(seq 1 60); do
+  _ci_status=$(lobmob_ssh -o ConnectTimeout=5 "root@$HOST" "cloud-init status 2>/dev/null" 2>/dev/null || echo "pending")
+  if echo "$_ci_status" | grep -qE "done|degraded"; then
+    log "  cloud-init: complete"
+    break
+  fi
+  if [ "$_ci_i" -eq 60 ]; then
+    warn "  cloud-init still running after 300s — proceeding anyway"
+  fi
+  sleep 5
+done
+
+# Set up SSH multiplexing to avoid connection resets from rapid SCP
+_SSH_MUX="/tmp/lobmob-ssh-mux-$HOST"
+export LOBMOB_SSH_MUX_OPTS="-o ControlMaster=auto -o ControlPath=$_SSH_MUX -o ControlPersist=120"
+lobmob_ssh $LOBMOB_SSH_MUX_OPTS "root@$HOST" true 2>/dev/null || true  # open master connection
+# Override lobmob_ssh and scp for this session to use the mux
+lobmob_ssh() { ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new $LOBMOB_SSH_MUX_OPTS "$@"; }
+_lobmob_scp() { scp -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new $LOBMOB_SSH_MUX_OPTS "$@"; }
+
 log "Pushing secrets to $HOST..."
 
 # 1. Push secrets.env (service tokens)
@@ -53,8 +75,7 @@ log "  WireGuard key: pushed"
 log "Deploying server scripts..."
 for script in "$SCRIPT_DIR"/server/*.sh "$SCRIPT_DIR"/server/*.js; do
   [ -f "$script" ] || continue
-  scp -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new \
-    "$script" "root@$HOST:/usr/local/bin/$(basename "$script" | sed 's/\.sh$//;s/\.js$//')"
+  _lobmob_scp "$script" "root@$HOST:/usr/local/bin/$(basename "$script" | sed 's/\.sh$//;s/\.js$//')"
 done
 lobmob_ssh "root@$HOST" "chmod 755 /usr/local/bin/lobmob-*"
 log "  server scripts: deployed"
@@ -62,8 +83,7 @@ log "  server scripts: deployed"
 # 5. Deploy systemd service files
 for svc in "$SCRIPT_DIR"/server/*.service; do
   [ -f "$svc" ] || continue
-  scp -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new \
-    "$svc" "root@$HOST:/etc/systemd/system/$(basename "$svc")"
+  _lobmob_scp "$svc" "root@$HOST:/etc/systemd/system/$(basename "$svc")"
 done
 lobmob_ssh "root@$HOST" "systemctl daemon-reload"
 log "  systemd services: deployed"
@@ -71,5 +91,8 @@ log "  systemd services: deployed"
 # 6. Run the provision script on lobboss
 log "Running provision script..."
 lobmob_ssh "root@$HOST" "/usr/local/bin/lobmob-provision"
+
+# Close SSH multiplexing master connection
+ssh -O exit -o ControlPath="$_SSH_MUX" "root@$HOST" 2>/dev/null || true
 
 log "Secrets provisioned successfully"

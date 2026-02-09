@@ -5,6 +5,11 @@ STATE_DIR="/var/lib/lobmob/task-state"
 LOG="/var/log/lobmob-task-watcher.log"
 mkdir -p "$STATE_DIR"
 
+# Skip if vault not provisioned yet
+if [ ! -d "$VAULT_DIR/.git" ]; then
+  exit 0
+fi
+
 # Pull latest vault
 cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
 
@@ -71,11 +76,11 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
     task_id=$(basename "$task_file" .md)
     dest="$VAULT_DIR/010-tasks/$status/$task_id.md"
     if [ ! -f "$dest" ]; then
-mv "$task_file" "$dest"
-cd "$VAULT_DIR" && git add -A && git commit -m "[task-watcher] Move $task_id to $status" --quiet 2>/dev/null
-git push origin main --quiet 2>/dev/null || true
-rm -f "$STATE_DIR/${task_id}.state"
-echo "$(date -Iseconds) Moved $task_id to $status" >> "$LOG"
+      mv "$task_file" "$dest"
+      cd "$VAULT_DIR" && git add -A && git commit -m "[task-watcher] Move $task_id to $status" --quiet 2>/dev/null
+      git push origin main --quiet 2>/dev/null || true
+      rm -f "$STATE_DIR/${task_id}.state"
+      echo "$(date -Iseconds) Moved $task_id to $status" >> "$LOG"
     fi
   fi
 done

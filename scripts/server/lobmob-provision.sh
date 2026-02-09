@@ -81,9 +81,15 @@ fi
 # Configure OpenClaw
 mkdir -p /root/.openclaw/skills
 
-# Run openclaw onboard (creates openclaw.json)
+# Run openclaw onboard (creates openclaw.json — but clobbers AGENTS.md with generic default)
 timeout 30 openclaw onboard \
   --non-interactive --accept-risk --workspace /opt/vault 2>/dev/null || true
+
+# Restore coordinator AGENTS.md (openclaw onboard overwrites with generic assistant)
+if [ -f /opt/vault/040-fleet/lobboss-AGENTS.md ]; then
+  cp /opt/vault/040-fleet/lobboss-AGENTS.md /opt/vault/AGENTS.md
+  echo "Vault AGENTS.md: restored coordinator persona"
+fi
 
 # Create .env
 echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" > /root/.openclaw/.env
