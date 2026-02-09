@@ -71,6 +71,11 @@ These are instructions for Claude to follow to keep sessions productive.
 - Read MEMORY.md (auto-loaded) and check for stale items
 - If MEMORY.md has items marked "TODO" that are now done, update them
 - Check the plan file (`.claude/plans/`) for current phase — don't re-plan completed work
+- **Version check**: Run `claude --version` and compare with `memory/claude-code-version.md`. If the version changed:
+  1. Run `npm view @anthropic-ai/claude-code version` to confirm we're on latest
+  2. Check the changelog: `WebFetch https://github.com/anthropics/claude-code/releases` for new features
+  3. Update `memory/claude-code-version.md` with the new version, date, and any notable changes
+  4. If new features are relevant (new hook types, memory changes, agent capabilities), suggest updates to CLAUDE.md or hooks
 
 ### Before Context Gets Large
 - If you've made 5+ commits, suggest a checkpoint: commit, push, and offer to start a fresh session
