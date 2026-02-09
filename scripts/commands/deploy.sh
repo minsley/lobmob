@@ -33,9 +33,10 @@ log "Lobboss droplet created at $LOBBOSS_IP"
 wait_for_ssh "$LOBBOSS_IP"
 wait_for_cloud_init "$LOBBOSS_IP"
 
-# Push secrets
+# Push secrets + deploy scripts
 log "Provisioning secrets via SSH..."
-cmd_provision_secrets_to "$LOBBOSS_IP"
+HOST="$LOBBOSS_IP"
+source "$SCRIPT_DIR/commands/provision-secrets-to.sh"
 
 log ""
 log "Lobboss fully deployed and provisioned at $LOBBOSS_IP"

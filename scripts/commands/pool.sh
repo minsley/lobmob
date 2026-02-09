@@ -9,11 +9,11 @@ if [ $# -eq 0 ]; then
   log "Pool config and state:"
   lobmob_ssh "root@$LOBBOSS_IP" "grep POOL_ /etc/lobmob/env"
   lobmob_ssh "root@$LOBBOSS_IP" "lobmob-fleet-status" 2>/dev/null | grep -A 10 "Pool State"
-  return
+  exit 0
 fi
 
 # Parse args: pool active N standby N
-local NEW_ACTIVE="" NEW_STANDBY=""
+NEW_ACTIVE="" NEW_STANDBY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     active)  shift; NEW_ACTIVE="$1" ;;

@@ -1,4 +1,5 @@
-local HOST="$1"
+# HOST must be set by caller before sourcing this file
+HOST="${HOST:?HOST must be set}"
 
 log "Pushing secrets to $HOST..."
 

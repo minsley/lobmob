@@ -6,11 +6,11 @@ fi
 
 # Name generator — TYPE-NNN-adjective-name (name auto-generated on lobboss)
 # Parse --type flag from spawn args
-local LOBSTER_TYPE="research"
-local LOBSTER_NAME=""
-local _spawn_args=("$@")
-local _filtered=()
-local _i=0
+LOBSTER_TYPE="research"
+LOBSTER_NAME=""
+_spawn_args=("$@")
+_filtered=()
+_i=0
 while [ $_i -lt ${#_spawn_args[@]} ]; do
   if [ "${_spawn_args[$_i]}" = "--type" ] && [ $((_i + 1)) -lt ${#_spawn_args[@]} ]; then
     LOBSTER_TYPE="${_spawn_args[$((_i + 1))]}"

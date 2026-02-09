@@ -4,4 +4,5 @@ if [ -z "$LOBBOSS_IP" ]; then
   err "Lobboss not deployed. Run: lobmob deploy"
   exit 1
 fi
-cmd_provision_secrets_to "$LOBBOSS_IP"
+HOST="$LOBBOSS_IP"
+source "$SCRIPT_DIR/commands/provision-secrets-to.sh"

@@ -22,7 +22,7 @@ if [ -n "$LOBBOSS_IP" ]; then
     'source /etc/lobmob/env && doctl compute droplet delete-by-tag "$LOBSTER_TAG" --force' 2>/dev/null || true
 fi
 # Belt-and-suspenders: also cull via API in case SSH missed any
-local PROJECT_NAME
+PROJECT_NAME
 PROJECT_NAME=$(grep project_name "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
 PROJECT_NAME="${PROJECT_NAME:-lobmob}"
 curl -s -X DELETE \
