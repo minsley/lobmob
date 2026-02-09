@@ -120,9 +120,16 @@ channels: { "'"${DISCORD_CHANNEL_TASK_QUEUE:-task-queue}"'": {allow:true}, "'"${
 # Remove old config.json if it exists
 rm -f /root/.openclaw/config.json
 
-# Copy lobboss skills and AGENTS.md from vault
+# Deploy lobboss skills from vault (clear stale, copy fresh)
+rm -rf /root/.openclaw/skills/*
 cp -r /opt/vault/040-fleet/lobboss-skills/* /root/.openclaw/skills/ 2>/dev/null || true
+echo "Skills: $(ls /root/.openclaw/skills/ | wc -l) deployed"
+
+# Deploy lobboss AGENTS.md from vault
 cp /opt/vault/040-fleet/lobboss-AGENTS.md /root/.openclaw/AGENTS.md 2>/dev/null || true
+
+# Clear stale agent sessions (skills may have changed)
+rm -rf /root/.openclaw/agents/main/sessions/* 2>/dev/null || true
 
 # Generate SSH keypair for lobboss -> lobster connections
 if [ ! -f /root/.ssh/lobster_admin ]; then
