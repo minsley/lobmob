@@ -413,8 +413,6 @@ res.writeHead(500); res.end('Error: ' + e.message);
   }
 
   res.writeHead(404, { 'Content-Type': 'text/html' }); res.end(notFoundHtml());
-});
-
 };
 
 const server = HAS_CERTS
