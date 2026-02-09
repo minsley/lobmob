@@ -1,0 +1,465 @@
+echo ""
+echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║        lobmob bootstrap wizard           ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+echo ""
+
+# ── Step 1: Preflight checks ──────────────────────────────────────────
+log "Step 1/10 — Checking prerequisites"
+echo ""
+
+# Map CLI binary names to package names per package manager
+_pkg_name() {
+  local tool="$1" mgr="$2"
+  case "$tool" in
+    wg)
+      case "$mgr" in
+        brew) echo "wireguard-tools" ;;
+        apt)  echo "wireguard-tools" ;;
+        dnf)  echo "wireguard-tools" ;;
+      esac ;;
+    terraform)
+      case "$mgr" in
+        brew) echo "hashicorp/tap/terraform" ;;
+        *)    echo "terraform" ;;
+      esac ;;
+    gh)
+      case "$mgr" in
+        brew) echo "gh" ;;
+        apt)  echo "gh" ;;
+        dnf)  echo "gh" ;;
+      esac ;;
+    *) echo "$tool" ;;
+  esac
+}
+
+# Detect package manager
+local PKG_MGR=""
+if command -v brew > /dev/null 2>&1; then
+  PKG_MGR="brew"
+elif command -v apt-get > /dev/null 2>&1; then
+  PKG_MGR="apt"
+elif command -v dnf > /dev/null 2>&1; then
+  PKG_MGR="dnf"
+fi
+
+local MISSING_REQUIRED=()
+local MISSING_OPTIONAL=()
+
+for tool in terraform gh wg ssh jq; do
+  if command -v "$tool" > /dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} $tool"
+  else
+    echo -e "  ${RED}✗${NC} $tool — required"
+    MISSING_REQUIRED+=("$tool")
+  fi
+done
+if command -v doctl > /dev/null 2>&1; then
+  echo -e "  ${GREEN}✓${NC} doctl"
+else
+  echo -e "  ${YELLOW}?${NC} doctl — recommended (sleep/wake commands need it)"
+  MISSING_OPTIONAL+=("doctl")
+fi
+
+# Offer to install missing tools
+if [ ${#MISSING_REQUIRED[@]} -gt 0 ] || [ ${#MISSING_OPTIONAL[@]} -gt 0 ]; then
+  echo ""
+  local ALL_MISSING=("${MISSING_REQUIRED[@]}" "${MISSING_OPTIONAL[@]}")
+
+  if [ -z "$PKG_MGR" ]; then
+    err "No supported package manager found (brew, apt, dnf)"
+    err "Install manually: ${ALL_MISSING[*]}"
+    if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then exit 1; fi
+  else
+    # Build install list with package names
+    local INSTALL_PKGS=()
+    for tool in "${ALL_MISSING[@]}"; do
+      INSTALL_PKGS+=("$(_pkg_name "$tool" "$PKG_MGR")")
+    done
+
+    log "Missing: ${ALL_MISSING[*]}"
+    read -rp "  Install via $PKG_MGR? [Y/n]: " BS_INSTALL
+    BS_INSTALL="${BS_INSTALL:-Y}"
+
+    if [[ "$BS_INSTALL" =~ ^[Yy]$ ]]; then
+      case "$PKG_MGR" in
+        brew)
+          # Ensure HashiCorp tap if terraform is needed
+          for tool in "${ALL_MISSING[@]}"; do
+            if [ "$tool" = "terraform" ]; then
+              brew tap hashicorp/tap 2>/dev/null || true
+              break
+            fi
+          done
+          # gh needs its own tap on some setups
+          brew install "${INSTALL_PKGS[@]}"
+          ;;
+        apt)
+          # Add external repos for tools not in default apt
+          for tool in "${ALL_MISSING[@]}"; do
+            case "$tool" in
+              terraform)
+                log "  Adding HashiCorp APT repo..."
+                curl -fsSL https://apt.releases.hashicorp.com/gpg \
+                  | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg 2>/dev/null
+                echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+                  | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+                ;;
+              gh)
+                log "  Adding GitHub CLI APT repo..."
+                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                  | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+                echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+                ;;
+              doctl)
+                log "  Installing doctl via snap..."
+                sudo snap install doctl
+                ;;
+            esac
+          done
+          sudo apt-get update -qq
+          # Filter out doctl (installed via binary above)
+          local APT_PKGS=()
+          for tool in "${ALL_MISSING[@]}"; do
+            if [ "$tool" != "doctl" ]; then
+              APT_PKGS+=("$(_pkg_name "$tool" apt)")
+            fi
+          done
+          if [ ${#APT_PKGS[@]} -gt 0 ]; then
+            sudo apt-get install -y "${APT_PKGS[@]}"
+          fi
+          ;;
+        dnf)
+          sudo dnf install -y "${INSTALL_PKGS[@]}"
+          ;;
+      esac
+
+      # Re-check
+      echo ""
+      local STILL_MISSING=0
+      for tool in "${MISSING_REQUIRED[@]}"; do
+        if ! command -v "$tool" > /dev/null 2>&1; then
+          echo -e "  ${RED}✗${NC} $tool — still not found"
+          STILL_MISSING=1
+        else
+          echo -e "  ${GREEN}✓${NC} $tool — installed"
+        fi
+      done
+      if [ "$STILL_MISSING" -eq 1 ]; then
+        err "Some required tools could not be installed"
+        exit 1
+      fi
+    else
+      if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
+        err "Required tools missing: ${MISSING_REQUIRED[*]}"
+        exit 1
+      fi
+    fi
+  fi
+fi
+echo ""
+
+# ── Step 2: DigitalOcean ──────────────────────────────────────────────
+log "Step 2/10 — DigitalOcean"
+echo "  Create an API token at: https://cloud.digitalocean.com/account/api/tokens"
+echo "  Scopes: read + write"
+echo ""
+read -rsp "  DO API token: " BS_DO_TOKEN; echo ""
+
+if [ -z "$BS_DO_TOKEN" ]; then
+  err "DO token is required"; exit 1
+fi
+
+log "  Validating token..."
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -H "Authorization: Bearer $BS_DO_TOKEN" \
+  "https://api.digitalocean.com/v2/account")
+if [ "$HTTP_CODE" != "200" ]; then
+  err "DO token validation failed (HTTP $HTTP_CODE). Check token and try again."
+  exit 1
+fi
+echo -e "  ${GREEN}✓${NC} Token valid"
+echo ""
+
+BS_DO_OAUTH_CLIENT_ID=""
+BS_DO_OAUTH_CLIENT_SECRET=""
+echo "  Optional: configure DO OAuth for auto-renewing tokens"
+echo "  Create an app at: https://cloud.digitalocean.com/account/api/applications"
+echo "  (You can set the callback URL after deployment)"
+echo ""
+read -rp "  Set up DO OAuth now? [y/N]: " BS_DO_OAUTH
+BS_DO_OAUTH="${BS_DO_OAUTH:-N}"
+if [[ "$BS_DO_OAUTH" =~ ^[Yy]$ ]]; then
+  read -rp "  OAuth Client ID: " BS_DO_OAUTH_CLIENT_ID
+  read -rsp "  OAuth Client Secret: " BS_DO_OAUTH_CLIENT_SECRET; echo ""
+  if [ -n "$BS_DO_OAUTH_CLIENT_ID" ] && [ -n "$BS_DO_OAUTH_CLIENT_SECRET" ]; then
+    echo -e "  ${GREEN}✓${NC} DO OAuth configured"
+  else
+    warn "  Skipping OAuth — both Client ID and Secret are required"
+    BS_DO_OAUTH_CLIENT_ID=""
+    BS_DO_OAUTH_CLIENT_SECRET=""
+  fi
+fi
+echo ""
+
+echo "  Choose a region (nyc1, nyc3, sfo3, ams3, lon1, fra1, sgp1, blr1, tor1, syd1)"
+read -rp "  Region [nyc3]: " BS_REGION
+BS_REGION="${BS_REGION:-nyc3}"
+echo ""
+
+# ── Step 3: GitHub ────────────────────────────────────────────────────
+log "Step 3/10 — GitHub"
+echo ""
+read -rp "  Vault repo (org/name) [lobmob-vault]: " BS_VAULT_REPO
+BS_VAULT_REPO="${BS_VAULT_REPO:-lobmob-vault}"
+echo ""
+
+read -rp "  Create this repo now via GitHub CLI? [Y/n]: " BS_CREATE_REPO
+BS_CREATE_REPO="${BS_CREATE_REPO:-Y}"
+if [[ "$BS_CREATE_REPO" =~ ^[Yy]$ ]]; then
+  log "  Creating repo..."
+  gh repo create "$BS_VAULT_REPO" --private --description "lobmob swarm Obsidian vault" 2>/dev/null \
+    && echo -e "  ${GREEN}✓${NC} Repo created" \
+    || echo -e "  ${YELLOW}!${NC} Repo may already exist — continuing"
+
+  # Seed the vault
+  if _seed_vault "$BS_VAULT_REPO"; then
+    echo -e "  ${GREEN}✓${NC} Vault seeded"
+  fi
+  echo ""
+fi
+
+echo "  GitHub authentication method:"
+echo "    1) GitHub App (recommended — auto-renewing 1-hour tokens)"
+echo "    2) Fine-grained PAT (manual renewal)"
+echo ""
+read -rp "  Choice [1]: " BS_GH_METHOD
+BS_GH_METHOD="${BS_GH_METHOD:-1}"
+
+BS_GH_TOKEN=""
+BS_GH_APP_ID=""
+BS_GH_APP_INSTALL_ID=""
+BS_GH_APP_PEM_B64=""
+
+if [ "$BS_GH_METHOD" = "1" ]; then
+  echo ""
+  echo "  Create a GitHub App at: https://github.com/settings/apps/new"
+  echo "  Permissions: Contents (rw), Pull requests (rw), Metadata (r)"
+  echo "  Install on the vault repo, download the PEM private key."
+  echo ""
+  read -rp "  App ID: " BS_GH_APP_ID
+  read -rp "  Installation ID: " BS_GH_APP_INSTALL_ID
+  read -rp "  Path to PEM file: " BS_GH_PEM_PATH
+  if [ -z "$BS_GH_APP_ID" ] || [ -z "$BS_GH_APP_INSTALL_ID" ] || [ ! -f "$BS_GH_PEM_PATH" ]; then
+    err "App ID, Installation ID, and valid PEM path are all required"; exit 1
+  fi
+  BS_GH_APP_PEM_B64=$(base64 < "$BS_GH_PEM_PATH" | tr -d '\n')
+  echo -e "  ${GREEN}✓${NC} GitHub App configured"
+else
+  echo ""
+  echo "  Create a fine-grained PAT at: https://github.com/settings/personal-access-tokens/new"
+  echo "  Scope to the vault repo. Permissions: Contents (rw), Pull requests (rw), Metadata (r)"
+  echo ""
+  read -rsp "  GitHub PAT: " BS_GH_TOKEN; echo ""
+  if [ -z "$BS_GH_TOKEN" ]; then
+    err "GitHub token is required"; exit 1
+  fi
+fi
+echo ""
+
+# Deploy key
+echo "  The vault repo needs an SSH deploy key for server-side git operations."
+read -rp "  Auto-generate a deploy key? [Y/n]: " BS_GEN_DEPLOY_KEY
+BS_GEN_DEPLOY_KEY="${BS_GEN_DEPLOY_KEY:-Y}"
+
+if [[ "$BS_GEN_DEPLOY_KEY" =~ ^[Yy]$ ]]; then
+  BS_DEPLOY_TMPDIR=$(mktemp -d)
+  ssh-keygen -t ed25519 -C "lobmob-deploy" -f "$BS_DEPLOY_TMPDIR/lobmob_deploy" -N "" -q
+  BS_DEPLOY_KEY_B64=$(base64 < "$BS_DEPLOY_TMPDIR/lobmob_deploy" | tr -d '\n')
+  BS_DEPLOY_PUBKEY=$(cat "$BS_DEPLOY_TMPDIR/lobmob_deploy.pub")
+  rm -rf "$BS_DEPLOY_TMPDIR"
+
+  echo ""
+  echo -e "  ${YELLOW}ACTION REQUIRED:${NC} Add this public key as a deploy key on your vault repo"
+  echo "  https://github.com/${BS_VAULT_REPO}/settings/keys"
+  echo "  Enable \"Allow write access\""
+  echo ""
+  echo "  Public key:"
+  echo -e "  ${CYAN}${BS_DEPLOY_PUBKEY}${NC}"
+  echo ""
+  read -rp "  Press Enter once you've added the deploy key..." _
+else
+  echo "  Generate one with: ssh-keygen -t ed25519 -C lobmob-deploy -f ~/.ssh/lobmob_deploy -N \"\""
+  echo "  Then base64-encode the private key: base64 < ~/.ssh/lobmob_deploy"
+  echo ""
+  read -rsp "  Paste base64-encoded deploy key: " BS_DEPLOY_KEY_B64; echo ""
+  if [ -z "$BS_DEPLOY_KEY_B64" ]; then
+    err "Deploy key is required"; exit 1
+  fi
+fi
+echo ""
+
+# ── Step 4: Discord ──────────────────────────────────────────────────
+log "Step 4/10 — Discord"
+echo "  Create a bot at: https://discord.com/developers/applications"
+echo "  Enable MESSAGE CONTENT intent. Invite bot to your server."
+echo "  Create channels: #task-queue, #swarm-control, #results, #swarm-logs"
+echo ""
+read -rsp "  Discord bot token: " BS_DISCORD_TOKEN; echo ""
+if [ -z "$BS_DISCORD_TOKEN" ]; then
+  err "Discord token is required"; exit 1
+fi
+echo ""
+
+# ── Step 5: Anthropic ────────────────────────────────────────────────
+log "Step 5/10 — Anthropic"
+echo "  Get an API key at: https://console.anthropic.com/settings/keys"
+echo ""
+read -rsp "  Anthropic API key: " BS_ANTHROPIC_KEY; echo ""
+if [ -z "$BS_ANTHROPIC_KEY" ]; then
+  err "Anthropic API key is required"; exit 1
+fi
+echo ""
+
+# ── Step 6: SSH key ──────────────────────────────────────────────────
+log "Step 6/10 — SSH key"
+echo "  lobmob uses a dedicated keypair at $LOBMOB_SSH_KEY"
+if [ -f "$LOBMOB_SSH_KEY" ]; then
+  echo -e "  ${GREEN}✓${NC} Key already exists"
+else
+  ssh-keygen -t ed25519 -C "lobmob" -f "$LOBMOB_SSH_KEY" -N "" -q
+  echo -e "  ${GREEN}✓${NC} Keypair generated"
+fi
+BS_SSH_PUB="${LOBMOB_SSH_KEY}.pub"
+echo ""
+
+# ── Step 7: Optional overrides ───────────────────────────────────────
+log "Step 7/10 — Droplet sizing and monitoring"
+echo "  Defaults: lobboss s-2vcpu-4gb (\$24/mo), lobster s-1vcpu-2gb (\$12/mo)"
+read -rp "  Customize sizes? [y/N]: " BS_CUSTOM_SIZES
+BS_CUSTOM_SIZES="${BS_CUSTOM_SIZES:-N}"
+
+BS_MANAGER_SIZE=""
+BS_WORKER_SIZE=""
+if [[ "$BS_CUSTOM_SIZES" =~ ^[Yy]$ ]]; then
+  read -rp "  Lobboss size [s-2vcpu-4gb]: " BS_MANAGER_SIZE
+  BS_MANAGER_SIZE="${BS_MANAGER_SIZE:-s-2vcpu-4gb}"
+  read -rp "  Lobster size [s-1vcpu-2gb]: " BS_WORKER_SIZE
+  BS_WORKER_SIZE="${BS_WORKER_SIZE:-s-1vcpu-2gb}"
+fi
+echo ""
+echo "  Monitoring alerts will be sent to your email for CPU/memory/disk issues."
+read -rp "  Alert email: " BS_ALERT_EMAIL
+if [ -z "$BS_ALERT_EMAIL" ]; then
+  err "Alert email is required for monitoring"; exit 1
+fi
+echo ""
+
+# ── Step 8: WireGuard keys ──────────────────────────────────────────
+log "Step 8/10 — Generating WireGuard keys"
+BS_WG_PRIVKEY=$(wg genkey)
+BS_WG_PUBKEY=$(echo "$BS_WG_PRIVKEY" | wg pubkey)
+echo -e "  ${GREEN}✓${NC} Keypair generated"
+echo ""
+
+# ── Step 9: Write config files ──────────────────────────────────────
+log "Step 9/10 — Writing config files"
+
+# Check for existing files
+if [ -f "$SECRETS_FILE" ]; then
+  warn "  secrets.env already exists"
+  read -rp "  Overwrite? [y/N]: " BS_OVERWRITE_SECRETS
+  if [[ ! "$BS_OVERWRITE_SECRETS" =~ ^[Yy]$ ]]; then
+    log "  Keeping existing secrets.env"
+    BS_SKIP_SECRETS=1
+  fi
+fi
+
+if [ -z "${BS_SKIP_SECRETS:-}" ]; then
+  cat > "$SECRETS_FILE" <<SECRETSEOF
+DO_TOKEN=$BS_DO_TOKEN
+GH_TOKEN=$BS_GH_TOKEN
+DISCORD_BOT_TOKEN=$BS_DISCORD_TOKEN
+ANTHROPIC_API_KEY=$BS_ANTHROPIC_KEY
+VAULT_DEPLOY_KEY_B64=$BS_DEPLOY_KEY_B64
+WG_LOBBOSS_PRIVATE_KEY=$BS_WG_PRIVKEY
+SECRETSEOF
+  # Append GitHub App config if present
+  if [ -n "$BS_GH_APP_ID" ]; then
+    cat >> "$SECRETS_FILE" <<GHAPPEOF
+GH_APP_ID=$BS_GH_APP_ID
+GH_APP_INSTALL_ID=$BS_GH_APP_INSTALL_ID
+GH_APP_PEM_B64=$BS_GH_APP_PEM_B64
+GHAPPEOF
+  fi
+  # Append DO OAuth config if present
+  if [ -n "$BS_DO_OAUTH_CLIENT_ID" ]; then
+    cat >> "$SECRETS_FILE" <<DOAUTHEOF
+DO_OAUTH_CLIENT_ID=$BS_DO_OAUTH_CLIENT_ID
+DO_OAUTH_CLIENT_SECRET=$BS_DO_OAUTH_CLIENT_SECRET
+DOAUTHEOF
+  fi
+  chmod 600 "$SECRETS_FILE"
+  echo -e "  ${GREEN}✓${NC} secrets.env written"
+fi
+
+if [ -f "$INFRA_DIR/terraform.tfvars" ]; then
+  warn "  terraform.tfvars already exists"
+  read -rp "  Overwrite? [y/N]: " BS_OVERWRITE_TFVARS
+  if [[ ! "$BS_OVERWRITE_TFVARS" =~ ^[Yy]$ ]]; then
+    log "  Keeping existing terraform.tfvars"
+    BS_SKIP_TFVARS=1
+  fi
+fi
+
+if [ -z "${BS_SKIP_TFVARS:-}" ]; then
+  {
+    echo "vault_repo            = \"$BS_VAULT_REPO\""
+    echo "wg_lobboss_public_key = \"$BS_WG_PUBKEY\""
+    echo "ssh_pub_key_path      = \"$BS_SSH_PUB\""
+    echo "region                = \"$BS_REGION\""
+    echo "project_name          = \"lobmob\""
+    if [ -n "$BS_MANAGER_SIZE" ]; then
+      echo "manager_size          = \"$BS_MANAGER_SIZE\""
+    fi
+    if [ -n "$BS_WORKER_SIZE" ]; then
+      echo "worker_size           = \"$BS_WORKER_SIZE\""
+    fi
+    echo "alert_email           = \"$BS_ALERT_EMAIL\""
+  } > "$INFRA_DIR/terraform.tfvars"
+  echo -e "  ${GREEN}✓${NC} terraform.tfvars written"
+fi
+echo ""
+
+# ── Step 10: Terraform init + deploy ─────────────────────────────
+log "Step 10/10 — Terraform init"
+export DIGITALOCEAN_TOKEN="$BS_DO_TOKEN"
+cd "$INFRA_DIR" && terraform init
+echo ""
+log "Handing off to deploy..."
+cmd_deploy
+
+echo ""
+echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║           lobmob is live!                ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
+echo ""
+
+read -rp "  Connect to swarm via WireGuard now? [Y/n]: " BS_CONNECT
+BS_CONNECT="${BS_CONNECT:-Y}"
+if [[ "$BS_CONNECT" =~ ^[Yy]$ ]]; then
+  cmd_connect
+else
+  echo ""
+  echo "  Connect later with:"
+  echo "    lobmob connect"
+fi
+
+echo ""
+echo "  Other commands:"
+echo "    lobmob ssh-lobboss        SSH into lobboss"
+echo "    lobmob spawn              Spawn a lobster"
+echo "    lobmob status             Fleet status"
+echo "    lobmob sleep              Power down when done"
+echo ""
