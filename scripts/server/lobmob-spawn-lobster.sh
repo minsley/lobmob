@@ -184,28 +184,27 @@ set -euo pipefail
 if [ -f /etc/lobmob/env ]; then source /etc/lobmob/env; fi
 TOKEN=""
 if command -v lobmob-gh-token >/dev/null 2>&1; then
-  TOKEN=$(lobmob-gh-token 2>/dev/null || true)
+  TOKEN=\$(lobmob-gh-token 2>/dev/null || true)
 fi
-if [ -z "$TOKEN" ]; then
+if [ -z "\$TOKEN" ]; then
   if [ -f /etc/lobmob/secrets.env ]; then
     source /etc/lobmob/secrets.env
-    TOKEN="${GH_TOKEN:-}"
+    TOKEN="\${GH_TOKEN:-}"
   fi
 fi
-if [ -z "$TOKEN" ]; then
+if [ -z "\$TOKEN" ]; then
   echo "ERROR: No GitHub token available" >&2
   exit 1
 fi
-echo "$TOKEN" | gh auth login --with-token 2>/dev/null
-# Re-set git identity (gh auth setup-git clobbers .gitconfig)
-if [ -n "${LOBSTER_ID:-}" ]; then
-  git config --global user.name "lobster-$LOBSTER_ID"
-  git config --global user.email "lobster-$LOBSTER_ID@lobmob.swarm"
+echo "\$TOKEN" | gh auth login --with-token 2>/dev/null
+if [ -n "\${LOBSTER_ID:-}" ]; then
+  git config --global user.name "lobster-\$LOBSTER_ID"
+  git config --global user.email "lobster-\$LOBSTER_ID@lobmob.swarm"
 else
   git config --global user.name "lobboss"
   git config --global user.email "lobboss@lobmob.swarm"
 fi
-echo "$(date -Iseconds) GitHub auth refreshed"
+echo "\$(date -Iseconds) GitHub auth refreshed"
 GHREFRESHEOF
 chmod 755 /usr/local/bin/lobmob-refresh-gh-auth
 
