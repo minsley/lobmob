@@ -53,7 +53,7 @@ get_lobboss_ip() {
   # Workspace mapping: prod uses 'default' (legacy), dev uses 'dev'
   local ws="$LOBMOB_ENV"
   [ "$ws" = "prod" ] && ws="default"
-  terraform -chdir="$INFRA_DIR" workspace select "$ws" 2>/dev/null || true
+  terraform -chdir="$INFRA_DIR" workspace select "$ws" >/dev/null 2>&1 || true
   terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
 }
 

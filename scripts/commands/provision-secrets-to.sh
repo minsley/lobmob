@@ -4,7 +4,7 @@ HOST="${HOST:?HOST must be set}"
 # Wait for cloud-init to fully complete (runcmd installs gh, node, doctl)
 log "Waiting for cloud-init on $HOST..."
 for _ci_i in $(seq 1 60); do
-  _ci_status=$(lobmob_ssh -o ConnectTimeout=5 "root@$HOST" "cloud-init status 2>/dev/null" 2>/dev/null || echo "pending")
+  _ci_status=$(ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$HOST" "cloud-init status" 2>/dev/null || echo "pending")
   if echo "$_ci_status" | grep -qE "done|degraded"; then
     log "  cloud-init: complete"
     break
