@@ -90,6 +90,8 @@ else
 fi
 
 # Configure OpenClaw
+# IMPORTANT: Stop gateway FIRST so it doesn't start with stale/missing skills
+systemctl stop openclaw-gateway 2>/dev/null || true
 mkdir -p /root/.openclaw/skills
 
 # Run openclaw onboard (creates openclaw.json — but clobbers AGENTS.md with generic default)
