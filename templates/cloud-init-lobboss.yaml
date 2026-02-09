@@ -138,3 +138,9 @@ runcmd:
   - echo "*/2 * * * * root /usr/local/bin/lobmob-task-watcher >> /var/log/lobmob-task-watcher.log 2>&1" >> /etc/crontab
   # Weekly snapshot (Sunday 4am)
   - echo "0 4 * * 0 root /usr/local/bin/lobmob-snapshot >> /var/log/lobmob-snapshot.log 2>&1" >> /etc/crontab
+  # Task manager -- assignment, timeouts, orphans (every 5 min)
+  - echo "*/5 * * * * root /usr/local/bin/lobmob-task-manager >> /var/log/lobmob-task-manager.log 2>&1" >> /etc/crontab
+  # Watchdog -- fleet health monitoring (every 5 min, replaces Haiku agent)
+  - echo "*/5 * * * * root /usr/local/bin/lobmob-watchdog >> /var/log/lobmob-watchdog.log 2>&1" >> /etc/crontab
+  # Status reporter -- fleet summary to #swarm-logs (every 30 min)
+  - echo "*/30 * * * * root /usr/local/bin/lobmob-status-reporter >> /var/log/lobmob-status-reporter.log 2>&1" >> /etc/crontab
