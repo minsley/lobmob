@@ -62,3 +62,33 @@ bash tests/<test>                     # Run smoke tests
 - `LOBMOB_ENV=dev lobmob <cmd>` or `lobmob --env dev <cmd>`
 - Separate secrets: `secrets.env` (prod), `secrets-dev.env` (dev)
 - Separate Terraform workspaces and tfvars files
+
+## Session Self-Maintenance
+
+These are instructions for Claude to follow to keep sessions productive.
+
+### At Session Start
+- Read MEMORY.md (auto-loaded) and check for stale items
+- If MEMORY.md has items marked "TODO" that are now done, update them
+- Check the plan file (`.claude/plans/`) for current phase — don't re-plan completed work
+
+### Before Context Gets Large
+- If you've made 5+ commits, suggest a checkpoint: commit, push, and offer to start a fresh session
+- When approaching complex multi-file changes, use plan mode first
+- Use subagents for research to keep the main context focused on implementation
+
+### After Completing Major Work
+- Update MEMORY.md with new gotchas, decisions, or architectural changes discovered
+- If a plan file phase is complete, update it (mark done, note any deviations)
+- Suggest merging and syncing develop if on a feature branch
+
+### Memory Hygiene
+- MEMORY.md must stay under 200 lines (only first 200 are loaded)
+- Move resolved "Known Issues / TODO" items out when fixed
+- Keep gotchas that save time; remove ones that are no longer relevant
+- If a gotcha has been codified in a script or config, it can be shortened to a reference
+
+### Context Optimization
+- For large refactors, commit after each logical phase and offer to continue in a fresh session
+- When context is compacted, re-read CLAUDE.md and critical files rather than relying on compressed history
+- Use `terraform validate` after any template changes as a quick sanity check
