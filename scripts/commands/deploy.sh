@@ -22,12 +22,15 @@ echo ""
 read -rp "Apply this plan? [y/N] " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
   log "Cancelled"
-  return
+  exit 0
 fi
 
 terraform apply tfplan
 LOBBOSS_IP=$(terraform output -raw lobboss_ip)
 log "Lobboss droplet created at $LOBBOSS_IP"
+
+# Clear stale SSH host key (new droplet has a new key)
+ssh-keygen -R "$LOBBOSS_IP" 2>/dev/null || true
 
 # Wait for SSH and cloud-init
 wait_for_ssh "$LOBBOSS_IP"

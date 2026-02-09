@@ -1,6 +1,9 @@
 # HOST must be set by caller before sourcing this file
 HOST="${HOST:?HOST must be set}"
 
+# Clear stale SSH host key (in case of redeploy with same IP)
+ssh-keygen -R "$HOST" 2>/dev/null || true
+
 # Wait for cloud-init to fully complete (runcmd installs gh, node, doctl)
 log "Waiting for cloud-init on $HOST..."
 for _ci_i in $(seq 1 60); do
