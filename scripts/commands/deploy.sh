@@ -2,8 +2,22 @@ load_secrets
 
 log "Deploying lobboss via Terraform ($LOBMOB_ENV)..."
 cd "$INFRA_DIR"
-terraform workspace select "$LOBMOB_ENV" 2>/dev/null || terraform workspace new "$LOBMOB_ENV"
-terraform plan -var-file="$TFVARS_FILE" -out=tfplan
+
+# Workspace mapping: prod uses 'default' workspace (legacy), dev uses 'dev'
+if [ "$LOBMOB_ENV" = "prod" ]; then
+  terraform workspace select default 2>/dev/null || true
+else
+  terraform workspace select "$LOBMOB_ENV" 2>/dev/null || terraform workspace new "$LOBMOB_ENV"
+fi
+
+# Support --replace flag for full redeploys
+REPLACE_FLAG=""
+if [ "${1:-}" = "--replace" ] || [ "${1:-}" = "--redeploy" ]; then
+  REPLACE_FLAG="-replace=digitalocean_droplet.lobboss"
+  log "Full redeploy requested — lobboss will be recreated"
+fi
+
+terraform plan -var-file="$TFVARS_FILE" $REPLACE_FLAG -out=tfplan
 echo ""
 read -rp "Apply this plan? [y/N] " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
