@@ -62,7 +62,7 @@ echo "doctl: authenticated"
 source /etc/lobmob/env
 
 # Look up DO project ID and set in env (idempotent)
-PROJECT_ID=$(doctl projects list --format ID,Name --no-header | grep "${PROJECT_NAME}" | awk '{print $1}')
+PROJECT_ID=$(doctl projects list --format ID,Name --no-header | awk -v name="$PROJECT_NAME" '$2 == name {print $1}')
 if [ -n "$PROJECT_ID" ]; then
   if grep -q "^DO_PROJECT_ID=" /etc/lobmob/env 2>/dev/null; then
     sed -i "s|^DO_PROJECT_ID=.*|DO_PROJECT_ID=$PROJECT_ID|" /etc/lobmob/env
