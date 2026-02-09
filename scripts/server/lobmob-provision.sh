@@ -61,10 +61,14 @@ echo "doctl: authenticated"
 # Clone vault repo
 source /etc/lobmob/env
 
-# Look up DO project ID and append to env
+# Look up DO project ID and set in env (idempotent)
 PROJECT_ID=$(doctl projects list --format ID,Name --no-header | grep "${PROJECT_NAME}" | awk '{print $1}')
 if [ -n "$PROJECT_ID" ]; then
-  echo "DO_PROJECT_ID=$PROJECT_ID" >> /etc/lobmob/env
+  if grep -q "^DO_PROJECT_ID=" /etc/lobmob/env 2>/dev/null; then
+    sed -i "s|^DO_PROJECT_ID=.*|DO_PROJECT_ID=$PROJECT_ID|" /etc/lobmob/env
+  else
+    echo "DO_PROJECT_ID=$PROJECT_ID" >> /etc/lobmob/env
+  fi
   echo "DO project: $PROJECT_ID"
 fi
 if [ ! -d /opt/vault/.git ]; then

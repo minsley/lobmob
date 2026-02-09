@@ -38,10 +38,10 @@ log "  secrets.env: pushed"
 if [ -n "${GH_APP_PEM_B64:-}" ]; then
   echo "$GH_APP_PEM_B64" | base64 -d | \
     lobmob_ssh "root@$HOST" "cat > /etc/lobmob/gh-app.pem && chmod 600 /etc/lobmob/gh-app.pem"
-  # Write App config to env
+  # Write App config to env (idempotent)
   lobmob_ssh "root@$HOST" bash <<GHAPP
-echo "GH_APP_ID=${GH_APP_ID}" >> /etc/lobmob/env
-echo "GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}" >> /etc/lobmob/env
+grep -q "^GH_APP_ID=" /etc/lobmob/env 2>/dev/null && sed -i "s|^GH_APP_ID=.*|GH_APP_ID=${GH_APP_ID}|" /etc/lobmob/env || echo "GH_APP_ID=${GH_APP_ID}" >> /etc/lobmob/env
+grep -q "^GH_APP_INSTALL_ID=" /etc/lobmob/env 2>/dev/null && sed -i "s|^GH_APP_INSTALL_ID=.*|GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}|" /etc/lobmob/env || echo "GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}" >> /etc/lobmob/env
 GHAPP
   log "  GitHub App PEM + config: pushed"
 fi
