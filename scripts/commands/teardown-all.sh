@@ -1,7 +1,7 @@
 load_secrets 2>/dev/null || true
 
 # Use the DO API to bulk-delete all lobsters by tag
-PROJECT_NAME=$(grep project_name "$INFRA_DIR"/*.tfvars 2>/dev/null | head -1 | cut -d'"' -f2)
+PROJECT_NAME=$(grep project_name "$TFVARS_FILE" 2>/dev/null | cut -d'"' -f2)
 PROJECT_NAME="${PROJECT_NAME:-lobmob}"
 TAG="${PROJECT_NAME}-lobster"
 
