@@ -56,13 +56,13 @@ msg="Task **$task_id** re-queued"
 
     if [ -n "$msg" ]; then
 echo "$(date -Iseconds) $msg" >> "$LOG"
-# Post to Discord thread via OpenClaw gateway API
-GW_TOKEN=$(jq -r '.gateway.auth.token // empty' /root/.openclaw/openclaw.json 2>/dev/null)
-if [ -n "$GW_TOKEN" ]; then
-  curl -s -X POST "http://127.0.0.1:18789/api/channels/discord/send" \
-    -H "Authorization: Bearer $GW_TOKEN" \
+# Post to Discord thread via Discord bot API
+source /etc/lobmob/secrets.env 2>/dev/null || true
+if [ -n "${DISCORD_BOT_TOKEN:-}" ] && [ -n "$thread_id" ]; then
+  curl -s -X POST "https://discord.com/api/v10/channels/${thread_id}/messages" \
+    -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"threadId\": \"$thread_id\", \"content\": \"$msg\"}" 2>/dev/null || true
+    -d "{\"content\": \"$msg\"}" 2>/dev/null || true
 fi
     fi
   fi

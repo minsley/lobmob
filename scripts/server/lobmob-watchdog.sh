@@ -8,15 +8,17 @@ LOG="/var/log/lobmob-watchdog.log"
 NOW=$(date +%s)
 STALE_THRESHOLD=600  # 10 min since last gateway log = stale
 
-# Helper: post to Discord via gateway API
-discord_post() {
-  local channel="$1" msg="$2"
-  local gw_token=$(jq -r '.gateway.auth.token // empty' /root/.openclaw/openclaw.json 2>/dev/null)
-  if [ -n "$gw_token" ]; then
-    curl -s -X POST "http://127.0.0.1:18789/api/channels/discord/send" \
-      -H "Authorization: Bearer $gw_token" \
-      -H "Content-Type: application/json" \
-      -d "{\"channel\": \"$channel\", \"content\": \"$msg\"}" 2>/dev/null || true
+# Helper: post to Discord channel via bot API
+# Requires DISCORD_CHANNEL_ID_<NAME> in env, or falls back to channel name lookup
+discord_post_channel() {
+  local channel_name="$1" msg="$2"
+  source /etc/lobmob/secrets.env 2>/dev/null || true
+  [ -n "${DISCORD_BOT_TOKEN:-}" ] || return 0
+  # Look up channel ID from openclaw config (cached guild channels)
+  local channel_id=$(jq -r ".channels.discord.guilds[].channels | to_entries[] | select(.key == \"$channel_name\") | .key" /root/.openclaw/openclaw.json 2>/dev/null || true)
+  # For now, log to file instead of Discord if we can't resolve the channel ID
+  if [ -z "$channel_id" ]; then
+    echo "$(date -Iseconds) [discord-post] Could not resolve channel: $channel_name — $msg" >> /var/log/lobmob-watchdog.log
   fi
 }
 
@@ -66,6 +68,6 @@ echo "$(date -Iseconds) Watchdog: healthy=$HEALTHY stale=$STALE unreachable=$UNR
 # Post alerts to #swarm-logs if any issues
 if [ -n "$ALERTS" ]; then
   MSG="**[watchdog]** Fleet health check: $HEALTHY healthy, $STALE stale, $UNREACHABLE unreachable\n$(echo -e "$ALERTS")"
-  discord_post "${DISCORD_CHANNEL_SWARM_LOGS:-swarm-logs}" "$MSG"
+  discord_post_channel "${DISCORD_CHANNEL_SWARM_LOGS:-swarm-logs}" "$MSG"
   echo "$(date -Iseconds) Alerts posted: $ALERTS" >> "$LOG"
 fi

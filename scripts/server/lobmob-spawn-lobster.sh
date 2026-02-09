@@ -245,6 +245,15 @@ touch /etc/lobmob/.awaiting-secrets
 USERDATA
 )
 
+# Ensure DO tags exist before applying to droplet (API requires tags to exist first)
+source /etc/lobmob/secrets.env 2>/dev/null || true
+for _tag in "${LOBSTER_TAG}-type-${LOBSTER_TYPE}" "${LOBSTER_TAG}-initializing" "${LOBSTER_TAG}-active"; do
+  curl -s -X POST "https://api.digitalocean.com/v2/tags" \
+    -H "Authorization: Bearer $DO_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"$_tag\"}" 2>/dev/null || true
+done
+
 # Create the droplet
 RESPONSE=$(doctl compute droplet create \
   "lobster-$LOBSTER_ID" \
@@ -280,21 +289,22 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
-# Wait for cloud-init to finish
+# Wait for cloud-init to fully complete (runcmd installs gh, node, doctl, openclaw)
 echo "Waiting for cloud-init to complete on lobster..."
 
 # Clear stale known_hosts first (WireGuard IPs get reused across spawns)
 ssh-keygen -f /root/.ssh/known_hosts -R "$WG_IP" 2>/dev/null || true
 
-# Poll for the .awaiting-secrets marker (last thing cloud-init writes)
-for i in $(seq 1 60); do
-  if ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-    "root@$WG_IP" "test -f /etc/lobmob/.awaiting-secrets" 2>/dev/null; then
-    echo "Cloud-init: done (marker found after $((i * 5))s)"
+# Poll for full cloud-init completion (not just the marker — runcmd must finish too)
+for i in $(seq 1 90); do
+  CI_STATUS=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+    "root@$WG_IP" "cloud-init status 2>/dev/null" 2>/dev/null || echo "pending")
+  if echo "$CI_STATUS" | grep -qE "done|degraded"; then
+    echo "Cloud-init: done (after $((i * 5))s)"
     break
   fi
-  if [ "$i" -eq 60 ]; then
-    echo "WARNING: cloud-init marker not found after 300s, proceeding anyway"
+  if [ "$i" -eq 90 ]; then
+    echo "WARNING: cloud-init not done after 450s, proceeding anyway"
   fi
   sleep 5
 done
@@ -439,9 +449,13 @@ CONFIG_VERSION=$(md5sum /usr/local/bin/lobmob-spawn-lobster | awk '{print $1}')
 ssh -i /root/.ssh/lobster_admin -o StrictHostKeyChecking=accept-new "root@$WG_IP" \
   "echo '$CONFIG_VERSION' > /etc/lobmob/config-version"
 
-# Transition from initializing -> active (swap tags)
-doctl compute droplet tag "$DROPLET_ID" --tag-name "${LOBSTER_TAG}-active" 2>/dev/null || true
-doctl compute droplet untag "$DROPLET_ID" --tag-name "${LOBSTER_TAG}-initializing" 2>/dev/null || true
+# Transition from initializing -> active (swap tags via API)
+curl -s -X POST "https://api.digitalocean.com/v2/tags/${LOBSTER_TAG}-active/resources" \
+  -H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"resources\":[{\"resource_id\":\"$DROPLET_ID\",\"resource_type\":\"droplet\"}]}" 2>/dev/null || true
+curl -s -X DELETE "https://api.digitalocean.com/v2/tags/${LOBSTER_TAG}-initializing/resources" \
+  -H "Authorization: Bearer $DO_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"resources\":[{\"resource_id\":\"$DROPLET_ID\",\"resource_type\":\"droplet\"}]}" 2>/dev/null || true
 
 lobmob-log spawn "lobster-$LOBSTER_ID type=$LOBSTER_TYPE droplet=$DROPLET_ID wg_ip=$WG_IP"
 

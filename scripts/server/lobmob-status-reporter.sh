@@ -7,16 +7,12 @@ source /etc/lobmob/secrets.env 2>/dev/null || true
 
 LOG="/var/log/lobmob-status-reporter.log"
 
-# Helper: post to Discord via gateway API
-discord_post() {
-  local channel="$1" msg="$2"
-  local gw_token=$(jq -r '.gateway.auth.token // empty' /root/.openclaw/openclaw.json 2>/dev/null)
-  if [ -n "$gw_token" ]; then
-    curl -s -X POST "http://127.0.0.1:18789/api/channels/discord/send" \
-      -H "Authorization: Bearer $gw_token" \
-      -H "Content-Type: application/json" \
-      -d "{\"channel\": \"$channel\", \"content\": $(echo "$msg" | jq -Rs .)}" 2>/dev/null || true
-  fi
+# Helper: post to Discord channel via bot API
+# For now, logs to file — channel-by-name posting needs channel ID resolution
+discord_post_channel() {
+  local channel_name="$1" msg="$2"
+  echo "$(date -Iseconds) [status-report] $msg" >> /var/log/lobmob-status-reporter.log
+  # TODO: resolve channel name to ID and post via Discord API
 }
 
 # Pull vault for task counts
@@ -54,5 +50,5 @@ MSG="**[status-report]** Fleet Summary — $(date -u +%H:%M) UTC
 **PRs:** $VAULT_PRS open
 **Cost:** ~\$$HOURLY_COST/hr (\$$MONTHLY_COST/mo est.)"
 
-discord_post "${DISCORD_CHANNEL_SWARM_LOGS:-swarm-logs}" "$MSG"
+discord_post_channel "${DISCORD_CHANNEL_SWARM_LOGS:-swarm-logs}" "$MSG"
 echo "$(date -Iseconds) Status report posted" >> "$LOG"

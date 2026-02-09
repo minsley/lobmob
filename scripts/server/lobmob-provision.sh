@@ -3,6 +3,13 @@ set -euo pipefail
 
 echo "=== lobmob provision: configuring lobboss ==="
 
+# Clean env file — remove any malformed lines (must be KEY=VALUE format)
+if [ -f /etc/lobmob/env ]; then
+  grep -E '^[A-Z_]+=.' /etc/lobmob/env > /tmp/env.clean 2>/dev/null || true
+  mv /tmp/env.clean /etc/lobmob/env
+  chmod 600 /etc/lobmob/env
+fi
+
 # Validate secrets exist
 source /etc/lobmob/secrets.env 2>/dev/null || { echo "ERROR: /etc/lobmob/secrets.env not found"; exit 1; }
 for VAR in DO_TOKEN DISCORD_BOT_TOKEN ANTHROPIC_API_KEY; do

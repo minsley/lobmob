@@ -11,15 +11,15 @@ NOW=$(date +%s)
 
 cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
 
-# Helper: post to Discord thread via gateway API
+# Helper: post to Discord thread via Discord bot API directly
 discord_post() {
   local thread_id="$1" msg="$2"
-  local gw_token=$(jq -r '.gateway.auth.token // empty' /root/.openclaw/openclaw.json 2>/dev/null)
-  if [ -n "$gw_token" ]; then
-    curl -s -X POST "http://127.0.0.1:18789/api/channels/discord/send" \
-      -H "Authorization: Bearer $gw_token" \
+  source /etc/lobmob/secrets.env 2>/dev/null || true
+  if [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
+    curl -s -X POST "https://discord.com/api/v10/channels/${thread_id}/messages" \
+      -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
       -H "Content-Type: application/json" \
-      -d "{\"threadId\": \"$thread_id\", \"content\": \"$msg\"}" 2>/dev/null || true
+      -d "{\"content\": \"$msg\"}" 2>/dev/null || true
   fi
 }
 
