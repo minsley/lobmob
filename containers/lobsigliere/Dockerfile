@@ -36,6 +36,7 @@ COPY containers/lobsigliere/sshd_config /etc/ssh/sshd_config
 
 # Engineer user
 RUN useradd -m -s /bin/bash -G sudo engineer \
+    && passwd -d engineer \
     && echo "engineer ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/engineer \
     && chmod 440 /etc/sudoers.d/engineer \
     && mkdir -p /home/engineer/.ssh && chmod 700 /home/engineer/.ssh \
