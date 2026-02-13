@@ -40,8 +40,13 @@ if [[ -d "$LOBMOB_REPO/.git" ]]; then
     su - engineer -c "cd '$LOBMOB_REPO' && git fetch origin && git pull origin develop --rebase" || true
 else
     echo "Cloning lobmob repo..."
-    su - engineer -c "git clone 'https://x-access-token:${GH_TOKEN:-${GH_APP_PRIVATE_KEY:-}}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'"
-    su - engineer -c "cd '$LOBMOB_REPO' && git checkout develop"
+    # Try HTTPS clone with GH_TOKEN, fall back to SSH if token lacks repo access
+    if su - engineer -c "git clone 'https://x-access-token:${GH_TOKEN:-}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'" 2>/dev/null; then
+        su - engineer -c "cd '$LOBMOB_REPO' && git checkout develop" || true
+    else
+        echo "HTTPS clone failed (token may not have repo access). Clone manually after SSH in:"
+        echo "  git clone git@github.com:minsley/lobmob.git ~/lobmob"
+    fi
 fi
 
 # Set up .bashrc with lobmob environment (idempotent)
