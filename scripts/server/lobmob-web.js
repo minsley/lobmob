@@ -397,7 +397,7 @@ const handler = async (req, res) => {
     const health = readHealthStatus();
     let k8sOk = false;
     try {
-      await k8sGet('/api/v1/namespaces/' + NAMESPACE);
+      await k8sGet('/apis/batch/v1/namespaces/' + NAMESPACE + '/jobs?limit=1');
       k8sOk = true;
     } catch { /* ignore */ }
     res.writeHead(200, { 'Content-Type': 'application/json' });
