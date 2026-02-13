@@ -72,8 +72,8 @@ Power:
   wake                Power on lobboss and wait for it to come back
 
 Connection:
-  connect             Connect to swarm via WireGuard + open web UI
-  disconnect          Disconnect WireGuard tunnel
+  connect [target]    Port-forward to web dashboard + open browser
+                      No args = lobboss. Pass job name for lobster.
 
 Utilities:
   logs                Tail lobboss cloud-init logs
