@@ -50,6 +50,24 @@ else
     fi
 fi
 
+# Clone vault repo into engineer's home (persistent on PVC, used by daemon)
+VAULT_DIR="/home/engineer/vault"
+if [[ -d "$VAULT_DIR/.git" ]]; then
+    echo "Updating vault repo..."
+    su - engineer -c "cd '$VAULT_DIR' && git pull --rebase origin main" || true
+else
+    echo "Cloning vault repo..."
+    CLONE_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
+    LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+    if [[ "$LOBMOB_ENV" == "dev" ]]; then
+        VAULT_REPO_NAME="lobmob-vault-dev"
+    else
+        VAULT_REPO_NAME="lobmob-vault"
+    fi
+    su - engineer -c "git clone 'https://x-access-token:${CLONE_TOKEN}@github.com/minsley/${VAULT_REPO_NAME}.git' '$VAULT_DIR'" 2>/dev/null || \
+        echo "Vault clone failed — daemon will retry on startup"
+fi
+
 # Set up .bashrc with lobmob environment (idempotent)
 if ! grep -q "lobmob environment" /home/engineer/.bashrc 2>/dev/null; then
 # Interpolated section (bake in current env values)
@@ -85,5 +103,29 @@ fi
 
 chown engineer:engineer /home/engineer/.bashrc
 
+# Start task processing daemon in background (runs as engineer)
+echo "Starting lobsigliere task daemon..."
+su - engineer -c "VAULT_PATH=/home/engineer/vault \
+    SYSTEM_WORKSPACE=/home/engineer/lobmob \
+    ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' \
+    GH_TOKEN='${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}' \
+    LOBMOB_ENV='${LOBMOB_ENV:-prod}' \
+    python3 /opt/lobmob/scripts/server/lobsigliere-daemon.py" &
+DAEMON_PID=$!
+
+# Cleanup handler — stop daemon when container exits
+cleanup() {
+    echo "Stopping daemon (PID $DAEMON_PID)..."
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+}
+trap cleanup EXIT SIGTERM SIGINT
+
 echo "Starting sshd..."
-exec /usr/sbin/sshd -D -e
+/usr/sbin/sshd -D -e &
+SSHD_PID=$!
+
+# Wait for either process to exit
+wait -n "$DAEMON_PID" "$SSHD_PID" 2>/dev/null || true
+echo "Process exited, shutting down..."
+cleanup
