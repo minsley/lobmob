@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lobsigliere
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobsigliere
+    app.kubernetes.io/part-of: lobmob
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lobsigliere-role
+  namespace: lobmob
+rules:
+  # Full control over lobster jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete", "update", "patch"]
+  # Manage deployments (redeploy lobboss, etc.)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Pod operations (logs, exec, port-forward)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "pods/portforward"]
+    verbs: ["get", "list", "watch", "create"]
+  # Manage services, configmaps, secrets
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # CronJob management
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Read PVCs
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  # Read namespaces
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lobsigliere-rolebinding
+  namespace: lobmob
+subjects:
+  - kind: ServiceAccount
+    name: lobsigliere
+    namespace: lobmob
+roleRef:
+  kind: Role
+  name: lobsigliere-role
+  apiGroup: rbac.authorization.k8s.io

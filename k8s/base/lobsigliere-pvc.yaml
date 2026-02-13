@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lobsigliere-home
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobsigliere
+    app.kubernetes.io/part-of: lobmob
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

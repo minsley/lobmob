@@ -18,3 +18,9 @@ patches:
       - op: add
         path: /data/TASK_QUEUE_CHANNEL_ID
         value: "1470139057072767211"
+      - op: add
+        path: /data/LOBSTER_ANDROID_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster-android:latest"
+      - op: add
+        path: /data/LOBSTER_UNITY_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster-unity:latest"

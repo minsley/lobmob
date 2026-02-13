@@ -24,3 +24,9 @@ patches:
       - op: add
         path: /data/SWARM_LOGS_CHANNEL_ID
         value: "1469216945764175946"
+      - op: add
+        path: /data/LOBSTER_ANDROID_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster-android:latest"
+      - op: add
+        path: /data/LOBSTER_UNITY_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster-unity:latest"

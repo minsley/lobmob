@@ -37,19 +37,38 @@ MODEL_MAP = {
 }
 
 
+def _resolve_prompt_path(filename: str) -> Path | None:
+    """Find a prompt file in local source or container path."""
+    local = Path(__file__).parent / "prompts" / filename
+    if local.exists():
+        return local
+    container = Path("/app/lobster/prompts") / filename
+    if container.exists():
+        return container
+    return None
+
+
 def _load_system_prompt(config: LobsterConfig) -> str:
-    """Load the type-specific system prompt."""
-    prompt_path = Path(__file__).parent / "prompts" / f"{config.lobster_type}.md"
-    if prompt_path.exists():
-        return prompt_path.read_text()
+    """Load the type-specific system prompt, with optional workflow overlay."""
+    # Base prompt for the lobster type
+    base_path = _resolve_prompt_path(f"{config.lobster_type}.md")
+    if base_path:
+        prompt = base_path.read_text()
+    else:
+        logger.warning("No prompt found for type %s, using default", config.lobster_type)
+        prompt = f"You are a {config.lobster_type} lobster agent. Complete the assigned task."
 
-    # Fallback for container path
-    container_path = Path("/app/lobster/prompts") / f"{config.lobster_type}.md"
-    if container_path.exists():
-        return container_path.read_text()
+    # Workflow overlay (e.g. swe-android.md, swe-unity.md)
+    if config.workflow != "default":
+        overlay_path = _resolve_prompt_path(f"{config.lobster_type}-{config.workflow}.md")
+        if overlay_path:
+            prompt += f"\n\n---\n\n# Workflow: {config.workflow}\n\n"
+            prompt += overlay_path.read_text()
+            logger.info("Loaded workflow overlay: %s-%s", config.lobster_type, config.workflow)
+        else:
+            logger.warning("No overlay found for %s-%s", config.lobster_type, config.workflow)
 
-    logger.warning("No prompt found for type %s, using default", config.lobster_type)
-    return f"You are a {config.lobster_type} lobster agent. Complete the assigned task."
+    return prompt
 
 
 async def run_task(config: LobsterConfig, task_body: str) -> dict:
@@ -69,6 +88,14 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         allowed_tools.extend(["Edit", "Write", "Bash"])
     elif config.lobster_type == "qa":
         allowed_tools.append("Bash")  # read-only bash (enforced by hooks)
+    elif config.lobster_type == "image-gen":
+        allowed_tools.extend(["Write", "Bash"])  # save images, run git for vault
+
+    # MCP servers for specialized types
+    mcp_servers = []
+    if config.lobster_type == "image-gen":
+        from lobster.mcp_gemini import gemini_mcp
+        mcp_servers.append(gemini_mcp)
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
@@ -79,6 +106,7 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         max_budget_usd=10.0,
         cwd=os.environ.get("WORKSPACE", "/workspace"),
         can_use_tool=create_tool_checker(config.lobster_type),
+        mcp_servers=mcp_servers or None,
         stderr=lambda line: logger.debug("CLI: %s", line.rstrip()),
     )
 
