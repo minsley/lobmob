@@ -669,6 +669,19 @@ Additional benefits:
 - **Ephemeral sessions** are a natural fit — lobster gets task, Agent SDK runs `query()`, process exits cleanly
 - **Already meet requirements** — lobsters have Node.js (for OpenClaw) and ≥2GB RAM (for Opus), both needed by Agent SDK
 
+## Decisions (from discussion)
+
+These were resolved during research review and should be treated as settled:
+
+1. **Framework**: Claude Agent SDK + discord.py. No other framework evaluated is competitive.
+2. **Scope**: Both lobboss AND lobsters migrate. Not "lobboss now, lobsters later if needed." One framework, one stack.
+3. **Multi-model strategy**: Claude is the agent brain. Non-Claude capabilities (image generation, embeddings, etc.) integrate as MCP tools — thin Python wrappers around external APIs. No need for a model-agnostic framework.
+4. **Skills vs MCP tools**: Skills for multi-step workflows needing judgment (task-create, code-task, review-prs). MCP tools for atomic operations needing reliability (ssh_exec, discord_post, spawn_lobster). Skills call MCP tools. Some skills graduate to MCP tools as procedures stabilize.
+5. **Containers**: All agents containerized. Layered images: base → lobboss / lobster → workflow-specific (unity, web, ml). Same images run locally (docker-compose) and in production.
+6. **Workflow-specific images**: Task metadata gains a `workflow` field. Lobboss selects the appropriate container image when spawning a lobster. Adding a new workflow = write a Dockerfile, build, push, add mapping. No infra changes.
+7. **Infrastructure**: DOKS (managed Kubernetes) as target deployment. Free control plane. k8s Jobs for ephemeral lobsters, native pod networking eliminates WireGuard, node autoscaling replaces pool-manager. Start on Droplets+Docker for initial validation if needed.
+8. **Migration path**: Containerize first (works on Droplets), then migrate to DOKS. Container images are identical for both targets.
+
 ## Open Questions for Planning
 
 1. **Python or TypeScript?** — Both SDKs available. Python + discord.py is the most natural fit. TypeScript + discord.js is an option if we want to stay in the Node.js ecosystem.
