@@ -84,7 +84,7 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
 
     # Determine allowed tools based on type
     allowed_tools = ["Read", "Glob", "Grep"]
-    if config.lobster_type in ("swe", "research"):
+    if config.lobster_type in ("swe", "research", "system"):
         allowed_tools.extend(["Edit", "Write", "Bash"])
     elif config.lobster_type == "qa":
         allowed_tools.append("Bash")  # read-only bash (enforced by hooks)

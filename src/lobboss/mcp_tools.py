@@ -95,6 +95,9 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
     lobster_type = args["lobster_type"]
     workflow = args.get("workflow", "default")
 
+    if lobster_type == "system":
+        return {"content": [{"type": "text", "text": "System tasks are processed autonomously by lobsigliere every 30s. Do not spawn lobsters for type=system."}]}
+
     if lobster_type not in VALID_LOBSTER_TYPES:
         return {"content": [{"type": "text", "text": f"Error: Invalid lobster_type '{lobster_type}'. Must be one of: {', '.join(VALID_LOBSTER_TYPES)}"}]}
 
