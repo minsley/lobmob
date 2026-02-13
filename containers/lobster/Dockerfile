@@ -8,8 +8,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Lobster source
+# Source
 COPY src/lobster/ /app/lobster/
+COPY src/common/ /app/common/
 
 # Skills
 COPY skills/lobster/ /app/skills/
