@@ -4,8 +4,13 @@
 # Code PRs get deterministic checks posted as comments but are NOT auto-merged —
 # those require LLM QA review (eventually with functional/Selenium testing).
 set -euo pipefail
-source /etc/lobmob/env
-cd /opt/vault
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/container-env.sh" ]]; then
+  source "$SCRIPT_DIR/container-env.sh"
+elif [[ -f /etc/lobmob/env ]]; then
+  source /etc/lobmob/env
+fi
+cd "${VAULT_PATH:-/opt/vault}"
 
 git checkout main --quiet 2>/dev/null && git pull origin main --quiet 2>/dev/null
 

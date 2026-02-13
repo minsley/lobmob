@@ -2,11 +2,16 @@
 # lobmob-task-manager — deterministic task assignment, timeout detection, orphan recovery
 # Runs every 5 min via cron. Does NOT require LLM — pure logic.
 set -euo pipefail
-source /etc/lobmob/env
-source /etc/lobmob/secrets.env 2>/dev/null || true
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/container-env.sh" ]]; then
+  source "$SCRIPT_DIR/container-env.sh"
+else
+  source /etc/lobmob/env
+  source /etc/lobmob/secrets.env 2>/dev/null || true
+fi
 
-VAULT_DIR="/opt/vault"
-LOG="/var/log/lobmob-task-manager.log"
+VAULT_DIR="${VAULT_PATH:-/opt/vault}"
+LOG="${LOG_DIR:-/var/log}/lobmob-task-manager.log"
 NOW=$(date +%s)
 
 cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
@@ -14,7 +19,6 @@ cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
 # Helper: post to Discord thread via Discord bot API directly
 discord_post() {
   local thread_id="$1" msg="$2"
-  source /etc/lobmob/secrets.env 2>/dev/null || true
   if [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
     curl -s -X POST "https://discord.com/api/v10/channels/${thread_id}/messages" \
       -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
@@ -59,7 +63,9 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   fi
 
   # Check for existing warning (avoid spamming)
-  warn_state="/var/lib/lobmob/task-state/${task_id}.timeout"
+  TASK_STATE_DIR="${TASK_STATE_DIR:-/var/lib/lobmob/task-state}"
+  mkdir -p "$TASK_STATE_DIR" 2>/dev/null || true
+  warn_state="${TASK_STATE_DIR}/${task_id}.timeout"
 
   if [ "$elapsed_min" -ge "$fail_min" ]; then
     if [ ! -f "$warn_state" ] || [ "$(cat "$warn_state")" != "failed" ]; then
@@ -79,7 +85,11 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
 done
 
 # ── 2. Orphan Detection ─────────────────────────────────────────────
-ACTIVE_LOBSTERS=$(doctl compute droplet list --tag-name "${LOBSTER_TAG}-active" --format Name --no-header 2>/dev/null || true)
+if [[ "${LOBMOB_RUNTIME:-droplet}" == "k8s" ]]; then
+  ACTIVE_LOBSTERS=$(kubectl get jobs -n lobmob -l app.kubernetes.io/name=lobster --field-selector=status.active=1 -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' || true)
+else
+  ACTIVE_LOBSTERS=$(doctl compute droplet list --tag-name "${LOBSTER_TAG}-active" --format Name --no-header 2>/dev/null || true)
+fi
 
 for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   [ -f "$task_file" ] || continue
@@ -94,8 +104,12 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
     continue
   fi
 
-  # Also check standby (powered off)
-  STANDBY_LOBSTERS=$(doctl compute droplet list --tag-name "${LOBSTER_TAG}" --format Name,Status --no-header 2>/dev/null | awk '$2=="off"{print $1}' || true)
+  # Also check standby (powered off on Droplet, or completed/pending in k8s)
+  if [[ "${LOBMOB_RUNTIME:-droplet}" == "k8s" ]]; then
+    STANDBY_LOBSTERS=$(kubectl get jobs -n lobmob -l app.kubernetes.io/name=lobster -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' || true)
+  else
+    STANDBY_LOBSTERS=$(doctl compute droplet list --tag-name "${LOBSTER_TAG}" --format Name,Status --no-header 2>/dev/null | awk '$2=="off"{print $1}' || true)
+  fi
   if echo "$STANDBY_LOBSTERS" | grep -q "$assigned_to"; then
     continue
   fi
@@ -148,16 +162,20 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   thread_id=$(fm discord_thread_id "$task_file" | tr -d '"')
 
   # Find an idle lobster of the correct type
-  # Note: doctl --tag-name doesn't support AND queries, so query by type and filter by active
   IDLE_LOBSTER=""
-  for lobster in $(doctl compute droplet list --tag-name "${LOBSTER_TAG}-type-${task_type}" --format Name,Status --no-header 2>/dev/null | awk '$2=="active"{print $1}'); do
-    # Check it's not busy (no active task assigned to it)
-    lobster_short=$(echo "$lobster" | sed 's/^lobster-//')
-    if ! grep -rl "$lobster_short" "$VAULT_DIR"/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
-      IDLE_LOBSTER="$lobster"
-      break
-    fi
-  done
+  if [[ "${LOBMOB_RUNTIME:-droplet}" == "k8s" ]]; then
+    # In k8s, lobboss spawns new Jobs on demand — no need to find an idle lobster.
+    # Mark as "k8s-spawn" to signal the trigger section below.
+    IDLE_LOBSTER="k8s-spawn"
+  else
+    for lobster in $(doctl compute droplet list --tag-name "${LOBSTER_TAG}-type-${task_type}" --format Name,Status --no-header 2>/dev/null | awk '$2=="active"{print $1}'); do
+      lobster_short=$(echo "$lobster" | sed 's/^lobster-//')
+      if ! grep -rl "$lobster_short" "$VAULT_DIR"/010-tasks/active/ 2>/dev/null | head -1 | grep -q .; then
+        IDLE_LOBSTER="$lobster"
+        break
+      fi
+    done
+  fi
 
   if [ -z "$IDLE_LOBSTER" ]; then
     # No idle lobster of the right type — skip (pool manager will spawn if needed)
@@ -174,21 +192,28 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   cd "$VAULT_DIR" && git add -A && git commit -m "[task-manager] Assign $task_id to $IDLE_LOBSTER" --quiet 2>/dev/null
   git push origin main --quiet 2>/dev/null || true
 
-  # Trigger the lobster agent via SSH
-  LOBSTER_WG_IP=""
-  for peer_ip in $(wg show wg0 allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1); do
-    rid=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
-      "root@$peer_ip" "grep LOBSTER_ID /etc/lobmob/env 2>/dev/null | cut -d= -f2" 2>/dev/null || true)
-    if [ -n "$rid" ] && echo "$IDLE_LOBSTER" | grep -q "$rid"; then
-      LOBSTER_WG_IP="$peer_ip"
-      break
-    fi
-  done
+  # Trigger the lobster agent
+  if [[ "${LOBMOB_RUNTIME:-droplet}" == "k8s" ]]; then
+    # In k8s, the lobboss agent's spawn_lobster MCP tool creates Jobs.
+    # The task-manager just marks the task — lobboss picks it up and spawns.
+    echo "$(date -Iseconds) Task $task_id queued for k8s Job spawn by lobboss" >> "$LOG"
+  else
+    # Legacy: trigger via SSH over WireGuard
+    LOBSTER_WG_IP=""
+    for peer_ip in $(wg show wg0 allowed-ips 2>/dev/null | awk '{print $2}' | cut -d/ -f1); do
+      rid=$(ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=2 -o BatchMode=yes \
+        "root@$peer_ip" "grep LOBSTER_ID /etc/lobmob/env 2>/dev/null | cut -d= -f2" 2>/dev/null || true)
+      if [ -n "$rid" ] && echo "$IDLE_LOBSTER" | grep -q "$rid"; then
+        LOBSTER_WG_IP="$peer_ip"
+        break
+      fi
+    done
 
-  if [ -n "$LOBSTER_WG_IP" ]; then
-    ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o BatchMode=yes "root@$LOBSTER_WG_IP" \
-      "source /root/.openclaw/.env; nohup openclaw agent --agent main --message 'You have been assigned $task_id. Read /opt/vault/010-tasks/active/${task_id}.md and execute it.' > /tmp/openclaw-task.log 2>&1 &" 2>/dev/null || true
-    echo "$(date -Iseconds) Triggered agent on $IDLE_LOBSTER ($LOBSTER_WG_IP)" >> "$LOG"
+    if [ -n "$LOBSTER_WG_IP" ]; then
+      ssh -i /root/.ssh/lobster_admin -o ConnectTimeout=5 -o BatchMode=yes "root@$LOBSTER_WG_IP" \
+        "source /root/.openclaw/.env; nohup openclaw agent --agent main --message 'You have been assigned $task_id. Read /opt/vault/010-tasks/active/${task_id}.md and execute it.' > /tmp/openclaw-task.log 2>&1 &" 2>/dev/null || true
+      echo "$(date -Iseconds) Triggered agent on $IDLE_LOBSTER ($LOBSTER_WG_IP)" >> "$LOG"
+    fi
   fi
 
   [ -n "$thread_id" ] && discord_post "$thread_id" \
