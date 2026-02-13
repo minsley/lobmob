@@ -13,6 +13,7 @@ from claude_agent_sdk import (
 )
 
 from lobster.config import LobsterConfig
+from lobster.hooks import create_tool_checker
 
 logger = logging.getLogger("lobster.agent")
 
@@ -64,6 +65,7 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         max_turns=50,
         max_budget_usd=10.0,
         cwd=os.environ.get("WORKSPACE", "/workspace"),
+        can_use_tool=create_tool_checker(config.lobster_type),
     )
 
     result = {
