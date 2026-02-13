@@ -6,6 +6,7 @@ services:
     env_file: secrets-dev.env
     environment:
       - LOBMOB_ENV=dev
+      - TASK_QUEUE_CHANNEL_ID=1470139057072767211
     volumes:
       - ./vault-dev:/opt/vault
     restart: unless-stopped
