@@ -2,19 +2,18 @@
 
 Everything you need to configure before running `lobmob deploy`.
 
-## Important: Secret Management
+## Secret Management
 
-Secrets are **never stored in Terraform state or cloud-init user_data**.
-Two config files are used:
+Two layers of secrets:
 
-| File | Contains | Committed to git? |
+| Location | Contains | Committed to git? |
 |---|---|---|
-| `infra/terraform.tfvars` | Non-secret infra config (region, sizing, vault repo, WG public key) | No (gitignored) |
-| `secrets.env` | All secrets (API tokens, private keys) | No (gitignored) |
+| `secrets.env` (prod) / `secrets-dev.env` (dev) | API tokens, keys | No (gitignored) |
+| k8s Secret `lobmob-secrets` | Same tokens, deployed to cluster | Created by `lobmob deploy` |
+| `infra/prod.tfvars` / `infra/dev.tfvars` | Non-secret infra config | No (gitignored) |
 
-The `lobmob deploy` command creates infrastructure via Terraform (secret-free),
-then pushes secrets to the lobboss via SSH. Lobsters receive secrets from the
-lobboss via SSH over WireGuard — never via cloud-init.
+The `lobmob deploy` command creates the DOKS cluster via Terraform, then creates
+k8s Secrets and applies manifests via kubectl.
 
 ---
 
@@ -23,23 +22,9 @@ lobboss via SSH over WireGuard — never via cloud-init.
 ### Account & API
 - [ ] Create a DigitalOcean account (or use existing)
 - [ ] Generate a **Personal Access Token** with full read/write scope
-  - Control Panel → API → Tokens → Generate New Token
+  - Control Panel -> API -> Tokens -> Generate New Token
   - Save as `DO_TOKEN` in `secrets.env`
-
-### SSH Key
-- [ ] Generate an Ed25519 keypair (if you don't have one):
-  ```bash
-  ssh-keygen -t ed25519 -C "lobmob" -f ~/.ssh/id_ed25519
-  ```
-- [ ] Note the path to the public key — goes in `ssh_pub_key_path` in `terraform.tfvars`
-  - Terraform uploads this key to DO and injects it into all droplets
-  - You do NOT need to manually add it in the DO control panel
-
-### Region Selection
-- [ ] Choose a region for your swarm (e.g. `nyc3`, `sfo3`, `ams3`, `fra1`)
-  - Pick one close to you for lower SSH latency
-  - All droplets (lobboss + lobsters) will be in this region
-  - Set as `region` in `terraform.tfvars`
+  - Also export as `DIGITALOCEAN_TOKEN` for Terraform
 
 ---
 
@@ -47,35 +32,26 @@ lobboss via SSH over WireGuard — never via cloud-init.
 
 ### Vault Repository
 - [ ] Decide on a repo name for the shared vault (e.g. `yourorg/lobmob-vault`)
-  - The `lobmob vault-init` command creates this for you — just have the name ready
-  - Set as `vault_repo` in `terraform.tfvars`
+  - The `lobmob vault-init` command creates this for you
+  - Dev environment uses a separate repo (e.g. `lobmob-vault-dev`)
 
-### Fine-Grained Personal Access Token
-- [ ] Create a fine-grained PAT scoped to the vault repo
-  - GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens
-  - **Resource owner**: your user or org
-  - **Repository access**: Only select repositories → select the vault repo
-  - **Permissions needed**:
-    - **Contents**: Read and write (push branches, read files)
-    - **Pull requests**: Read and write (create PRs, read/post comments)
-    - **Metadata**: Read (required by default)
+### GitHub App (recommended for token rotation)
+- [ ] Create a GitHub App (Settings -> Developer settings -> GitHub Apps)
+  - **Permissions**: Contents (R/W), Pull requests (R/W), Metadata (R)
+  - **Repository access**: Only select repositories (vault + lobmob repos)
+- [ ] Install the App on your account/org
+- [ ] Download the private key PEM file
+  - Base64-encode and save as `GH_APP_PRIVATE_KEY` in `secrets.env`
+- [ ] Note the App ID and Installation ID
+  - Save as `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in `secrets.env`
+
+The `gh-token-refresh` CronJob rotates tokens every 45 minutes automatically.
+
+### Alternative: Fine-Grained PAT
+- [ ] Create a fine-grained PAT scoped to vault + lobmob repos
+  - **Permissions**: Contents (R/W), Pull requests (R/W), Metadata (R)
   - Save as `GH_TOKEN` in `secrets.env`
-
-### Deploy Key (for server-side git over SSH)
-- [ ] Generate a dedicated deploy keypair:
-  ```bash
-  ssh-keygen -t ed25519 -C "lobmob-deploy" -f ~/.ssh/lobmob_deploy -N ""
-  ```
-- [ ] Add the **public** key as a deploy key on the vault repo:
-  - Vault repo → Settings → Deploy keys → Add deploy key
-  - Title: `lobmob-swarm`
-  - Check "Allow write access"
-  - Paste contents of `~/.ssh/lobmob_deploy.pub`
-- [ ] Base64-encode the **private** key and save in `secrets.env`:
-  ```bash
-  base64 < ~/.ssh/lobmob_deploy
-  # Copy output into VAULT_DEPLOY_KEY_B64 in secrets.env
-  ```
+- Note: PATs don't auto-rotate. Prefer the GitHub App approach.
 
 ---
 
@@ -83,31 +59,25 @@ lobboss via SSH over WireGuard — never via cloud-init.
 
 ### Bot Application
 - [ ] Create a Discord Application
-  - Discord Developer Portal → New Application → name it `lobmob`
-- [ ] Create a Bot user
-  - Application → Bot → Add Bot
-- [ ] Copy the bot token
-  - Bot → Reset Token → Copy
-  - Save as `DISCORD_BOT_TOKEN` in `secrets.env`
+  - Discord Developer Portal -> New Application -> name it `lobmob`
+- [ ] Create a Bot user (Application -> Bot -> Add Bot)
+- [ ] Copy the bot token -> save as `DISCORD_BOT_TOKEN` in `secrets.env`
 - [ ] Enable required intents:
-  - Bot → Privileged Gateway Intents:
-    - **Message Content Intent** — ON (needed to read task messages)
-    - **Server Members Intent** — ON (optional, for @mentions)
+  - Bot -> Privileged Gateway Intents:
+    - **Message Content Intent** — ON
+    - **Server Members Intent** — ON (optional)
 
 ### Server Setup
 - [ ] Create a Discord server (or use existing)
 - [ ] Create three text channels:
   - `#task-queue` — task lifecycle (threads per task)
-  - `#swarm-control` — user commands to lobboss for fleet management
-  - `#swarm-logs` — fleet events (spawns, merges, convergence)
+  - `#swarm-control` — user commands to lobboss
+  - `#swarm-logs` — fleet events (post-only)
 - [ ] Invite the bot to the server:
-  - Developer Portal → OAuth2 → URL Generator
+  - Developer Portal -> OAuth2 -> URL Generator
   - Scopes: `bot`
   - Bot Permissions: `Send Messages`, `Read Message History`, `Embed Links`, `Attach Files`, `Use Slash Commands`
-  - Copy the generated URL, open in browser, select your server
-- [ ] Note the channel IDs (needed for OpenClaw config post-deploy):
-  - Enable Developer Mode: User Settings → Advanced → Developer Mode
-  - Right-click each channel → Copy Channel ID
+- [ ] Note the channel IDs (right-click -> Copy Channel ID with Developer Mode on)
 
 ---
 
@@ -115,7 +85,7 @@ lobboss via SSH over WireGuard — never via cloud-init.
 
 ### API Key
 - [ ] Generate an API key from the Anthropic Console
-  - console.anthropic.com → API Keys → Create Key
+  - console.anthropic.com -> API Keys -> Create Key
   - Save as `ANTHROPIC_API_KEY` in `secrets.env`
 - [ ] Ensure your account has sufficient credits/billing set up
 
@@ -126,27 +96,31 @@ lobboss via SSH over WireGuard — never via cloud-init.
 ### Required
 - [ ] **Terraform** >= 1.5
   ```bash
-  brew install terraform    # macOS
+  brew install terraform
+  ```
+- [ ] **kubectl**
+  ```bash
+  brew install kubectl
   ```
 - [ ] **GitHub CLI** (`gh`)
   ```bash
-  brew install gh           # macOS
-  gh auth login
+  brew install gh && gh auth login
   ```
-- [ ] **WireGuard tools** (for key generation during `lobmob init`)
+- [ ] **Docker** with buildx support (for building container images)
   ```bash
-  brew install wireguard-tools   # macOS
+  # Colima or Docker Desktop
+  brew install colima docker docker-buildx
+  colima start
+  # Create an amd64 builder (DOKS nodes are amd64, Mac is ARM)
+  docker buildx create --name amd64-builder --use
   ```
 
 ### Recommended
 - [ ] **doctl** (for direct DO API access if needed)
   ```bash
-  brew install doctl
-  doctl auth init
+  brew install doctl && doctl auth init
   ```
 - [ ] **Obsidian** (for browsing the vault locally)
-  - Download from obsidian.md
-  - After `lobmob vault-sync`, open `vault-local/` as a vault
 - [ ] **jq** (used by some scripts)
   ```bash
   brew install jq
@@ -154,21 +128,37 @@ lobboss via SSH over WireGuard — never via cloud-init.
 
 ---
 
-## Running `lobmob init`
+## Configuration Files
 
-Once all the above are ready:
+Create from examples:
 
 ```bash
-cd lobmob
-chmod +x scripts/lobmob
-./scripts/lobmob init
+cp secrets.env.example secrets.env
+cp infra/prod.tfvars.example infra/prod.tfvars
+# For dev environment:
+cp secrets.env.example secrets-dev.env
+cp infra/dev.tfvars.example infra/dev.tfvars
 ```
 
-This will:
-1. Generate WireGuard lobboss keypair
-2. Create `infra/terraform.tfvars` with the WG public key (fill in `vault_repo`)
-3. Create `secrets.env` with the WG private key (fill in all tokens)
-4. Run `terraform init`
+### secrets.env
+
+```bash
+DO_TOKEN=dop_v1_...
+DIGITALOCEAN_TOKEN=dop_v1_...   # same as DO_TOKEN, used by Terraform
+GH_TOKEN=ghp_...                # or leave empty if using GitHub App
+GH_APP_ID=123456
+GH_APP_INSTALLATION_ID=789012
+GH_APP_PRIVATE_KEY=base64...
+DISCORD_BOT_TOKEN=MTIz...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### terraform.tfvars
+
+```hcl
+region     = "nyc3"
+cluster_name = "lobmob-k8s"
+```
 
 ---
 
@@ -176,19 +166,12 @@ This will:
 
 Before deploying, verify:
 
-- [ ] `infra/terraform.tfvars` has `vault_repo` and `wg_lobboss_public_key` set
-- [ ] `secrets.env` has all 6 values filled (no placeholders)
+- [ ] `secrets.env` has all required values filled
+- [ ] `infra/prod.tfvars` is configured
 - [ ] `gh auth status` succeeds
 - [ ] Discord bot is in the server and channels exist
 - [ ] Vault repo exists on GitHub (run `lobmob vault-init` if not)
-- [ ] Deploy key is added to the vault repo with write access
+- [ ] Docker buildx works: `docker buildx ls` shows an amd64-capable builder
+- [ ] kubectl context exists: `kubectl config get-contexts`
 
-Then: `./scripts/lobmob deploy`
-
-The deploy command will:
-1. Run `terraform plan` and ask for confirmation
-2. Create the droplet (secret-free cloud-init)
-3. Wait for SSH connectivity
-4. Wait for cloud-init to complete
-5. Push secrets via SSH
-6. Run the provision script on the lobboss
+Then: `lobmob deploy`
