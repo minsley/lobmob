@@ -14,12 +14,9 @@ RUN wget -qO- https://apt.releases.hashicorp.com/gpg | gpg --dearmor > /usr/shar
     && apt-get update && apt-get install -y terraform \
     && rm -rf /var/lib/apt/lists/*
 
-# kubectl
-RUN curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor > /usr/share/keyrings/k8s.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/k8s.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /" \
-    > /etc/apt/sources.list.d/kubernetes.list \
-    && apt-get update && apt-get install -y kubectl \
-    && rm -rf /var/lib/apt/lists/*
+# kubectl (direct binary — k8s apt repo signing key rejected by Debian Trixie sqv)
+RUN curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
 
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
