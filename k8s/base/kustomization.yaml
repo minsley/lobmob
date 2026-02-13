@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - lobboss-deployment.yaml
+  - lobboss-pvc.yaml
+  - cronjobs.yaml
+  # lobster-job-template.yaml is NOT included here — it's a runtime template
+  # used by lobboss Python code, not applied directly with kubectl.

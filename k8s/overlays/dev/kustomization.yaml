@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: lobboss-config
+    patch: |
+      - op: add
+        path: /data/LOBMOB_ENV
+        value: "dev"
+      - op: add
+        path: /data/VAULT_REPO
+        value: "minsley/lobmob-vault-dev"
+      - op: add
+        path: /data/TASK_QUEUE_CHANNEL_ID
+        value: "1470139057072767211"
