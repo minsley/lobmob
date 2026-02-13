@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lobster
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobster
+    app.kubernetes.io/part-of: lobmob
+---
+# Lobster pods need read access to their own pod status and logs (for web sidecar)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lobster-role
+  namespace: lobmob
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lobster-rolebinding
+  namespace: lobmob
+subjects:
+  - kind: ServiceAccount
+    name: lobster
+    namespace: lobmob
+roleRef:
+  kind: Role
+  name: lobster-role
+  apiGroup: rbac.authorization.k8s.io

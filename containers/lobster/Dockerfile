@@ -16,6 +16,9 @@ COPY src/common/ /app/common/
 # Skills
 COPY skills/lobster/ /app/skills/
 
+# Web sidecar dashboard
+COPY scripts/server/lobmob-web-lobster.js /app/scripts/lobmob-web-lobster.js
+
 # Lobster prompts
 COPY src/lobster/prompts/ /app/lobster/prompts/
 

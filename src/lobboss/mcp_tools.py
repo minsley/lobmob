@@ -142,6 +142,31 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                                 client.V1VolumeMount(name="vault", mount_path="/opt/vault"),
                             ],
                         ),
+                        # Native sidecar (k8s 1.29+): restartPolicy=Always makes this
+                        # run alongside the main container and auto-terminate when it exits.
+                        client.V1Container(
+                            name="web",
+                            image=LOBSTER_IMAGE,
+                            restart_policy="Always",
+                            command=["node", "/app/scripts/lobmob-web-lobster.js"],
+                            ports=[client.V1ContainerPort(container_port=8080, name="http")],
+                            env=[
+                                client.V1EnvVar(name="TASK_ID", value=task_id),
+                                client.V1EnvVar(name="LOBSTER_TYPE", value=lobster_type),
+                                client.V1EnvVar(
+                                    name="MY_POD_NAME",
+                                    value_from=client.V1EnvVarSource(
+                                        field_ref=client.V1ObjectFieldSelector(
+                                            field_path="metadata.name",
+                                        )
+                                    ),
+                                ),
+                            ],
+                            resources=client.V1ResourceRequirements(
+                                requests={"memory": "32Mi", "cpu": "10m"},
+                                limits={"memory": "64Mi", "cpu": "50m"},
+                            ),
+                        ),
                     ],
                     containers=[
                         client.V1Container(

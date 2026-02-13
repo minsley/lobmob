@@ -28,7 +28,7 @@ spec:
       nodeSelector:
         lobmob.io/role: lobster
       serviceAccountName: lobster
-      # Init container: clone the vault
+      # Init containers: vault clone + web sidecar
       initContainers:
         - name: vault-clone
           image: alpine/git:latest
@@ -39,6 +39,31 @@ spec:
           volumeMounts:
             - name: vault
               mountPath: /opt/vault
+        # Native sidecar (k8s 1.29+): runs alongside main container, auto-terminates when it exits.
+        # Added programmatically by spawn_lobster in mcp_tools.py — documented here for reference.
+        - name: web
+          image: "${lobster_image}"
+          restartPolicy: Always
+          command: ["node", "/app/scripts/lobmob-web-lobster.js"]
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: TASK_ID
+              value: "${task_id}"
+            - name: LOBSTER_TYPE
+              value: "${lobster_type}"
+            - name: MY_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "50m"
       containers:
         - name: lobster
           image: "${lobster_image}"
@@ -88,15 +113,7 @@ spec:
         - name: workspace
           emptyDir: {}
 ---
-# Minimal ServiceAccount for lobsters — no Job management permissions
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: lobster
-  namespace: lobmob
-  labels:
-    app.kubernetes.io/name: lobster
-    app.kubernetes.io/part-of: lobmob
+# ServiceAccount and RBAC are in lobster-rbac.yaml (applied via Kustomize).
 ---
 # Network policy: lobsters can only reach Anthropic API, GitHub, and DNS
 apiVersion: networking.k8s.io/v1
