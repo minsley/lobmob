@@ -103,6 +103,20 @@ fi
 
 chown engineer:engineer /home/engineer/.bashrc
 
+# Set up Claude Code CLI config for engineer user
+mkdir -p /home/engineer/.claude
+if [[ ! -f /home/engineer/.claude/CLAUDE.md ]]; then
+    cp /opt/lobmob/containers/lobsigliere/CLAUDE.md /home/engineer/.claude/CLAUDE.md
+fi
+cat > /home/engineer/.claude/settings.json <<'JSON'
+{
+  "preferences": {
+    "theme": "dark"
+  }
+}
+JSON
+chown -R engineer:engineer /home/engineer/.claude
+
 # Start task processing daemon in background (runs as engineer)
 echo "Starting lobsigliere task daemon..."
 su - engineer -c "VAULT_PATH=/home/engineer/vault \
