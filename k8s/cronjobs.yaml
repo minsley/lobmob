@@ -1,0 +1,231 @@
+# CronJobs replacing system crontab on the old lobboss Droplet.
+# All use the lobboss container image (has the scripts + tools).
+# Mount the same vault PVC and secrets as the lobboss Deployment.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: task-manager
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: task-manager
+    app.kubernetes.io/part-of: lobmob
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            lobmob.io/role: lobboss
+          restartPolicy: Never
+          containers:
+            - name: task-manager
+              image: ghcr.io/minsley/lobmob-lobboss:latest
+              command: ["bash", "/app/scripts/lobmob-task-manager.sh"]
+              envFrom:
+                - secretRef:
+                    name: lobmob-secrets
+                - configMapRef:
+                    name: lobboss-config
+              volumeMounts:
+                - name: vault
+                  mountPath: /opt/vault
+          volumes:
+            - name: vault
+              persistentVolumeClaim:
+                claimName: vault-pvc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: watchdog
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: watchdog
+    app.kubernetes.io/part-of: lobmob
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            lobmob.io/role: lobboss
+          restartPolicy: Never
+          containers:
+            - name: watchdog
+              image: ghcr.io/minsley/lobmob-lobboss:latest
+              command: ["bash", "/app/scripts/lobmob-watchdog.sh"]
+              envFrom:
+                - secretRef:
+                    name: lobmob-secrets
+                - configMapRef:
+                    name: lobboss-config
+              volumeMounts:
+                - name: vault
+                  mountPath: /opt/vault
+          volumes:
+            - name: vault
+              persistentVolumeClaim:
+                claimName: vault-pvc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: review-prs
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: review-prs
+    app.kubernetes.io/part-of: lobmob
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            lobmob.io/role: lobboss
+          restartPolicy: Never
+          containers:
+            - name: review-prs
+              image: ghcr.io/minsley/lobmob-lobboss:latest
+              command: ["bash", "/app/scripts/lobmob-review-prs.sh"]
+              envFrom:
+                - secretRef:
+                    name: lobmob-secrets
+                - configMapRef:
+                    name: lobboss-config
+              volumeMounts:
+                - name: vault
+                  mountPath: /opt/vault
+          volumes:
+            - name: vault
+              persistentVolumeClaim:
+                claimName: vault-pvc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: status-reporter
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: status-reporter
+    app.kubernetes.io/part-of: lobmob
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            lobmob.io/role: lobboss
+          restartPolicy: Never
+          containers:
+            - name: status-reporter
+              image: ghcr.io/minsley/lobmob-lobboss:latest
+              command: ["bash", "/app/scripts/lobmob-status-reporter.sh"]
+              envFrom:
+                - secretRef:
+                    name: lobmob-secrets
+                - configMapRef:
+                    name: lobboss-config
+              volumeMounts:
+                - name: vault
+                  mountPath: /opt/vault
+          volumes:
+            - name: vault
+              persistentVolumeClaim:
+                claimName: vault-pvc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gh-token-refresh
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: gh-token-refresh
+    app.kubernetes.io/part-of: lobmob
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "*/45 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            lobmob.io/role: lobboss
+          restartPolicy: Never
+          containers:
+            - name: gh-token-refresh
+              image: ghcr.io/minsley/lobmob-lobboss:latest
+              command: ["bash", "/app/scripts/lobmob-gh-token.sh"]
+              envFrom:
+                - secretRef:
+                    name: lobmob-secrets
+                - configMapRef:
+                    name: lobboss-config
+              volumeMounts:
+                - name: vault
+                  mountPath: /opt/vault
+          volumes:
+            - name: vault
+              persistentVolumeClaim:
+                claimName: vault-pvc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: flush-logs
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: flush-logs
+    app.kubernetes.io/part-of: lobmob
+    app.kubernetes.io/component: cron
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          nodeSelector:
+            lobmob.io/role: lobboss
+          restartPolicy: Never
+          containers:
+            - name: flush-logs
+              image: ghcr.io/minsley/lobmob-lobboss:latest
+              command: ["bash", "/app/scripts/lobmob-flush-logs.sh"]
+              envFrom:
+                - secretRef:
+                    name: lobmob-secrets
+                - configMapRef:
+                    name: lobboss-config
+              volumeMounts:
+                - name: vault
+                  mountPath: /opt/vault
+          volumes:
+            - name: vault
+              persistentVolumeClaim:
+                claimName: vault-pvc
