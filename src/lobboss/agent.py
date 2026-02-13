@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 from claude_agent_sdk import (
@@ -18,6 +19,9 @@ from lobboss.mcp_tools import lobmob_mcp
 
 logger = logging.getLogger("lobboss.agent")
 
+MAX_SESSION_AGE_SECS = 2 * 3600  # 2 hours default
+MAX_CONTEXT_PCT = 0.6
+
 
 @dataclass
 class SessionInfo:
@@ -25,6 +29,8 @@ class SessionInfo:
     session_id: str | None = None
     client: ClaudeSDKClient | None = None
     turn_count: int = 0
+    created_at: float = field(default_factory=time.monotonic)
+    total_tokens: int = 0
 
 
 class LobbossAgent:
@@ -34,6 +40,8 @@ class LobbossAgent:
         self.config = config
         self._sessions: dict[int, SessionInfo] = {}  # thread_id → SessionInfo
         self._system_prompt = self._load_system_prompt()
+        self._max_age = config.max_session_age_hours * 3600
+        self._max_context_pct = config.max_context_pct
 
     def _load_system_prompt(self) -> str:
         path = self.config.system_prompt_path
@@ -76,10 +84,60 @@ class LobbossAgent:
         }
         return models.get(short, short)
 
+    def _needs_rotation(self, session: SessionInfo) -> bool:
+        """Check if a session needs rotation due to age or context usage."""
+        # Age check
+        age = time.monotonic() - session.created_at
+        if age > self._max_age:
+            logger.info("Session rotation: age %.0fs exceeds max %.0fs", age, self._max_age)
+            return True
+
+        # Context usage check (estimate: ~4 chars per token, 200K context window)
+        context_window = 200_000
+        if session.total_tokens > context_window * self._max_context_pct:
+            logger.info(
+                "Session rotation: %d tokens exceeds %.0f%% of %d window",
+                session.total_tokens, self._max_context_pct * 100, context_window,
+            )
+            return True
+
+        return False
+
+    def _build_rotation_summary(self, session: SessionInfo) -> str:
+        """Build a state summary for the new session after rotation."""
+        return (
+            f"[Session rotated] Previous session had {session.turn_count} turns, "
+            f"{session.total_tokens} tokens, age {time.monotonic() - session.created_at:.0f}s. "
+            f"Continue where you left off. Active threads and tasks should be "
+            f"re-read from the vault at /opt/vault if needed."
+        )
+
+    async def _rotate_session(self, thread_id: int) -> SessionInfo:
+        """Rotate a session: close old, create new with state summary."""
+        old = self._sessions.get(thread_id)
+        summary = self._build_rotation_summary(old) if old else ""
+
+        # Close old session
+        await self.close_session(thread_id)
+
+        # Create new session
+        new_session = SessionInfo()
+        self._sessions[thread_id] = new_session
+        logger.info("Session rotated for thread %s", thread_id)
+
+        # Inject the summary as context if we have one
+        if summary:
+            new_session._rotation_summary = summary
+
+        return new_session
+
     async def get_or_create_session(self, thread_id: int) -> SessionInfo:
-        """Get existing session for a thread, or create a new one."""
+        """Get existing session for a thread, or create a new one. Auto-rotates stale sessions."""
         if thread_id in self._sessions:
-            return self._sessions[thread_id]
+            session = self._sessions[thread_id]
+            if self._needs_rotation(session):
+                return await self._rotate_session(thread_id)
+            return session
 
         info = SessionInfo()
         self._sessions[thread_id] = info
@@ -100,6 +158,12 @@ class LobbossAgent:
         if session.session_id:
             options.resume = session.session_id
 
+        # Prepend rotation summary if this is a freshly rotated session
+        rotation_summary = getattr(session, "_rotation_summary", None)
+        if rotation_summary:
+            prompt = f"{rotation_summary}\n\n---\n\n{prompt}"
+            delattr(session, "_rotation_summary")
+
         try:
             async with ClaudeSDKClient(options=options) as client:
                 session.client = client
@@ -114,13 +178,19 @@ class LobbossAgent:
                     elif isinstance(message, ResultMessage):
                         session.session_id = message.session_id
                         session.turn_count += 1
+                        # Track token usage for rotation decisions
+                        if message.usage:
+                            input_tokens = message.usage.get("input_tokens", 0)
+                            output_tokens = message.usage.get("output_tokens", 0)
+                            session.total_tokens += input_tokens + output_tokens
                         if message.total_cost_usd:
                             logger.info(
-                                "Thread %s turn %d: $%.4f (%d turns in SDK)",
+                                "Thread %s turn %d: $%.4f (%d turns, %d tokens)",
                                 thread_id,
                                 session.turn_count,
                                 message.total_cost_usd,
                                 message.num_turns,
+                                session.total_tokens,
                             )
                         if message.is_error:
                             logger.error("Agent SDK error for thread %s: %s", thread_id, message.result)
