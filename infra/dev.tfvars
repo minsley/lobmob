@@ -1,24 +1,11 @@
-vault_repo            = "minsley/lobmob-vault-dev"
-wg_lobboss_public_key = "lFITIx1WqnD7A0lx7E9U2IQs76RZ9kVLzYn1Pa71lyk="
-ssh_pub_key_path      = "/Users/matt/.ssh/lobmob_ed25519.pub"
-region                = "nyc3"
-project_name          = "lobmob-dev"
-alert_email           = "insley.matthew@gmail.com"
-environment           = "dev"
-vpc_cidr              = "10.101.0.0/24"
-wg_subnet             = "10.1.0"
-manager_size          = "s-1vcpu-2gb"
-worker_size           = "s-1vcpu-1gb"
-enable_monitoring     = false
-
-discord_channels = {
-  task_queue    = "dev-task-queue"
-  swarm_control = "dev-swarm-control"
-  swarm_logs    = "dev-swarm-logs"
-}
+vault_repo   = "minsley/lobmob-vault-dev"
+region       = "nyc3"
+project_name = "lobmob-dev"
+alert_email  = "insley.matthew@gmail.com"
+environment  = "dev"
+vpc_cidr     = "10.101.0.0/24"
 
 # DOKS
-doks_enabled            = true
 doks_k8s_version        = "1.32.10-do.3"
 doks_lobboss_node_size  = "s-2vcpu-4gb"
 doks_lobster_node_size  = "s-2vcpu-4gb"

@@ -1,6 +1,0 @@
-vault_repo            = "minsley/lobmob-vault"
-wg_lobboss_public_key = "brQU20/YxgxGWJQEuv+d9GOX8oB6JDiqHDPc3sGcTDM="
-ssh_pub_key_path      = "/Users/matt/.ssh/lobmob_ed25519.pub"
-region                = "nyc3"
-project_name          = "lobmob"
-alert_email           = "insley.matthew@gmail.com"
