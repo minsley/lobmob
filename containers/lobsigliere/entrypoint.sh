@@ -40,8 +40,9 @@ if [[ -d "$LOBMOB_REPO/.git" ]]; then
     su - engineer -c "cd '$LOBMOB_REPO' && git fetch origin && git pull origin develop --rebase" || true
 else
     echo "Cloning lobmob repo..."
-    # Try HTTPS clone with GH_TOKEN, fall back to SSH if token lacks repo access
-    if su - engineer -c "git clone 'https://x-access-token:${GH_TOKEN:-}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'" 2>/dev/null; then
+    # Use LOBSIGLIERE_GH_TOKEN (scoped to lobmob repo), fall back to GH_TOKEN
+    CLONE_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
+    if su - engineer -c "git clone 'https://x-access-token:${CLONE_TOKEN}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'" 2>/dev/null; then
         su - engineer -c "cd '$LOBMOB_REPO' && git checkout develop" || true
     else
         echo "HTTPS clone failed (token may not have repo access). Clone manually after SSH in:"
@@ -59,7 +60,7 @@ export LOBMOB_ENV="${LOBMOB_ENV:-dev}"
 export KUBERNETES_SERVICE_HOST="${KUBERNETES_SERVICE_HOST:-}"
 export KUBERNETES_SERVICE_PORT="${KUBERNETES_SERVICE_PORT:-443}"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-export GH_TOKEN="${GH_TOKEN:-${GH_APP_PRIVATE_KEY:-}}"
+export GH_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
 ENVBLOCK
 
 # Literal section (no interpolation)
