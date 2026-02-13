@@ -35,12 +35,22 @@ if [[ "$TARGET" == "lobboss" ]]; then
 
 elif [[ "$TARGET" == "lobsigliere" ]]; then
   SSH_PORT="${LOBMOB_SSH_PORT:-2222}"
-  log "Port-forwarding SSH to lobsigliere ($LOBMOB_ENV)..."
-  log "Connect: ssh -p $SSH_PORT engineer@localhost"
-  log "Press Ctrl+C to disconnect"
-  echo ""
+  log "Connecting to lobsigliere ($LOBMOB_ENV)..."
 
-  kubectl --context "$KUBE_CONTEXT" -n lobmob port-forward svc/lobsigliere "$SSH_PORT:22"
+  # Port-forward in background, SSH when ready, clean up on exit
+  kubectl --context "$KUBE_CONTEXT" -n lobmob port-forward svc/lobsigliere "$SSH_PORT:22" &>/dev/null &
+  PF_PID=$!
+  trap "kill $PF_PID 2>/dev/null" EXIT
+
+  # Wait for port-forward to be ready
+  for i in $(seq 1 20); do
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=1 -p "$SSH_PORT" engineer@localhost true 2>/dev/null; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" engineer@localhost
 else
   # Find the pod for a lobster job
   POD_NAME=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pods \
