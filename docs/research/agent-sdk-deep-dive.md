@@ -682,7 +682,14 @@ These were resolved during research review and should be treated as settled:
 7. **Infrastructure**: DOKS (managed Kubernetes) as target deployment. Free control plane. k8s Jobs for ephemeral lobsters, native pod networking eliminates WireGuard, node autoscaling replaces pool-manager. Start on Droplets+Docker for initial validation if needed.
 8. **Migration path**: Containerize first (works on Droplets), then migrate to DOKS. Container images are identical for both targets.
 
-## Open Questions for Planning
+## Implementation Decisions (resolved)
+
+9. **Language**: Python. discord.py for Discord, Python Agent SDK for agents. Node.js still required on host (Agent SDK runtime dependency) but all custom code is Python.
+10. **Deployment path**: Straight to DOKS. Skip intermediate Droplets+Docker phase. Avoids building WireGuard/SSH plumbing that gets thrown away.
+11. **Cron scripts**: Keep as bash for now. Package into lobboss container or run as k8s CronJobs. Evaluate Python rewrite later after migration stabilizes.
+12. **Workflow images**: Deferred. Get base lobster image working first. Unity/web/ML images are additive, built when needed.
+
+## Open Questions (remaining)
 
 1. **Python or TypeScript?** — Both SDKs available. Python + discord.py is the most natural fit. TypeScript + discord.js is an option if we want to stay in the Node.js ecosystem.
 
