@@ -1,50 +1,69 @@
 # lobmob — Claude Code Project Guide
 
 ## What This Is
-OpenClaw agent swarm management on DigitalOcean. Manager (lobboss) coordinates worker agents (lobsters) via Discord + SSH over WireGuard. Obsidian vault on GitHub for task tracking.
+Agent swarm management on DigitalOcean Kubernetes (DOKS). Manager (lobboss) coordinates worker agents (lobsters) via Discord + Agent SDK. Obsidian vault on GitHub for task tracking.
 
 ## Architecture Quick Reference
-- **Prod**: lobboss at 138.197.55.241, WG 10.0.0.0/24, vault=lobmob-vault
-- **Dev**: lobboss at 134.199.243.68, WG 10.1.0.0/24, vault=lobmob-vault-dev
+- **Prod DOKS**: `lobmob-k8s` cluster, context `do-nyc3-lobmob-k8s`, vault=lobmob-vault
+- **Dev DOKS**: `lobmob-dev-k8s` cluster, context `do-nyc3-lobmob-dev-k8s`, vault=lobmob-vault-dev
 - **Git-flow**: `main`=production, `develop`=integration. SWE lobsters branch from develop.
 - **Three lobster types**: research (Sonnet), swe (Opus), qa (Sonnet)
+- **lobboss**: k8s Deployment, discord.py + Agent SDK (long-running, session rotation every 2-4h)
+- **lobsters**: k8s Jobs, Agent SDK `query()` (ephemeral, one task per container)
+- **Images**: GHCR — lobmob-base, lobmob-lobboss, lobmob-lobster (all amd64)
 
 ## Project Structure
 ```
-templates/cloud-init-lobboss.yaml  — Slim skeleton (~140 lines, no scripts)
-scripts/server/                    — 21 standalone server scripts (deployed via SCP)
-scripts/lobmob                     — Thin CLI dispatcher (115 lines)
-scripts/commands/                  — 25 CLI command modules
+src/lobboss/                       — Bot + agent (Python, discord.py + Agent SDK)
+src/lobster/                       — Ephemeral task worker (Python, Agent SDK)
+src/common/                        — Shared modules (vault, logging, health)
+containers/{base,lobboss,lobster}/ — Dockerfiles
+k8s/base/                          — Kubernetes manifests (Kustomize base)
+k8s/overlays/{dev,prod}/           — Environment-specific overlays
+scripts/lobmob                     — CLI dispatcher
+scripts/commands/                  — CLI command modules
+scripts/server/                    — Server-side scripts (cron, web dashboard)
 scripts/lib/helpers.sh             — Shared CLI helpers
-skills/lobboss/                    — 15 manager skills (task-create, task-assign, etc.)
-skills/lobster/                    — 6 worker skills (code-task, verify-task, etc.)
-openclaw/{lobboss,lobster,lobster-swe,lobster-qa}/  — Agent personas
-vault-seed/                        — Vault repo initial structure + coordinator AGENTS.md
-infra/                             — Terraform (prod.tfvars, dev.tfvars, workspaces)
+skills/lobboss/                    — Manager skills (task lifecycle, discord, review)
+skills/lobster/                    — Worker skills (code-task, verify-task, etc.)
+vault-seed/                        — Vault repo initial structure
+infra/                             — Terraform (DOKS clusters, prod.tfvars, dev.tfvars)
 ```
 
 ## Key Commands
 ```bash
 # Deploy / manage
-lobmob deploy                         # Deploy lobboss via Terraform
+lobmob deploy                         # Deploy via Terraform + kubectl
 lobmob --env dev deploy               # Deploy to dev environment
-lobmob provision-secrets              # Re-push secrets + scripts to lobboss
-lobmob spawn --type swe               # Spawn a SWE lobster
-lobmob status                         # Fleet status
+lobmob status                         # Fleet status (pods, jobs, PRs)
+lobmob connect                        # Port-forward to lobboss web dashboard
+lobmob connect <job-name>             # Port-forward to lobster sidecar
+lobmob logs                           # Tail lobboss pod logs
+lobmob logs <job-name>                # Tail lobster pod logs
+
+# Build images (from Mac, amd64 for DOKS)
+docker buildx build --builder amd64-builder --platform linux/amd64 \
+  --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
+  -t ghcr.io/minsley/lobmob-lobboss:latest --push \
+  -f containers/lobboss/Dockerfile .
+
+# Apply k8s manifests directly
+kubectl apply -k k8s/overlays/dev/
+kubectl apply -k k8s/overlays/prod/
 
 # Validate
-cd infra && terraform validate        # Check template syntax
-bash tests/<test>                     # Run smoke tests
+kubectl apply -k k8s/overlays/dev/ --dry-run=client
+cd infra && terraform validate
 ```
 
 ## Critical Gotchas (Read Before Editing)
-- `templates/cloud-init-lobboss.yaml` uses Terraform `templatefile()` — `$` must be `$$` for literal dollars, `${var}` for template vars
-- Scripts in `scripts/server/` are standalone bash — NO `$$` escaping needed there
-- Vault AGENTS.md at `/opt/vault/AGENTS.md` drives the system prompt, NOT `/root/.openclaw/AGENTS.md`
-- GitHub App tokens expire every hour — `lobmob-refresh-gh-auth` cron handles this
+- Cross-arch builds: Mac builds ARM images. DOKS nodes are amd64. Always use `--platform linux/amd64`
+- Dockerfile FROM arg: Use `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}` so buildx resolves GHCR base
+- PVC lost+found: New PVCs have `lost+found` dir. Clean before git clone
+- GHCR pull secrets: `imagePullSecrets` needed in deployment AND cronjob pod specs
+- GitHub App tokens expire hourly — `gh-token-refresh` CronJob handles this
 - Vault clone MUST use HTTPS remote (not SSH) — App tokens only work over HTTPS
-- SWE/QA lobsters need ≥2GB RAM (Opus OOMs on 1GB)
-- Lobster state lifecycle: `initializing` tag → `active` tag (DO tags, checked by pool manager)
+- ConfigMap keys are case-sensitive — match exactly
 - Don't manually fix lobster mistakes — fix root causes so they behave correctly autonomously
 
 ## Git Workflow
@@ -56,7 +75,7 @@ bash tests/<test>                     # Run smoke tests
 ## Testing
 - Tests are bash scripts in `tests/`
 - NEVER pipe inside `check()` args — use `bash -c` to wrap
-- Deploy scripts to lobboss before testing live changes
+- Build and deploy to dev before testing live changes
 
 ## Environment Selection
 - `LOBMOB_ENV=dev lobmob <cmd>` or `lobmob --env dev <cmd>`

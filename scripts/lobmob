@@ -53,7 +53,7 @@ Vault:
 
 Utilities:
   status              Show fleet status
-  logs                Tail lobboss logs
+  logs [target]       Tail pod logs (lobboss default, or job name)
   flush-logs          Flush event logs to the vault
   prs                 List open PRs on the vault repo
 EOF
