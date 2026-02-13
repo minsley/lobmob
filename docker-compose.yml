@@ -1,0 +1,24 @@
+services:
+  lobboss:
+    build:
+      context: .
+      dockerfile: containers/lobboss/Dockerfile
+    env_file: secrets-dev.env
+    environment:
+      - LOBMOB_ENV=dev
+    volumes:
+      - ./vault-dev:/opt/vault
+    restart: unless-stopped
+
+  lobster:
+    build:
+      context: .
+      dockerfile: containers/lobster/Dockerfile
+    env_file: secrets-dev.env
+    environment:
+      - LOBMOB_ENV=dev
+      - TASK_ID=${TASK_ID:-}
+      - LOBSTER_TYPE=${LOBSTER_TYPE:-research}
+    volumes:
+      - ./vault-dev:/opt/vault
+    profiles: ["testing"]
