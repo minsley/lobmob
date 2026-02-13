@@ -172,65 +172,90 @@ OpenAI's multi-agent framework. Provider-agnostic via LiteLLM.
 
 ## Architecture: Agent SDK + discord.py
 
-Unified approach — both lobboss and lobsters on the Claude Agent SDK.
+Unified approach — both lobboss and lobsters on the Claude Agent SDK. Two deployment options (same container images work for both):
+
+### Option A: DOKS (Kubernetes) — RECOMMENDED
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  DOKS Cluster (free control plane)                      │
+│                                                         │
+│  Always-on node pool (1x s-2vcpu-4gb, $24/mo)          │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │                                                   │  │
+│  │  lobboss Deployment (1 replica)                   │  │
+│  │  ┌──────────────┐  ┌──────────────────────────┐  │  │
+│  │  │ discord.py   │──│ Claude Agent SDK          │  │  │
+│  │  │ bot layer    │  │ - Built-in tools          │  │  │
+│  │  │ - dedup      │  │ - MCP: k8s_job_create     │  │  │
+│  │  │ - threading  │  │ - MCP: discord_post       │  │  │
+│  │  │ - routing    │  │ - MCP: external APIs      │  │  │
+│  │  │ - sequential │  │ - Skills (SKILL.md)       │  │  │
+│  │  └──────────────┘  └──────────────────────────┘  │  │
+│  │                                                   │  │
+│  │  CronJobs: task-mgr, pool-mgr, watchdog          │  │
+│  │  PVC: /opt/vault (block storage)                  │  │
+│  │                                                   │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Autoscaling worker node pool (0-N nodes, scale-to-0)   │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │                                                   │  │
+│  │  lobster Jobs (ephemeral, on-demand)              │  │
+│  │  ┌─────────────────────────────────────────────┐  │  │
+│  │  │ lobmob-lobster-swe (Opus, code tasks)       │  │  │
+│  │  │ lobmob-lobster-qa (Sonnet, verification)    │  │  │
+│  │  │ lobmob-lobster-unity (Unity Editor + SDK)   │  │  │
+│  │  │ lobmob-lobster-web (browsers, Node.js)      │  │  │
+│  │  │ ...any workflow-specific image               │  │  │
+│  │  └─────────────────────────────────────────────┘  │  │
+│  │                                                   │  │
+│  │  Pod networking (no WireGuard needed)             │  │
+│  │  Nodes scale down to 0 when no Jobs pending       │  │
+│  │                                                   │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+Key differences from Droplets:
+- **No WireGuard** — pods communicate natively via k8s networking
+- **No SSH provisioning** — secrets injected via k8s Secrets, images pre-built
+- **No pool-manager** — k8s autoscaler handles node lifecycle
+- **No cloud-init** — everything is in the container image
+- **lobboss creates Jobs** via k8s API instead of `doctl compute droplet create` + SSH
+
+### Option B: Droplets + Docker (fallback)
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                  lobboss droplet                 │
-│                                                  │
-│  ┌──────────────┐     ┌──────────────────────┐  │
-│  │  discord.py   │────▶│  Claude Agent SDK     │  │
-│  │  bot layer    │◀────│  (lobboss agent)      │  │
-│  │               │     │                       │  │
-│  │  - dedup      │     │  - Built-in tools     │  │
-│  │  - threading  │     │  - MCP: ssh_exec      │  │
-│  │  - routing    │     │  - MCP: discord_post  │  │
-│  │  - sequential │     │  - MCP: external APIs  │  │
-│  │    processing │     │  - Skills (SKILL.md)  │  │
-│  │  - reactions  │     │  - Hooks (validation)  │  │
-│  └──────────────┘     └──────────────────────┘  │
-│                                                  │
-│  ┌──────────────┐     ┌──────────────────────┐  │
-│  │  Cron jobs    │     │  /opt/vault           │  │
-│  │  (unchanged)  │     │  (unchanged)          │  │
-│  │               │     │                       │  │
-│  │  - task-mgr   │     │  - 010-tasks/         │  │
-│  │  - pool-mgr   │     │  - 020-logs/          │  │
-│  │  - watchdog   │     │  - 040-fleet/         │  │
-│  │  - review-prs │     │  - AGENTS.md          │  │
-│  └──────────────┘     └──────────────────────┘  │
-│                                                  │
+│  lobboss droplet (Docker + WireGuard)            │
 │  ┌──────────────────────────────────────────┐   │
-│  │  WireGuard (10.0.0.1) ──▶ lobsters       │   │
+│  │ lobboss container (--network=host)        │   │
+│  │ discord.py + Agent SDK + MCP tools        │   │
 │  └──────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────┐
-│              lobster droplet (each)              │
-│                                                  │
+│  Host: WireGuard, crons, vault on filesystem     │
+└──────────────────┬──────────────────────────────┘
+                   │ WireGuard + SSH
+┌──────────────────▼──────────────────────────────┐
+│  lobster droplet (Docker)                        │
 │  ┌──────────────────────────────────────────┐   │
-│  │  Claude Agent SDK (ephemeral session)     │   │
-│  │                                           │   │
-│  │  - Built-in tools (Read/Write/Edit/Bash)  │   │
-│  │  - Skills: code-task, verify-task, etc.   │   │
-│  │  - MCP: external APIs (if needed)         │   │
-│  │  - Model: Opus (swe) or Sonnet (qa)       │   │
+│  │ lobster container (workflow-specific)      │   │
+│  │ Agent SDK + skills + run_task.py           │   │
 │  └──────────────────────────────────────────┘   │
-│                                                  │
-│  Trigger: SSH from lobboss                       │
-│    → python run_task.py --task <task-id>         │
-│    → Agent SDK query() with task + skills        │
-│    → Agent works, commits, creates PR            │
-│    → Process exits                               │
+│  Trigger: SSH → docker exec run_task.py          │
 └─────────────────────────────────────────────────┘
 ```
+
+Same container images as DOKS. Can migrate from B→A without rebuilding.
 
 ### What Changes
 
-| Component | Before (OpenClaw) | After (Agent SDK) |
+| Component | Before (OpenClaw + Droplets) | After (Agent SDK + DOKS) |
 |---|---|---|
-| **lobboss runtime** | OpenClaw gateway + agent process | Agent SDK `ClaudeSDKClient` (long-running) |
-| **lobster runtime** | OpenClaw gateway + agent process | Agent SDK `query()` (ephemeral per-task) |
+| **lobboss runtime** | OpenClaw gateway + agent process | Agent SDK `ClaudeSDKClient` in k8s Deployment |
+| **lobster runtime** | OpenClaw gateway on a droplet | Agent SDK `query()` in ephemeral k8s Job |
+| **Lobster spawning** | `doctl compute droplet create` + cloud-init + SSH provision | `kubectl create job` (or k8s API from Python) |
+| **Networking** | WireGuard mesh (hub-and-spoke) | k8s pod networking (native, no VPN) |
 | **Discord handling** | OpenClaw's built-in (buggy) | discord.py bot (full control) |
 | **Skill loading** | Lazy, unreliable | Explicit via `setting_sources` |
 | **Message dedup** | None (8+ responses per message) | discord.py layer (message ID tracking) |
@@ -239,17 +264,18 @@ Unified approach — both lobboss and lobsters on the Claude Agent SDK.
 | **System prompt** | Vault AGENTS.md (fragile) | Explicit `system_prompt` parameter |
 | **Configuration** | openclaw.json (complex, brittle) | Python code (explicit, testable) |
 | **Non-Claude models** | Not possible | MCP tools wrapping external APIs |
-| **Lobster trigger** | SSH → OpenClaw agent command | SSH → `python run_task.py --task <id>` |
+| **Secrets management** | SCP + env files | k8s Secrets |
+| **Cron jobs** | System crontab on droplet | k8s CronJobs |
+| **Pool management** | Custom bash script (pool-manager) | k8s node autoscaler (scale-to-zero) |
+| **Workflow toolchains** | Same droplet image for all lobsters | Specialized container images per workflow |
 
 ### What Stays the Same
 
 - **Vault structure** — 010-tasks/, 020-logs/, 030-knowledge/, 040-fleet/ unchanged
 - **Task file format** — YAML frontmatter + markdown body unchanged
 - **Skill files** — SKILL.md format unchanged, just loaded differently
-- **Cron scripts** — task-manager, pool-manager, watchdog, review-prs unchanged
-- **Deployment scripts** — lobmob CLI, SCP deploy, provision updated (swap openclaw install for agent-sdk + Node.js)
-- **WireGuard mesh** — same topology, same IPs
 - **Git workflow** — same branch strategy, same PR process
+- **lobmob CLI** — updated commands, same interface (e.g. `lobmob spawn` creates a Job instead of a Droplet)
 
 ### Discord Bot Layer
 
@@ -264,15 +290,21 @@ The thin discord.py wrapper handles everything OpenClaw got wrong:
 
 ### Custom MCP Tools
 
-Core tools beyond built-ins:
+Core tools beyond built-ins (lobboss only):
 
-1. **`ssh_exec`** — Run commands on lobsters over WireGuard SSH (lobboss only)
-   - Input: host (WireGuard IP), command, optional timeout
-   - Output: stdout + stderr + exit code
+1. **`spawn_lobster`** — Create a k8s Job for a lobster task
+   - Input: task ID, lobster type (swe/qa/research), workflow image (unity/web/default)
+   - Output: job name, pod status
+   - On DOKS: creates a k8s Job with the appropriate container image
+   - On Droplets (fallback): creates a Droplet + triggers via SSH
 
-2. **`discord_post`** — Post messages to Discord channels/threads (lobboss only)
+2. **`discord_post`** — Post messages to Discord channels/threads
    - Input: channel/thread ID, message content, optional message edit ID
    - Output: message ID for threading
+
+3. **`lobster_status`** — Check status of running lobster Jobs/pods
+   - Input: optional task ID or job name filter
+   - Output: running/succeeded/failed, logs tail
 
 ### External Model Tools (MCP, as needed)
 
@@ -335,7 +367,7 @@ Edit scripts locally → SCP to droplet → test on droplet → observe behavior
 
 ### Container Strategy
 
-Same image runs locally and on droplets. One Dockerfile per agent type.
+Same container images run locally, on DOKS, and on raw droplets.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -353,41 +385,33 @@ Same image runs locally and on droplets. One Dockerfile per agent type.
 │  Vault is a local clone of lobmob-vault-dev             │
 └─────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────┐
-│  Production droplet                                     │
-│                                                         │
-│  Host: WireGuard + Docker                               │
-│  └── same container image                               │
-│      ├── --network=host (for WG access)                 │
-│      └── vault/ (mount from host /opt/vault)            │
-│                                                         │
-│  Cloud-init: install Docker, pull image, run container  │
-│  Provision: push secrets into container env / volume    │
-└─────────────────────────────────────────────────────────┘
+Production: same images deployed to DOKS cluster or Droplets.
 ```
 
 ### What This Enables
 
 - **Fast iteration**: edit skill markdown or Python code, `docker-compose restart`, test in seconds
-- **Local testing**: full task lifecycle without deploying a droplet
+- **Local testing**: full task lifecycle without deploying to the cloud
 - **Parity**: same image, same dependencies, same behavior locally and in prod
-- **Simpler cloud-init**: install Docker + pull image, instead of installing Node.js + Python + OpenClaw + configuring everything
 - **Version pinning**: image tag = known-good configuration, easy rollback
-
-### WireGuard Considerations
-
-- **Local dev**: skip WG entirely. Containers talk directly. If testing SSH to a real lobster, use the host's WG interface.
-- **Production**: WG runs on the host. Container uses `--network=host` to access the WG interface, or a sidecar WG container shares the network namespace.
-- **Lobster droplets**: same pattern — WG on host, agent container uses host networking.
 
 ### Image Structure
 
-Two images (or one with entrypoint selection):
+Layered images — base image with common dependencies, specialized images add workflow toolchains:
 
-1. **`lobmob-lobboss`**: Python + Node.js + Agent SDK + discord.py + MCP tools + lobboss skills
-2. **`lobmob-lobster`**: Python + Node.js + Agent SDK + lobster skills + `run_task.py` entrypoint
+```
+lobmob-base                    (Python + Node.js + Agent SDK)
+├── lobmob-lobboss             (+ discord.py + MCP tools + lobboss skills)
+├── lobmob-lobster             (+ lobster skills + run_task.py)
+│   ├── lobmob-lobster-unity   (+ Unity Editor + Android SDK)
+│   ├── lobmob-lobster-web     (+ browsers + Playwright)
+│   └── lobmob-lobster-ml      (+ PyTorch + CUDA libs)
+└── (future specialized images as needed)
+```
 
-Registry: GitHub Container Registry (GHCR) is free for public repos and integrates with our existing GitHub App auth. DO Container Registry is an alternative if we want to keep things in the DO ecosystem.
+See [Workflow-Specific Container Images](#workflow-specific-container-images) below for details.
+
+**Registry**: GitHub Container Registry (GHCR) — free for public repos, integrates with existing GitHub App auth. DO Container Registry ($5/mo basic) is an alternative if we want images in the same datacenter for faster pulls.
 
 ### docker-compose.yml (local dev)
 
@@ -399,62 +423,234 @@ services:
     volumes:
       - ./skills/lobboss:/app/skills:ro      # live-reload skills
       - ./vault-dev:/opt/vault               # local vault clone
-      - ./openclaw/lobboss:/app/persona:ro   # agent persona
     environment:
       - LOBMOB_ENV=dev
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 
-  lobster:  # optional, for local task testing
+  lobster:  # generic lobster for testing
     build: ./containers/lobster
     env_file: secrets-dev.env
     volumes:
       - ./skills/lobster:/app/skills:ro
       - ./vault-dev:/opt/vault
-    profiles: ["testing"]  # only start when explicitly requested
+    profiles: ["testing"]
+
+  lobster-unity:  # Unity workflow for testing
+    build: ./containers/lobster-unity
+    env_file: secrets-dev.env
+    volumes:
+      - ./skills/lobster:/app/skills:ro
+      - ./vault-dev:/opt/vault
+    profiles: ["testing"]
 ```
 
 ### Migration Impact
 
 This changes the deployment model significantly:
 
-| Aspect | Before | After |
+| Aspect | Before | After (DOKS) | After (Droplets fallback) |
+|---|---|---|---|
+| Deploy lobboss | TF + cloud-init + SCP | `kubectl apply` Deployment | cloud-init pulls Docker image |
+| Deploy lobster | cloud-init + provision | `kubectl create job` | cloud-init pulls image + SSH trigger |
+| Iterate on behavior | SCP → restart → logs | Edit → docker-compose restart | same as DOKS (local dev is identical) |
+| Iterate on skills | SCP → clear sessions | Edit bind-mounted files | same |
+| Rollback | Re-deploy previous scripts | `kubectl set image` to previous tag | `docker pull previous-tag` |
+| Dependencies | cloud-init (fragile) | Baked into image | Baked into image |
+| Networking | WireGuard mesh | k8s pod networking | WireGuard mesh |
+
+## DOKS Infrastructure
+
+### Why DOKS over raw Droplets
+
+Other DO products were evaluated and don't fit:
+
+- **App Platform**: 30-minute job timeout (lobsters need 30-90 min), no persistent storage, no inter-container networking, 15-minute minimum cron interval. Blocked on multiple requirements.
+- **Functions**: 15-minute max timeout, 1 GB max memory. Wrong product category.
+- **Gradient (GenAI Platform)**: Managed model hosting, not compute containers. Doesn't replace infrastructure.
+- **GPU Droplets**: Massive overkill. Agents are I/O-bound (API calls, git), not GPU-bound.
+- **No Fargate equivalent on DO** — DOKS with scale-to-zero worker pools is the closest thing.
+
+### DOKS Cost Estimate
+
+| Component | Cost |
+|---|---|
+| Control plane (standard) | **$0** (free) |
+| Always-on node (lobboss + crons): s-2vcpu-4gb | $24/mo |
+| Worker node pool (lobsters): scale-to-zero | $0 when idle, ~$0.025/hr per node when active |
+| Block storage PVC (vault, 10 GB) | ~$1/mo |
+| Container Registry (GHCR) | free |
+| **Estimated total** | **~$25/mo base + variable lobster compute** |
+
+With 2-3 lobsters running ~50% of the time: roughly **$45-55/mo** (comparable to current $36-66/mo).
+
+### What DOKS Eliminates
+
+- **WireGuard mesh** — pods communicate natively. No key management, no IP allocation, no tunnel debugging.
+- **Cloud-init provisioning** — everything is in the container image. No more "cloud-init returned prematurely" bugs.
+- **SSH key management** — no more `ssh-keygen -R`, no more `lobster_admin` keypair, no more known_hosts issues.
+- **Pool manager script** — k8s node autoscaler handles node lifecycle. Scale-to-zero when idle.
+- **Provision secrets script** — k8s Secrets injected as env vars or volume mounts.
+- **Droplet lifecycle via doctl** — replaced by k8s Job API.
+
+### What DOKS Requires (new)
+
+- **Kubernetes manifests**: Deployment (lobboss), Job templates (lobsters), CronJobs (task-mgr, watchdog), PVCs, Secrets, RBAC.
+- **Terraform DOKS resources**: `digitalocean_kubernetes_cluster`, node pools, container registry (if using DO).
+- **k8s API integration**: lobboss creates Jobs programmatically via Python `kubernetes` client library.
+- **Learning curve**: k8s concepts (pods, jobs, PVCs, namespaces, RBAC). Offset by eliminating WireGuard, cloud-init, and SSH provisioning complexity.
+
+### DOKS Migration Path
+
+Start on Droplets + Docker (simpler, validates containers work). Move to DOKS once containers are proven. The images are identical — only the deployment target changes.
+
+## Workflow-Specific Container Images
+
+### The Problem
+
+Different tasks need different toolchains. A Unity C# task needs the Unity Editor + Android SDK. A web frontend task needs Node.js + browsers. A Python ML task needs PyTorch. Currently, all lobsters use the same droplet image — which means either installing everything on every droplet (bloated, slow) or not supporting specialized workflows.
+
+### The Solution: Layered Images
+
+```dockerfile
+# containers/base/Dockerfile
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y git nodejs npm
+RUN pip install claude-agent-sdk anthropic
+RUN npm install -g @anthropic-ai/claude-code
+COPY run_task.py /app/
+COPY skills/ /app/skills/
+
+# containers/lobster/Dockerfile
+FROM lobmob-base
+# Generic lobster — good for research, simple code tasks
+ENTRYPOINT ["python", "/app/run_task.py"]
+
+# containers/lobster-unity/Dockerfile
+FROM lobmob-base
+# Unity Editor (headless, Linux)
+RUN apt-get install -y libgtk-3-0 libgbm1 libasound2 libvulkan1
+RUN /opt/unity/UnitySetup -u 6000.0.39f1 -c Unity -c Android -c iOS --headless
+ENV UNITY_PATH=/opt/unity/6000.0.39f1/Editor/Unity
+# Android SDK
+RUN sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+ENV ANDROID_HOME=/opt/android-sdk
+ENTRYPOINT ["python", "/app/run_task.py"]
+
+# containers/lobster-web/Dockerfile
+FROM lobmob-base
+RUN npx playwright install --with-deps chromium
+RUN npm install -g typescript prettier eslint
+ENTRYPOINT ["python", "/app/run_task.py"]
+```
+
+### How Lobboss Selects the Right Image
+
+Task metadata gains a `workflow` field that maps to a container image:
+
+```yaml
+# 010-tasks/active/task-2026-02-12-a1b2.md
+---
+id: task-2026-02-12-a1b2
+type: swe
+workflow: unity          # ← maps to lobmob-lobster-unity image
+model: opus
+status: queued
+---
+```
+
+Workflow-to-image mapping (configured in lobboss, not hardcoded in skills):
+
+| `workflow` value | Container image | Includes |
 |---|---|---|
-| Deploy lobboss | Terraform + cloud-init + SCP scripts | Terraform + cloud-init pulls Docker image |
-| Deploy lobster | cloud-init + provision-secrets | cloud-init pulls Docker image + inject secrets |
-| Iterate on agent behavior | SCP → restart systemd → check logs | Edit locally → docker-compose restart → check logs |
-| Iterate on skills | SCP → clear sessions → restart | Edit bind-mounted files → restart (or live-reload) |
-| Rollback | Re-deploy previous scripts | `docker pull previous-tag && docker restart` |
-| Dependencies | Installed via cloud-init (fragile) | Baked into image (reproducible) |
+| `default` | `lobmob-lobster` | Base tools only |
+| `unity` | `lobmob-lobster-unity` | Unity Editor, Android/iOS SDKs, .NET SDK |
+| `web` | `lobmob-lobster-web` | Playwright, Node.js toolchain, browsers |
+| `ml` | `lobmob-lobster-ml` | PyTorch, CUDA, Jupyter |
+| (custom) | Any image in registry | Whatever you put in the Dockerfile |
+
+When lobboss creates a Job (DOKS) or spawns a container (Droplets), it selects the image based on the task's `workflow` field. The `task-create` skill can infer the workflow from context ("this is a Unity project, use the unity workflow") or the user can specify it explicitly.
+
+### Image Size Considerations
+
+Specialized images can be large:
+
+| Image | Estimated size | Notes |
+|---|---|---|
+| `lobmob-base` | ~1 GB | Python + Node.js + Agent SDK |
+| `lobmob-lobster` | ~1.2 GB | + git, common dev tools |
+| `lobmob-lobster-unity` | ~15-20 GB | Unity Editor is huge |
+| `lobmob-lobster-web` | ~2-3 GB | Chromium is ~500 MB |
+| `lobmob-lobster-ml` | ~8-12 GB | PyTorch + CUDA libs |
+
+Mitigations:
+- **Layer caching**: Base layers shared across all images. Only workflow-specific layers differ.
+- **Registry in same datacenter**: DO Container Registry or GHCR — pulls are fast within the DC.
+- **Pre-pull on nodes**: For DOKS, configure a DaemonSet that pre-pulls large images onto worker nodes.
+- **Multi-stage builds**: Keep final images lean by separating build-time and runtime dependencies.
+- **Image pull once per node**: After first pull, subsequent Jobs on the same node start instantly.
+
+### Advantages Over the Droplet Approach
+
+| Aspect | Droplets | Containers |
+|---|---|---|
+| Adding a new workflow | Edit cloud-init, re-provision, test on live droplet | Write Dockerfile, build, test locally, push |
+| Unity version update | Re-provision all Unity lobsters | Update Dockerfile, rebuild, push new tag |
+| Multiple Unity versions | Multiple cloud-init templates or runtime install | Multiple image tags (`lobster-unity:6000.0.39f1`) |
+| Workflow isolation | Everything installed on same droplet | Each workflow in its own image, no conflicts |
+| Local testing | Need a droplet or replicate full setup | `docker-compose run lobster-unity` |
+| Reproducibility | Drift over time (apt updates, etc.) | Immutable image, exact same every time |
+
+### Custom Workflow Images
+
+Adding a new workflow is self-service:
+
+1. Create `containers/lobster-<workflow>/Dockerfile` extending `lobmob-base`
+2. Install workflow-specific tools
+3. Build and push: `docker build -t ghcr.io/minsley/lobmob-lobster-<workflow> . && docker push ...`
+4. Add the workflow mapping to lobboss config
+5. Use `workflow: <name>` in task files
+
+No infrastructure changes needed. No Terraform. No cloud-init. Just a Dockerfile.
 
 ## Migration Scope
 
-### Phase 1: lobboss (containerized)
+### Phase 1: lobboss (containerized, local + Droplets)
 
-Build the lobboss agent as a Docker container, test locally, then deploy to droplet.
+Build the lobboss agent as a Docker container, test locally, deploy to dev droplet.
 
-- Dockerfile: Python + Node.js + Agent SDK + discord.py + MCP tools
+- Base Dockerfile: Python + Node.js + Agent SDK
+- Lobboss Dockerfile: + discord.py + MCP tools + lobboss skills
 - Build discord.py bot layer
 - Integrate Agent SDK as long-running `ClaudeSDKClient`
-- Create custom MCP tools (ssh_exec, discord_post)
-- Port lobboss skills to Agent SDK format
+- Create custom MCP tools (spawn_lobster, discord_post, lobster_status)
 - docker-compose for local dev (bind-mount skills + vault)
 - Test full task lifecycle locally against dev Discord channels
-- Deploy container to dev droplet, verify with WireGuard
-- Update cloud-init to pull and run container instead of installing OpenClaw
+- Deploy container to dev droplet (Docker on host), verify end-to-end
 
-### Phase 2: lobsters (containerized)
+### Phase 2: lobsters (containerized, local + Droplets)
 
-Same pattern — build container, test locally, deploy to droplets.
+Build lobster containers, test locally, deploy to dev droplets.
 
-- Dockerfile: Python + Node.js + Agent SDK + lobster skills + `run_task.py` entrypoint
-- Build `run_task.py` script (SSH trigger → Agent SDK `query()` → task execution → exit)
+- Lobster base Dockerfile: Python + Node.js + Agent SDK + `run_task.py`
+- Build `run_task.py` script (Agent SDK `query()` → task execution → exit)
 - Port lobster skills (code-task, verify-task, submit-results)
+- Build at least one workflow image (e.g., lobster-unity) as proof of concept
 - Test locally: run container with a task, verify it produces correct PR
-- Deploy to dev droplet, test SSH trigger from lobboss
-- Update lobster cloud-init to pull and run container
+- Deploy to dev droplet, test trigger from lobboss
 
-### Phase 3: external model tools (incremental)
+### Phase 3: DOKS migration
+
+Move from Droplets + Docker to DOKS. Same container images, different orchestration.
+
+- Terraform: DOKS cluster, node pools (always-on + autoscaling)
+- k8s manifests: lobboss Deployment, lobster Job templates, CronJobs, PVCs, Secrets
+- Update lobboss MCP tools: `spawn_lobster` creates k8s Jobs instead of Droplets
+- Remove WireGuard configuration
+- Test full lifecycle on DOKS in dev
+- Migrate prod
+
+### Phase 4: external model tools (incremental)
 
 Add non-Claude capabilities as MCP tools, driven by actual needs rather than upfront design.
 
@@ -475,39 +671,51 @@ Additional benefits:
 
 ## Open Questions for Planning
 
-1. **Python or TypeScript for the wrapper?** — Both SDKs available. Python + discord.py is the most natural fit for lobboss. Lobsters could use either. TypeScript + discord.js is an option if we want to stay in the Node.js ecosystem.
+1. **Python or TypeScript?** — Both SDKs available. Python + discord.py is the most natural fit. TypeScript + discord.js is an option if we want to stay in the Node.js ecosystem.
 
-2. **Session persistence strategy** — In-memory (simple, lost on restart) vs SQLite (survives restarts). For a single-droplet deployment, SQLite may be sufficient. Only relevant for lobboss (lobster sessions are ephemeral).
+2. **Session persistence** — In-memory (simple, lost on restart) vs SQLite PVC (survives pod restarts). Only relevant for lobboss (lobster sessions are ephemeral).
 
-3. **Cold start mitigation** — Keep the Agent SDK process warm between messages (streaming input mode), or accept the ~12s latency per new thread? Streaming input mode seems like the obvious choice for lobboss. Lobsters take the cold start since they're one-shot.
+3. **Cold start mitigation** — Keep the Agent SDK process warm between messages (streaming input mode), or accept the ~12s latency per new thread? Streaming input mode for lobboss; lobsters take the cold start since they're one-shot.
 
-4. **Skill injection method** — Use `setting_sources` to load from filesystem, or inject skill content directly into `system_prompt`? Filesystem is cleaner but requires the files to be in the right place on each machine.
+4. **Skill injection method** — Use `setting_sources` to load from filesystem, or inject skill content directly into `system_prompt`? Filesystem is cleaner and matches the bind-mount dev workflow.
 
-5. **Cron script interaction** — Task-manager currently posts to Discord via OpenClaw gateway API. After migration, it needs a new endpoint (the discord.py bot process, or a simple HTTP API alongside it).
+5. **Cron scripts** — On DOKS, these become k8s CronJobs. Task-manager currently posts to Discord via OpenClaw gateway API — needs a new mechanism (HTTP endpoint on the discord.py bot, or direct Discord API calls from the CronJob).
 
-6. **Rollback plan** — Keep OpenClaw config intact during dev testing so we can revert quickly. Remove OpenClaw only after prod migration is validated.
+6. **DOKS node sizing** — Always-on node needs to fit lobboss + CronJobs. s-2vcpu-4gb ($24/mo) should be sufficient. Lobster worker nodes need ≥2GB for Opus; s-2vcpu-4gb allows running 1-2 lobster pods per node.
 
-7. **Lobster trigger mechanism** — Currently SSH → `openclaw agent run`. Becomes SSH → `docker exec` or `python run_task.py --task <id>` inside the container. Lobboss SSHs to host, which runs the task inside the lobster container.
+7. **Container registry** — GHCR (free, GitHub App auth) vs DO Container Registry ($5/mo basic, same-datacenter pulls). GHCR default unless pull latency for large Unity images is a problem.
 
-8. **Container registry** — GHCR (free, GitHub App auth integration) vs DO Container Registry (in-ecosystem, paid). GHCR is the default choice unless there's a reason to use DO.
+8. **Workflow image build pipeline** — Manual `docker build && push`, or CI/CD (GitHub Actions on Dockerfile changes)? For large images like Unity, build time matters.
 
-9. **Live-reload vs rebuild** — For skills (markdown), bind-mount and live-reload. For Python code changes (MCP tools, discord bot), rebuild image. Consider a dev mode that watches for changes.
+9. **DOKS vs Droplets timing** — Start on Droplets+Docker (Phase 1-2) to validate containers, then migrate to DOKS (Phase 3)? Or go straight to DOKS? Starting with Droplets reduces initial scope but means building WireGuard/SSH plumbing that gets thrown away.
 
-10. **Cron scripts in containers** — Task-manager, pool-manager, watchdog currently run as host cron jobs. Options: (a) keep them on host, talk to container via HTTP/socket, (b) move them into the container, (c) hybrid — deterministic scripts on host, agent-dependent ones in container.
+10. **Unity Editor licensing** — Unity headless builds on Linux require a license. Need to handle activation in the container (CI license, floating license, or serial number via k8s Secret).
 
 ## References
 
-- [Claude Agent SDK Overview](https://platform.claude.com/docs/en/agent-sdk/overview)
-- [Agent SDK Quickstart](https://platform.claude.com/docs/en/agent-sdk/quickstart)
-- [Agent SDK Python GitHub](https://github.com/anthropics/claude-agent-sdk-python)
-- [Agent SDK TypeScript GitHub](https://github.com/anthropics/claude-agent-sdk-typescript)
-- [Agent SDK Subagents](https://platform.claude.com/docs/en/agent-sdk/subagents)
-- [Agent SDK Custom Tools](https://platform.claude.com/docs/en/agent-sdk/custom-tools)
-- [Agent SDK Hosting](https://platform.claude.com/docs/en/agent-sdk/hosting)
-- [Agent SDK Demos](https://github.com/anthropics/claude-agent-sdk-demos)
-- [Anthropic Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use)
-- [Pydantic AI Docs](https://ai.pydantic.dev/)
-- [CrewAI Docs](https://docs.crewai.com/en/introduction)
+### Claude Agent SDK
+- [Overview](https://platform.claude.com/docs/en/agent-sdk/overview)
+- [Quickstart](https://platform.claude.com/docs/en/agent-sdk/quickstart)
+- [Python GitHub](https://github.com/anthropics/claude-agent-sdk-python)
+- [TypeScript GitHub](https://github.com/anthropics/claude-agent-sdk-typescript)
+- [Subagents](https://platform.claude.com/docs/en/agent-sdk/subagents)
+- [Custom Tools / MCP](https://platform.claude.com/docs/en/agent-sdk/custom-tools)
+- [Hosting Guide](https://platform.claude.com/docs/en/agent-sdk/hosting)
+- [Demo Agents](https://github.com/anthropics/claude-agent-sdk-demos)
+- [Advanced Tool Use](https://www.anthropic.com/engineering/advanced-tool-use)
+
+### DigitalOcean
+- [DOKS Pricing](https://docs.digitalocean.com/products/kubernetes/details/pricing/) — free control plane
+- [DOKS Autoscaling / Scale-to-Zero](https://docs.digitalocean.com/products/kubernetes/how-to/autoscale/)
+- [DOKS VPC-Native Networking](https://www.digitalocean.com/blog/vpc-native-clusters)
+- [DOKS Persistent Volumes](https://docs.digitalocean.com/products/kubernetes/how-to/add-volumes/)
+- [App Platform Limits](https://docs.digitalocean.com/products/app-platform/details/limits/) — 30-min job timeout
+- [Functions Limits](https://docs.digitalocean.com/products/functions/details/limits/) — 15-min timeout
+- [Droplet Pricing](https://docs.digitalocean.com/products/droplets/details/pricing/)
+
+### Other Frameworks (evaluated, not selected)
+- [Pydantic AI](https://ai.pydantic.dev/)
+- [CrewAI](https://docs.crewai.com/en/introduction)
 - [LangGraph](https://www.langchain.com/langgraph)
 - [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/)
 - [Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/overview/agent-framework-overview)
