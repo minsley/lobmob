@@ -137,10 +137,11 @@ def _split_message(text: str) -> list[str]:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # Use JSON logging in containers (LOBMOB_ENV set), human-readable locally
+    import os
+    from common.logging import setup_logging
+    json_output = os.environ.get("LOBMOB_ENV") is not None
+    setup_logging(json_output=json_output)
 
     config = Config.from_env()
     bot = LobbossBot(config)

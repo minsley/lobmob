@@ -13,6 +13,7 @@ from claude_agent_sdk import (
 )
 
 from lobboss.config import AgentConfig
+from lobboss.hooks import check_bash_command, check_spawn_lobster
 from lobboss.mcp_tools import lobmob_mcp
 
 logger = logging.getLogger("lobboss.agent")
@@ -55,7 +56,16 @@ class LobbossAgent:
             mcp_servers={"lobmob": lobmob_mcp},
             permission_mode="acceptEdits",
             max_turns=25,
+            can_use_tool=self._can_use_tool,
         )
+
+    async def _can_use_tool(self, tool_name: str, tool_input: dict) -> dict | None:
+        """Permission callback for tool use. Returns None to allow, or block dict."""
+        if tool_name == "Bash":
+            return await check_bash_command(tool_input)
+        if tool_name == "mcp__lobmob__spawn_lobster":
+            return await check_spawn_lobster(tool_input)
+        return None
 
     @staticmethod
     def _resolve_model(short: str) -> str:
