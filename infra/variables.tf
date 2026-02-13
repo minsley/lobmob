@@ -84,3 +84,35 @@ variable "enable_monitoring" {
   type        = bool
   default     = true
 }
+
+# --- DOKS variables ---
+
+variable "doks_enabled" {
+  description = "Whether to create a DOKS Kubernetes cluster (false keeps Droplet-only infra)"
+  type        = bool
+  default     = false
+}
+
+variable "doks_k8s_version" {
+  description = "Kubernetes version for DOKS cluster (use `doctl kubernetes options versions` to list)"
+  type        = string
+  default     = "1.31.1-do.5"
+}
+
+variable "doks_lobboss_node_size" {
+  description = "Node size for the lobboss (always-on) node pool"
+  type        = string
+  default     = "s-2vcpu-4gb"
+}
+
+variable "doks_lobster_node_size" {
+  description = "Node size for the lobster (autoscaling) node pool"
+  type        = string
+  default     = "s-2vcpu-4gb"
+}
+
+variable "doks_lobster_max_nodes" {
+  description = "Maximum number of nodes in the lobster autoscaling pool"
+  type        = number
+  default     = 5
+}

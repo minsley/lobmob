@@ -8,3 +8,9 @@ environment           = "prod"
 vpc_cidr              = "10.100.0.0/24"
 wg_subnet             = "10.0.0"
 enable_monitoring     = true
+
+# DOKS — enable when ready to deploy k8s
+doks_enabled            = false
+doks_lobboss_node_size  = "s-2vcpu-4gb"
+doks_lobster_node_size  = "s-2vcpu-4gb"
+doks_lobster_max_nodes  = 5
