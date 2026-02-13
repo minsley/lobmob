@@ -11,11 +11,13 @@ What we need from any replacement:
 1. **Reliable tool/skill execution** — when the agent is told to use a skill, it uses it. No lazy-load failures, no ignoring instructions.
 2. **Discord integration** — receive messages, post in threads, handle reactions, dedup messages. Currently the #1 source of OpenClaw bugs.
 3. **SSH orchestration** — lobboss coordinates lobsters over WireGuard/SSH. Must be able to run remote commands.
-4. **Multi-model support** — Sonnet for research/QA, Opus for SWE tasks.
-5. **Session continuity** — conversation context should persist across messages in a Discord thread.
-6. **Skill format compatibility** — existing SKILL.md files should work with minimal modification.
-7. **Deterministic cron integration** — task-manager, pool-manager, watchdog scripts must continue working.
-8. **Production stability** — framework shouldn't break on updates or require constant babysitting.
+4. **Claude model selection** — Sonnet for research/QA, Opus for SWE tasks. Per-agent model override.
+5. **Non-Claude capabilities via tools** — other models (image generation, specialized tasks) integrated as MCP tools, not as alternative agent brains.
+6. **Session continuity** — conversation context should persist across messages in a Discord thread.
+7. **Skill format compatibility** — existing SKILL.md files should work with minimal modification.
+8. **Deterministic cron integration** — task-manager, pool-manager, watchdog scripts must continue working.
+9. **Production stability** — framework shouldn't break on updates or require constant babysitting.
+10. **Unified stack** — same framework for lobboss and lobsters, reducing maintenance burden.
 
 ## Frameworks Evaluated
 
@@ -61,7 +63,7 @@ agents = {
 
 **Sessions**: Full persistence with resume/fork. Conversation state, files read, and analysis all survive across messages. Critical for Discord thread continuity.
 
-**Model support**: Claude Opus, Sonnet, Haiku. Per-agent model override. Providers: Anthropic direct, Bedrock, Vertex, Azure. No non-Claude models — Claude only.
+**Model support**: Claude Opus, Sonnet, Haiku. Per-agent model override. Providers: Anthropic direct, Bedrock, Vertex, Azure. The agent brain is Claude-only — but non-Claude capabilities (image generation, embeddings, OCR, etc.) integrate cleanly as MCP tools. Claude reasons about *what* to do, then delegates specialized work to the appropriate model/API via tool calls. This "Claude as brain, other models as tools" pattern means the "Claude-only" limitation is a non-issue in practice.
 
 **Discord**: Not native. Need a discord.py wrapper. This is actually an **advantage** — we get full control over deduplication, threading, sequential processing, and routing. All the things OpenClaw broke.
 
@@ -119,7 +121,7 @@ Python agent framework from the Pydantic team. Type-safe, structured outputs, mo
 
 **Durable execution**: Agents preserve progress across API failures and restarts. Relevant for long-running SWE tasks.
 
-**Verdict**: Interesting but wrong tradeoff. The model-agnosticism doesn't help us (we're all-Claude), and the lack of built-in code tools hurts us (agents write code, run tests, create PRs). We'd spend weeks building what the Agent SDK ships for free.
+**Verdict**: Interesting but wrong tradeoff. The model-agnosticism doesn't help us — we want Claude as the agent brain and other models integrated as MCP tools, not swappable agent runtimes. The lack of built-in code tools hurts concretely (agents write code, run tests, create PRs). We'd spend weeks building what the Agent SDK ships for free.
 
 ### 4. LangGraph / LangChain
 
@@ -170,7 +172,7 @@ OpenAI's multi-agent framework. Provider-agnostic via LiteLLM.
 
 ## Architecture: Agent SDK + discord.py
 
-The recommended approach for lobboss:
+Unified approach — both lobboss and lobsters on the Claude Agent SDK.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -183,8 +185,9 @@ The recommended approach for lobboss:
 │  │  - dedup      │     │  - Built-in tools     │  │
 │  │  - threading  │     │  - MCP: ssh_exec      │  │
 │  │  - routing    │     │  - MCP: discord_post  │  │
-│  │  - sequential │     │  - Skills (SKILL.md)  │  │
-│  │    processing │     │  - Hooks (validation)  │  │
+│  │  - sequential │     │  - MCP: external APIs  │  │
+│  │    processing │     │  - Skills (SKILL.md)  │  │
+│  │  - reactions  │     │  - Hooks (validation)  │  │
 │  └──────────────┘     └──────────────────────┘  │
 │                                                  │
 │  ┌──────────────┐     ┌──────────────────────┐  │
@@ -201,20 +204,42 @@ The recommended approach for lobboss:
 │  │  WireGuard (10.0.0.1) ──▶ lobsters       │   │
 │  └──────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│              lobster droplet (each)              │
+│                                                  │
+│  ┌──────────────────────────────────────────┐   │
+│  │  Claude Agent SDK (ephemeral session)     │   │
+│  │                                           │   │
+│  │  - Built-in tools (Read/Write/Edit/Bash)  │   │
+│  │  - Skills: code-task, verify-task, etc.   │   │
+│  │  - MCP: external APIs (if needed)         │   │
+│  │  - Model: Opus (swe) or Sonnet (qa)       │   │
+│  └──────────────────────────────────────────┘   │
+│                                                  │
+│  Trigger: SSH from lobboss                       │
+│    → python run_task.py --task <task-id>         │
+│    → Agent SDK query() with task + skills        │
+│    → Agent works, commits, creates PR            │
+│    → Process exits                               │
+└─────────────────────────────────────────────────┘
 ```
 
 ### What Changes
 
 | Component | Before (OpenClaw) | After (Agent SDK) |
 |---|---|---|
-| Agent runtime | OpenClaw gateway + agent process | Agent SDK `ClaudeSDKClient` |
-| Discord handling | OpenClaw's built-in (buggy) | discord.py bot (full control) |
-| Skill loading | Lazy, unreliable | Explicit via `setting_sources` |
-| Message dedup | None (8+ responses per message) | discord.py layer (message ID tracking) |
-| Thread context | None (each message independent) | Session persistence per thread |
-| Tool execution | OpenClaw tool system | SDK built-in + MCP custom tools |
-| System prompt | Vault AGENTS.md (fragile) | Explicit `system_prompt` parameter |
-| Configuration | openclaw.json (complex, brittle) | Python code (explicit, testable) |
+| **lobboss runtime** | OpenClaw gateway + agent process | Agent SDK `ClaudeSDKClient` (long-running) |
+| **lobster runtime** | OpenClaw gateway + agent process | Agent SDK `query()` (ephemeral per-task) |
+| **Discord handling** | OpenClaw's built-in (buggy) | discord.py bot (full control) |
+| **Skill loading** | Lazy, unreliable | Explicit via `setting_sources` |
+| **Message dedup** | None (8+ responses per message) | discord.py layer (message ID tracking) |
+| **Thread context** | None (each message independent) | Session persistence per thread |
+| **Tool execution** | OpenClaw tool system | SDK built-in + MCP custom tools |
+| **System prompt** | Vault AGENTS.md (fragile) | Explicit `system_prompt` parameter |
+| **Configuration** | openclaw.json (complex, brittle) | Python code (explicit, testable) |
+| **Non-Claude models** | Not possible | MCP tools wrapping external APIs |
+| **Lobster trigger** | SSH → OpenClaw agent command | SSH → `python run_task.py --task <id>` |
 
 ### What Stays the Same
 
@@ -222,9 +247,8 @@ The recommended approach for lobboss:
 - **Task file format** — YAML frontmatter + markdown body unchanged
 - **Skill files** — SKILL.md format unchanged, just loaded differently
 - **Cron scripts** — task-manager, pool-manager, watchdog, review-prs unchanged
-- **Deployment scripts** — lobmob CLI, SCP deploy, provision unchanged (except swapping openclaw for agent-sdk setup)
+- **Deployment scripts** — lobmob CLI, SCP deploy, provision updated (swap openclaw install for agent-sdk + Node.js)
 - **WireGuard mesh** — same topology, same IPs
-- **Lobster agents** — stay on OpenClaw for now (SSH-triggered, less problematic)
 - **Git workflow** — same branch strategy, same PR process
 
 ### Discord Bot Layer
@@ -240,15 +264,25 @@ The thin discord.py wrapper handles everything OpenClaw got wrong:
 
 ### Custom MCP Tools
 
-Two custom tools needed beyond built-ins:
+Core tools beyond built-ins:
 
-1. **`ssh_exec`** — Run commands on lobsters over WireGuard SSH
+1. **`ssh_exec`** — Run commands on lobsters over WireGuard SSH (lobboss only)
    - Input: host (WireGuard IP), command, optional timeout
    - Output: stdout + stderr + exit code
 
-2. **`discord_post`** — Post messages to Discord channels/threads
+2. **`discord_post`** — Post messages to Discord channels/threads (lobboss only)
    - Input: channel/thread ID, message content, optional message edit ID
    - Output: message ID for threading
+
+### External Model Tools (MCP, as needed)
+
+Non-Claude capabilities integrated as MCP tools. Claude reasons about *what* to do, then delegates specialized work via tool calls. Examples:
+
+- **`image_generate`** — Wraps Gemini/DALL-E/etc. for image generation
+- **`embed_text`** — Wraps an embedding model for semantic search
+- **`ocr_extract`** — Wraps a vision model for document extraction
+
+These are added incrementally as needed, not upfront. The MCP tool pattern means any API-accessible model capability can be exposed to the agent without changing the framework. Each tool is a thin Python function wrapping an API call — the agent never needs to "be" the other model, just call it.
 
 ### Hooks
 
@@ -261,27 +295,60 @@ Replace the "CRITICAL RULES" in AGENTS.md that OpenClaw ignored:
 
 ## Migration Scope
 
-### Phase 1: lobboss only
+### Phase 1: lobboss
 
-Replace OpenClaw on the manager droplet. Lobsters stay on OpenClaw — their issues are less severe because they're SSH-triggered (no Discord listener, no message dedup problem, no thread context needed).
+Replace OpenClaw on the manager droplet. This is the critical path — lobboss has all the Discord bugs (dedup, threading, routing) and skill-loading failures.
 
-### Phase 2: lobsters (future, if needed)
+- Build discord.py bot layer
+- Integrate Agent SDK as long-running `ClaudeSDKClient`
+- Create custom MCP tools (ssh_exec, discord_post)
+- Port lobboss skills to Agent SDK format
+- Update provision scripts to install Agent SDK instead of OpenClaw
+- Test full task lifecycle in dev environment
 
-If lobster OpenClaw issues prove problematic, migrate them too. But since lobsters receive tasks via vault file + SSH trigger (not Discord), the critical OpenClaw bugs don't apply.
+### Phase 2: lobsters
+
+Replace OpenClaw on worker droplets. Simpler than lobboss — no Discord layer needed, just ephemeral agent sessions.
+
+- Build `run_task.py` script (SSH trigger → Agent SDK `query()` → task execution → exit)
+- Port lobster skills (code-task, verify-task, submit-results)
+- Update lobster cloud-init / provision to install Agent SDK instead of OpenClaw
+- Test in dev: spawn lobster, assign task, verify it executes and creates PR
+- Removes OpenClaw gateway dependency from lobsters entirely
+
+### Phase 3: external model tools (incremental)
+
+Add non-Claude capabilities as MCP tools, driven by actual needs rather than upfront design.
+
+- Each new capability = one MCP tool function wrapping an API
+- No framework changes needed — just add tools to the MCP server config
+
+### Why migrate lobsters too (not "if needed")
+
+The post-mortem focused on Discord as the worst pain, but lobsters still hit OpenClaw's skill-loading reliability problem. When a lobster is SSH-triggered to execute a task, it still needs to reliably follow `code-task` or `verify-task` skills — and OpenClaw's lazy loading means it sometimes doesn't (the SWE lobster that "finished early" without creating a PR is likely a symptom of this).
+
+Additional benefits:
+- **One framework** to deploy, maintain, debug, and upgrade
+- **Simpler provision** — no OpenClaw gateway process, no openclaw.json, no stale session cleanup
+- **Better tools** — Agent SDK's built-in Read/Write/Edit/Bash/Glob/Grep are battle-tested
+- **Ephemeral sessions** are a natural fit — lobster gets task, Agent SDK runs `query()`, process exits cleanly
+- **Already meet requirements** — lobsters have Node.js (for OpenClaw) and ≥2GB RAM (for Opus), both needed by Agent SDK
 
 ## Open Questions for Planning
 
-1. **Python or TypeScript for the wrapper?** — Both SDKs available. Python + discord.py is the most natural fit. TypeScript + discord.js is an option if we want to stay in the Node.js ecosystem.
+1. **Python or TypeScript for the wrapper?** — Both SDKs available. Python + discord.py is the most natural fit for lobboss. Lobsters could use either. TypeScript + discord.js is an option if we want to stay in the Node.js ecosystem.
 
-2. **Session persistence strategy** — In-memory (simple, lost on restart) vs Redis/SQLite (survives restarts). For a single-droplet deployment, SQLite may be sufficient.
+2. **Session persistence strategy** — In-memory (simple, lost on restart) vs SQLite (survives restarts). For a single-droplet deployment, SQLite may be sufficient. Only relevant for lobboss (lobster sessions are ephemeral).
 
-3. **Cold start mitigation** — Keep the Agent SDK process warm between messages (streaming input mode), or accept the ~12s latency per new thread?
+3. **Cold start mitigation** — Keep the Agent SDK process warm between messages (streaming input mode), or accept the ~12s latency per new thread? Streaming input mode seems like the obvious choice for lobboss. Lobsters take the cold start since they're one-shot.
 
-4. **Skill injection method** — Use `setting_sources` to load from filesystem, or inject skill content directly into `system_prompt`? Filesystem is cleaner but requires the files to be in the right place.
+4. **Skill injection method** — Use `setting_sources` to load from filesystem, or inject skill content directly into `system_prompt`? Filesystem is cleaner but requires the files to be in the right place on each machine.
 
-5. **Cron script interaction** — Task-manager currently posts to Discord via OpenClaw gateway API. After migration, it needs a new endpoint (the discord.py bot, or a simple HTTP API alongside it).
+5. **Cron script interaction** — Task-manager currently posts to Discord via OpenClaw gateway API. After migration, it needs a new endpoint (the discord.py bot process, or a simple HTTP API alongside it).
 
-6. **Rollback plan** — Keep OpenClaw config intact during migration so we can revert quickly.
+6. **Rollback plan** — Keep OpenClaw config intact during dev testing so we can revert quickly. Remove OpenClaw only after prod migration is validated.
+
+7. **Lobster trigger mechanism** — Currently SSH → `openclaw agent run`. Becomes SSH → `python run_task.py --task <id>`. Need to decide: does `run_task.py` live on the lobster (deployed via provision), or does lobboss SCP it on-demand?
 
 ## References
 
