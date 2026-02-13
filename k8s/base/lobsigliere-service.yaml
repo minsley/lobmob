@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lobsigliere
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobsigliere
+    app.kubernetes.io/part-of: lobmob
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: lobsigliere
+  ports:
+    - port: 22
+      targetPort: 22
+      protocol: TCP
+      name: ssh

@@ -8,5 +8,9 @@ resources:
   - lobboss-service.yaml
   - lobster-rbac.yaml
   - cronjobs.yaml
+  - lobsigliere-deployment.yaml
+  - lobsigliere-service.yaml
+  - lobsigliere-pvc.yaml
+  - lobsigliere-rbac.yaml
   # lobster-job-template.yaml is NOT included here — it's a runtime template
   # used by lobboss Python code, not applied directly with kubectl.
