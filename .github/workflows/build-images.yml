@@ -1,0 +1,136 @@
+name: Build Container Images
+
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - 'containers/**'
+      - 'src/**'
+      - 'skills/**'
+      - 'scripts/server/**'
+      - 'requirements.txt'
+      - '.github/workflows/build-images.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/lobmob
+
+jobs:
+  build-base:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      base-tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-base
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: containers/base/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-lobboss:
+    runs-on: ubuntu-latest
+    needs: build-base
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-lobboss
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+
+      # Rewrite FROM to use the GHCR base image
+      - name: Patch Dockerfile base image
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          sed -i "s|^FROM lobmob-base|FROM ${IMAGE_PREFIX}-base:${BRANCH}|" containers/lobboss/Dockerfile
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: containers/lobboss/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-lobster:
+    runs-on: ubuntu-latest
+    needs: build-base
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-lobster
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+
+      # Rewrite FROM to use the GHCR base image
+      - name: Patch Dockerfile base image
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          sed -i "s|^FROM lobmob-base|FROM ${IMAGE_PREFIX}-base:${BRANCH}|" containers/lobster/Dockerfile
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: containers/lobster/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -20,7 +20,8 @@ COPY src/common/ /app/common/
 COPY skills/lobboss/ /app/skills/
 
 # Cron scripts (used by k8s CronJobs — packaged here for image reuse)
-COPY scripts/server/lobmob-task-manager.sh \
+COPY scripts/server/container-env.sh \
+     scripts/server/lobmob-task-manager.sh \
      scripts/server/lobmob-watchdog.sh \
      scripts/server/lobmob-review-prs.sh \
      scripts/server/lobmob-status-reporter.sh \
