@@ -711,6 +711,115 @@ These were resolved during research review and should be treated as settled:
 
 10. **Unity Editor licensing** — Unity headless builds on Linux require a license. Need to handle activation in the container (CI license, floating license, or serial number via k8s Secret).
 
+## Agent Swarm Operational Concerns
+
+Areas where running AI agents differs from traditional container workloads. These informed additions to the migration plan.
+
+### Cost Management
+
+Real-world numbers matter here. A 30-minute Opus coding task (~500K input + ~100K output tokens) costs roughly **$5**. A 90-minute complex task can hit **$15-25**. Multi-agent systems use ~15x more tokens than chat interactions (Anthropic research). Budget 5x your estimates.
+
+**Required controls:**
+- **Model routing by complexity** — Haiku for simple subtasks (status checks, formatting), Sonnet for medium (code review, test writing), Opus only for complex implementation. Single highest-leverage optimization.
+- **Token budgets per task** — hard cap. At 80% budget, force commit of partial work. At 95%, terminate and escalate.
+- **Prompt caching** — system prompt + skills are identical across invocations. Anthropic caching gives 90% savings on repeated prefix content.
+- **Cost attribution** — track tokens per task, per model, per agent. You need to answer "what did this $5 task accomplish?"
+
+### Observability
+
+Traditional infra monitoring (CPU, memory, uptime) is insufficient. Agent observability requires tracking **reasoning quality**.
+
+**What to log per action:**
+- Every LLM call: prompt hash, token counts (in/out), latency, model
+- Every tool invocation: tool name, arguments, return value, duration
+- Task-level: success/failure, total duration, total cost, number of LLM round-trips
+- Session-level: context window utilization (% full), compaction events
+
+**Fleet-level metrics:**
+- Cost per task by type (code vs research vs QA)
+- Task success rate by type and model
+- Token waste ratio (failed/retried attempts vs successful completion)
+- Mean time to complete by complexity
+
+**Tooling**: [Langfuse](https://langfuse.com) (open-source, OpenTelemetry-compatible) is the strongest fit. Self-hostable, custom trace attributes, pipe data from both lobboss and lobsters. At minimum, structured JSON logs with the fields above.
+
+### Context Window Management
+
+Context rot is real — as the window fills, model performance degrades as a gradient, not a cliff.
+
+**Lobboss (long-running):**
+- **Session rotation every 2-4 hours** or when context hits ~60% capacity
+- Before rotating: serialize active state (open tasks, pending confirmations, thread mappings) to vault file
+- Start fresh session with the state summary
+- Don't try to keep one session alive all day
+
+**Lobsters (ephemeral but complex tasks):**
+- **Commit after each logical unit** — creates recovery points, reduces context pressure
+- **Progress file pattern** (Anthropic recommendation): write structured JSON tracking what's done/remaining. Next session reads it to resume.
+- **Pre-feature validation** — before starting next unit, run basic tests to catch broken state from previous work
+
+### Agent Safety
+
+**Rule of Two** (Meta AI): An agent should satisfy at most two of: (A) processes untrusted input, (B) has access to secrets, (C) can change state. Our lobsters currently violate this — they process task files (A), hold GitHub tokens (B), and push code (C).
+
+**Mitigations:**
+- **Credential scoping** — GitHub tokens per-repo, short-lived (already doing hourly refresh). Never admin access.
+- **Network segmentation** — workers only reach: Anthropic API, GitHub, manager node. Block everything else.
+- **Read-only phases** — during PR review (QA lobster reading untrusted code), revoke write access temporarily
+- **Egress logging** — log all outbound connections. Alert on unexpected destinations.
+- **Filesystem restrictions** — workspace read-write, everything else read-only. Block `/etc`, secrets directories.
+
+### Prompt Injection
+
+Real risk for agent-to-agent communication. If a task file or PR contains adversarial content, the processing agent could be manipulated. No single defense works — Anthropic/OpenAI/DeepMind joint paper found human red-teamers defeated ALL 12 published defenses.
+
+**Defense in depth:**
+- Structured task format (YAML frontmatter + constrained fields) rather than freeform prose in critical sections
+- QA agents should NOT have push access to main/develop — their output is a verdict (pass/fail), not code changes
+- Manager validates QA output before acting on it
+- Output schema enforcement — agents produce structured results, not freeform text, for inter-agent communication
+
+### Recovery Semantics
+
+Agents crash mid-task and leave partial state. Unlike atomic web requests, an agent might have created a branch, written 3 files, committed 2, and died before pushing.
+
+**Required patterns:**
+- **Push early and often** — don't accumulate unpushed work. Create draft PRs at task start.
+- **Idempotent task assignment** — assigning the same task twice should not create duplicate branches
+- **Compensation over rollback** — true rollback is nearly impossible. On retry: detect existing branch, assess state via git log, continue or abandon.
+- **Treat timeouts as uncertainty** — query state before retrying. The action may have succeeded.
+- **Retry budget** — 3 for API calls (exponential backoff + jitter), 2 for full task retries. Then escalate.
+
+### Agent Coordination
+
+- **Branch-per-task isolation** (already our pattern) prevents most merge conflicts
+- **File-scope awareness in task assignment** — if worker A is modifying `auth.py`, don't assign worker B a task that also touches `auth.py`
+- **Timeouts on all blocking operations** — prevents deadlocks (task A waits for review, reviewer waits for task B, task B depends on A's merge)
+- **Priority preemption** — manager can signal low-priority workers to commit-and-stop when urgent tasks arrive
+
+### Testing Non-Deterministic Agents
+
+- **Reference task suite** — 10-20 tasks with known-good outcomes. Run after any skill/prompt change.
+- **Separate deterministic from non-deterministic checks** — "did the code compile?" (binary) vs "is the approach good?" (LLM-as-judge)
+- **Soft failure thresholds** — scores 0.5-0.8 trigger warnings, not blocks. Only <0.5 is hard failure.
+- **Step efficiency metric** — not just "did it complete?" but "how many tool calls did it take vs optimal?"
+
+### Graceful Degradation
+
+- **Health checks before task assignment** — verify Anthropic API, GitHub, DO all respond before spawning workers
+- **Circuit breakers** on all external API calls with exponential backoff
+- **API outage**: workers die (fine, they're ephemeral). Manager marks tasks as `stalled`, not `failed`. Retries with backoff.
+- **Discord outage**: manager continues processing existing tasks autonomously. Secondary notification channel for critical escalations.
+- **GitHub outage**: workers cache git state locally, retry pushes. Manager pauses new assignments. Most disruptive scenario — vault access and PR creation both blocked.
+
+### Agent Versioning
+
+Our ephemeral worker model naturally handles this:
+- Workers get skills at spawn time (baked into container image)
+- In-flight workers unaffected by skill updates
+- New workers get new skills
+- **Canary testing**: spawn one worker in dev with new skills, run reference tasks, compare to baseline before promoting
+
 ## References
 
 ### Claude Agent SDK
@@ -732,6 +841,17 @@ These were resolved during research review and should be treated as settled:
 - [App Platform Limits](https://docs.digitalocean.com/products/app-platform/details/limits/) — 30-min job timeout
 - [Functions Limits](https://docs.digitalocean.com/products/functions/details/limits/) — 15-min timeout
 - [Droplet Pricing](https://docs.digitalocean.com/products/droplets/details/pricing/)
+
+### Agent Operations
+- [Anthropic Multi-Agent Research](https://www.anthropic.com/engineering/multi-agent-research-system)
+- [Anthropic Context Engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
+- [Anthropic Effective Harnesses for Long-Running Agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents)
+- [Meta AI: Agents Rule of Two](https://ai.meta.com/blog/practical-ai-agent-security/)
+- [OWASP AI Agent Security Top 10](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
+- [Langfuse Observability](https://langfuse.com/docs/observability/overview)
+- [Error Handling in Agentic Systems](https://agentsarcade.com/blog/error-handling-agentic-systems-retries-rollbacks-graceful-failure)
+- [Testing Non-Deterministic AI Agents](https://datagrid.com/blog/4-frameworks-test-non-deterministic-ai-agents)
+- [Agent Sandbox for Kubernetes](https://www.infoq.com/news/2025/12/agent-sandbox-kubernetes/)
 
 ### Other Frameworks (evaluated, not selected)
 - [Pydantic AI](https://ai.pydantic.dev/)

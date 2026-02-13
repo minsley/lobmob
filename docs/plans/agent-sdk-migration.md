@@ -221,7 +221,48 @@ Build the discord.py bot and Agent SDK integration. Test locally.
 - Define hooks in agent configuration, not in system prompt prose
 - Test: trigger a dangerous command scenario, verify hook blocks it
 
-### 1.9 Local integration test: full lobboss flow [HA]
+### 1.9 Build structured logging and cost tracking [A]
+
+**Input**: Task 1.3 complete
+**Output**: `src/common/logging.py` — structured JSON logging for all agent activity
+
+- Log every LLM call: model, token counts (input/output), latency, session_id, task_id
+- Log every tool invocation: tool name, arguments (sanitized — strip secrets), return summary, duration
+- Log task-level aggregates: total tokens, total cost (calculated from model pricing), total round-trips, outcome
+- Cost calculation: maintain a pricing table (Opus: $5/$25 per M, Sonnet: $3/$15, Haiku: $0.80/$4). Compute cost per task.
+- Write to stdout as JSON (captured by k8s pod logs, queryable with `kubectl logs | jq`)
+- Optional: Langfuse integration via OpenTelemetry (add behind a feature flag, not required for Phase 1)
+- Token budget support: configurable max tokens per task. Log warnings at 80%, errors at 95%.
+
+### 1.10 Implement session rotation for lobboss [A]
+
+**Input**: Tasks 1.2, 1.3, 2.3 complete
+**Output**: Lobboss automatically rotates Agent SDK sessions to prevent context rot
+
+- Track session age and estimated context usage per thread
+- When a session hits 60% context capacity OR 2 hours age:
+  1. Serialize active state to vault: open tasks, pending confirmations, thread-to-session map
+  2. Close the old Agent SDK session
+  3. Start a new session with a state summary injected as the first message
+- State summary format: structured markdown with active threads, pending tasks, recent decisions
+- Session-to-thread mapping persists in memory (or SQLite for crash resilience)
+- Log rotation events with before/after context sizes
+
+### 1.11 Add health checks for external dependencies [A]
+
+**Input**: Task 1.3 complete
+**Output**: Health check module used before task assignment and as k8s liveness probe
+
+- `src/common/health.py`:
+  - `check_anthropic()` — lightweight API call (e.g., count tokens on a short string)
+  - `check_github()` — `gh api /rate_limit` or equivalent
+  - `check_discord()` — bot.is_ready() and latency check
+- Used in two places:
+  1. Before `spawn_lobster` — if any dependency is down, skip assignment and log warning
+  2. As HTTP endpoint for k8s liveness/readiness probes (add a minimal HTTP server or use discord.py's built-in)
+- Circuit breaker pattern: after 3 consecutive failures on a dependency, stop attempting tasks for 5 minutes. Log escalation to Discord.
+
+### 1.12 Local integration test: full lobboss flow [HA]
 
 **Input**: All Phase 1 tasks complete
 **Output**: Lobboss bot running locally via docker-compose, handling a complete interaction
@@ -232,6 +273,8 @@ Build the discord.py bot and Agent SDK integration. Test locally.
 - Verify: dedup works (re-sending same message doesn't produce duplicate responses)
 - Verify: thread context persists (follow-up messages in thread maintain conversation)
 - Verify: agent uses skills correctly (task-create skill is followed)
+- Verify: structured logs show token counts and cost per interaction
+- Verify: health checks pass and are logged
 - Document any issues found, create follow-up tasks
 
 ---
@@ -245,14 +288,17 @@ Build the ephemeral lobster agent. Test locally.
 **Input**: Phase 0 complete (Dockerfile exists)
 **Output**: `src/lobster/run_task.py` — CLI that reads a task file and executes it via Agent SDK
 
-- Parse CLI args: `--task <task-id>`, `--type <swe|qa|research>`, `--vault-path <path>`
+- Parse CLI args: `--task <task-id>`, `--type <swe|qa|research>`, `--vault-path <path>`, `--token-budget <max-tokens>`
 - Load task file from vault: `<vault-path>/010-tasks/active/<task-id>.md`
 - Parse YAML frontmatter to get task metadata (type, model, repo, etc.)
 - Select model based on type: `opus` for swe, `sonnet` for qa/research
 - Load appropriate skills based on type: `code-task` for swe, `verify-task` for qa, `task-execute` for research
-- Build system prompt from `openclaw/lobster[-swe|-qa]/AGENTS.md` persona content
+- Build system prompt from lobster persona content
+- **Token budget**: default 500K tokens for research/QA, 1M for SWE. At 80%, log warning. At 95%, force agent to commit partial work and exit.
+- **Recovery**: on startup, check if a branch already exists for this task (previous failed attempt). If so, check it out and continue from last commit instead of starting fresh.
+- **Early push**: create draft PR after first meaningful commit. Push after every logical unit. Don't accumulate unpushed work.
+- Use structured logging from `src/common/logging.py` — all output as JSON to stdout
 - Call `query()` with task description + skill instructions as prompt
-- Stream output, log to stdout (captured by k8s pod logs)
 - Exit with code 0 on success, 1 on failure
 - Test: `python -m lobster.run_task --task test-task --type research --vault-path ./vault-dev`
 
@@ -280,15 +326,28 @@ Build the ephemeral lobster agent. Test locally.
 - Handle git conflicts gracefully (pull before push, retry once)
 - Test with a local vault clone
 
-### 2.4 Local integration test: lobster executes a task [HA]
+### 2.4 Lobster credential scoping and safety hooks [A]
 
-**Input**: Tasks 2.1, 2.2, 2.3 complete
+**Input**: Task 2.1 complete
+**Output**: Lobster agents have minimal required permissions
+
+- **GitHub token scoping**: lobster gets a token scoped to the target repo only, not org-wide. Write access to feature branches, read access to develop/main.
+- **QA lobster restrictions**: verify-task type gets read-only repo access. Cannot push code, only read diffs and run tests. Output is structured verdict (pass/fail + reasons), not code changes.
+- **Filesystem restrictions**: workspace and /tmp are writable. /app, /etc, secrets mounts are read-only.
+- **Network policy** (k8s): lobster pods can reach only Anthropic API (api.anthropic.com), GitHub (github.com, api.github.com), and DNS. All other egress blocked.
+- Hooks: `PreToolUse(Bash)` blocks `curl` to non-allowlisted domains, `rm -rf /`, `env` (prevents secret dumping), etc.
+
+### 2.5 Local integration test: lobster executes a task [HA]
+
+**Input**: Tasks 2.1, 2.2, 2.3, 2.4 complete
 **Output**: Lobster container runs locally, reads a task from vault, produces work
 
 - Create a test task file in `vault-dev/010-tasks/active/`
 - Run: `docker-compose run lobster --task <test-task-id> --type research`
 - Verify: lobster reads the task, executes it using Agent SDK, writes results to vault
-- For SWE type: verify it creates a branch, makes commits, creates a PR
+- For SWE type: verify it creates a branch, makes commits, creates a draft PR early, pushes incrementally
+- Verify: structured logs show token usage and cost
+- Verify: recovery works — kill the container mid-task, restart, verify it picks up from last commit
 - Document any issues found
 
 ---
@@ -521,7 +580,27 @@ Migrate production from OpenClaw on Droplets to Agent SDK on DOKS.
 - Archive OpenClaw-specific docs (don't delete, move to `docs/archive/`)
 - Update `tests/` smoke tests for the new deployment model
 
-### 5.3 Update MEMORY.md [A]
+### 5.3 Build reference task suite [A]
+
+**Input**: Phase 4 complete (system works end-to-end)
+**Output**: 10-20 reference tasks with known-good outcomes for regression testing
+
+- Create `tests/reference-tasks/` directory
+- Write 10-20 task files covering:
+  - Simple research task (Sonnet, ~5 min, should produce a knowledge page)
+  - Simple code task (Opus, ~15 min, should produce a PR with tests)
+  - QA review task (Sonnet, ~10 min, should produce pass/fail verdict)
+  - Edge cases: empty repo, failing tests, ambiguous requirements
+- For each task, document expected outcomes: files created, PR structure, vault updates
+- Write `tests/run-reference-suite.sh`:
+  - Creates tasks in dev vault
+  - Waits for completion (poll task status)
+  - Checks outcomes against expected patterns (deterministic: did it compile? did tests pass? did PR get created?)
+  - Reports pass/fail per task, aggregate success rate
+- Target: 80%+ pass rate on the suite (not 100% — non-determinism is expected)
+- Run this suite after any skill or prompt change before deploying to prod
+
+### 5.4 Update MEMORY.md [A]
 
 **Input**: Phase 4 complete
 **Output**: Memory files reflect the new architecture, remove stale OpenClaw entries
@@ -547,14 +626,17 @@ Phase 1 (lobboss, depends on Phase 0)
   1.1 ─→ 1.3
   1.2 ─→ 1.3 ─→ 1.4 ─→ 1.5
               │        ─→ 1.6
-              └─→ 1.8
+              ├─→ 1.8
+              ├─→ 1.9
+              └─→ 1.11
   1.7 (parallel with 1.1-1.6)
-  1.9 (depends on all of Phase 1)
+  1.10 (depends on 1.2, 1.3, 2.3)
+  1.12 (depends on all of Phase 1)
 
 Phase 2 (lobster, depends on Phase 0)
-  2.1 ─→ 2.4
-  2.2 ─→ 2.4
-  2.3 ─→ 2.4
+  2.1 ─→ 2.4 ─→ 2.5
+  2.2 ─→ 2.5
+  2.3 ─→ 2.5
 
 Phase 3 (DOKS, depends on Phase 0; Phases 1-2 can run in parallel)
   3.1 ─→ 3.2 ─→ 3.4 ─→ 3.7
@@ -568,7 +650,7 @@ Phase 4 (prod, depends on Phase 3)
   4.1 ─→ 4.2 ─→ 4.3 ─→ 4.4
 
 Phase 5 (cleanup, depends on Phase 4)
-  5.1, 5.2, 5.3 (parallel)
+  5.1, 5.2, 5.3, 5.4 (parallel)
 ```
 
 ## Critical Path
@@ -576,7 +658,7 @@ Phase 5 (cleanup, depends on Phase 4)
 The minimum serial path to production:
 
 ```
-0.1 → 0.2 → 0.3 → 1.1 → 1.2 → 1.3 → 1.4 → 1.9 → 3.1 → 3.2 → 3.5 → 3.9 → 3.10 → 4.1 → 4.2 → 4.3
+0.1 → 0.2 → 0.3 → 1.1 → 1.2 → 1.3 → 1.4 → 1.9 → 1.12 → 3.1 → 3.2 → 3.5 → 3.9 → 3.10 → 4.1 → 4.2 → 4.3
 ```
 
 Phases 1 and 2 can run in parallel. Phase 3 infra (3.1) can start as soon as Phase 0 is done. The bottleneck is the lobboss agent integration (Phase 1) — that's the most complex new code.
@@ -585,10 +667,18 @@ Phases 1 and 2 can run in parallel. Phase 3 infra (3.1) can start as soon as Pha
 
 | Risk | Mitigation |
 |---|---|
-| Agent SDK cold start too slow | Use streaming input mode for lobboss (keep warm). Lobsters accept cold start. |
-| Agent SDK subprocess instability | Direct Anthropic API fallback is documented in research. Could swap agent.py implementation without changing bot.py. |
-| DOKS node autoscaler too slow | Pre-pull lobster images via DaemonSet. Accept 1-3 min cold start for new nodes. |
-| Skills don't load correctly | Test in Phase 1.9 and 2.4. Skills are markdown files — easy to iterate. |
-| Cron scripts break in container | Minimal changes in 3.7. Each script tested individually. Rollback = old droplet still running. |
-| Vault PVC contention | Only lobboss + CronJobs write to vault. Lobsters clone their own copy. No concurrent writes. |
-| Discord bot disconnects | discord.py has built-in reconnection. Add healthcheck in k8s liveness probe. |
+| **Agent SDK cold start too slow** | Use streaming input mode for lobboss (keep warm). Lobsters accept cold start. |
+| **Agent SDK subprocess instability** | Direct Anthropic API fallback is documented in research. Could swap agent.py without changing bot.py. |
+| **DOKS node autoscaler too slow** | Pre-pull lobster images via DaemonSet. Accept 1-3 min cold start for new nodes. |
+| **Skills don't load correctly** | Test in Phase 1.12 and 2.5. Skills are markdown — easy to iterate. |
+| **Cron scripts break in container** | Minimal changes in 3.7. Each script tested individually. Rollback = old droplet still running. |
+| **Vault PVC contention** | Only lobboss + CronJobs write to vault. Lobsters clone their own copy. No concurrent writes. |
+| **Discord bot disconnects** | discord.py has built-in reconnection. k8s liveness probe restarts pod if stuck. |
+| **API cost overrun** | Token budgets per task (1.9). Cost tracking in structured logs. Model routing (Haiku/Sonnet/Opus by complexity). Budget 5x estimates. |
+| **Context rot on lobboss** | Session rotation every 2-4h or at 60% capacity (1.10). State serialized to vault before rotation. |
+| **Lobster crash mid-task** | Recovery from last commit (2.1). Draft PR created early. Push after every logical unit. Idempotent task assignment. |
+| **Prompt injection via task content** | Structured task format. QA lobsters read-only (2.4). Output schema enforcement. Manager validates before acting. |
+| **Secret exfiltration** | Credential scoping (2.4). Network policy blocks egress except allowlisted hosts. Hooks block `env`, `curl` to unknown domains. |
+| **Agent coordination conflicts** | Branch-per-task isolation. File-scope awareness in task assignment (future). Timeouts on all blocking operations. |
+| **Anthropic API outage** | Health checks (1.11). Circuit breaker pauses new assignments. Workers marked `stalled` not `failed`. Backoff + retry. |
+| **Skill/prompt regression** | Reference task suite (5.3). Run in dev after any change. 80%+ pass rate required for promotion. |
