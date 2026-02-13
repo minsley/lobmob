@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Any
 
+from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ToolPermissionContext
+
 logger = logging.getLogger("lobster.hooks")
 
 # Commands blocked for ALL lobster types
@@ -65,23 +67,27 @@ def create_tool_checker(lobster_type: str):
     """Create a can_use_tool callback for the given lobster type."""
     blocked_re = BLOCKED_RE_QA if lobster_type == "qa" else BLOCKED_RE_ALL
 
-    async def check_tool(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
+    async def check_tool(
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: ToolPermissionContext,
+    ) -> PermissionResultAllow | PermissionResultDeny:
         if tool_name != "Bash":
-            return None
+            return PermissionResultAllow()
 
         command = tool_input.get("command", "")
 
         # Check blocked commands
         if blocked_re.search(command):
             logger.warning("BLOCKED command for %s lobster: %s", lobster_type, command[:200])
-            return {"decision": "block", "reason": f"Command blocked by {lobster_type} safety hook"}
+            return PermissionResultDeny(message=f"Command blocked by {lobster_type} safety hook")
 
         # Check network access
         block_reason = _check_network_access(command)
         if block_reason:
             logger.warning("BLOCKED network access: %s", command[:200])
-            return {"decision": "block", "reason": block_reason}
+            return PermissionResultDeny(message=block_reason)
 
-        return None
+        return PermissionResultAllow()
 
     return check_tool

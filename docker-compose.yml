@@ -22,4 +22,8 @@ services:
       - LOBSTER_TYPE=${LOBSTER_TYPE:-research}
     volumes:
       - ./vault-dev:/opt/vault
+      - lobster-workspace:/workspace
     profiles: ["testing"]
+
+volumes:
+  lobster-workspace:

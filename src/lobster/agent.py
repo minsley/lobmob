@@ -2,7 +2,9 @@
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -16,6 +18,17 @@ from lobster.config import LobsterConfig
 from lobster.hooks import create_tool_checker
 
 logger = logging.getLogger("lobster.agent")
+
+
+async def _as_stream(prompt: str) -> AsyncIterator[dict[str, Any]]:
+    """Wrap a string prompt as an async iterable of message dicts.
+
+    Required when using can_use_tool with the one-shot query() function.
+    """
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": prompt},
+    }
 
 MODEL_MAP = {
     "opus": "claude-opus-4-6",
@@ -61,11 +74,12 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         system_prompt=system_prompt,
         model=model,
         allowed_tools=allowed_tools,
-        permission_mode="bypassPermissions",
+        permission_mode="acceptEdits",
         max_turns=50,
         max_budget_usd=10.0,
         cwd=os.environ.get("WORKSPACE", "/workspace"),
         can_use_tool=create_tool_checker(config.lobster_type),
+        stderr=lambda line: logger.debug("CLI: %s", line.rstrip()),
     )
 
     result = {
@@ -79,7 +93,7 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
     }
 
     try:
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=_as_stream(prompt), options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):

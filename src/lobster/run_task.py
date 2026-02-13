@@ -37,12 +37,11 @@ async def main_async() -> int:
 
     logger.info("Starting lobster: task=%s type=%s model=%s", config.task_id, config.lobster_type, config.model)
 
-    # Pull latest vault
+    # Pull latest vault (non-fatal — vault may be bind-mounted in local dev)
     try:
         await pull_vault(config.vault_path)
     except Exception:
-        logger.exception("Failed to pull vault")
-        return 1
+        logger.warning("Failed to pull vault (continuing with local copy): %s", config.vault_path)
 
     # Read task file
     try:
