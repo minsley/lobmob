@@ -23,6 +23,8 @@ spec:
           nodeSelector:
             lobmob.io/role: lobboss
           restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull-secret
           containers:
             - name: task-manager
               image: ghcr.io/minsley/lobmob-lobboss:latest
@@ -61,6 +63,8 @@ spec:
           nodeSelector:
             lobmob.io/role: lobboss
           restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull-secret
           containers:
             - name: watchdog
               image: ghcr.io/minsley/lobmob-lobboss:latest
@@ -99,6 +103,8 @@ spec:
           nodeSelector:
             lobmob.io/role: lobboss
           restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull-secret
           containers:
             - name: review-prs
               image: ghcr.io/minsley/lobmob-lobboss:latest
@@ -137,6 +143,8 @@ spec:
           nodeSelector:
             lobmob.io/role: lobboss
           restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull-secret
           containers:
             - name: status-reporter
               image: ghcr.io/minsley/lobmob-lobboss:latest
@@ -175,6 +183,8 @@ spec:
           nodeSelector:
             lobmob.io/role: lobboss
           restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull-secret
           containers:
             - name: gh-token-refresh
               image: ghcr.io/minsley/lobmob-lobboss:latest
@@ -213,6 +223,8 @@ spec:
           nodeSelector:
             lobmob.io/role: lobboss
           restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull-secret
           containers:
             - name: flush-logs
               image: ghcr.io/minsley/lobmob-lobboss:latest
