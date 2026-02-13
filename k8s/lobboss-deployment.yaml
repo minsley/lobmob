@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lobboss
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobboss
+    app.kubernetes.io/part-of: lobmob
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # only one lobboss at a time (vault PVC is RWO)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lobboss
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lobboss
+        app.kubernetes.io/part-of: lobmob
+    spec:
+      nodeSelector:
+        lobmob.io/role: lobboss
+      serviceAccountName: lobboss
+      # Init container: clone or pull the vault repo
+      initContainers:
+        - name: vault-init
+          image: alpine/git:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              if [ -d /opt/vault/.git ]; then
+                cd /opt/vault && git pull origin main || true
+              else
+                git clone "https://x-access-token:$(cat /run/secrets/gh-token)@github.com/${VAULT_REPO}.git" /opt/vault
+              fi
+          env:
+            - name: VAULT_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: lobboss-config
+                  key: vault_repo
+          volumeMounts:
+            - name: vault
+              mountPath: /opt/vault
+            - name: gh-token
+              mountPath: /run/secrets/gh-token
+              subPath: GH_APP_PRIVATE_KEY
+              readOnly: true
+      containers:
+        - name: lobboss
+          image: ghcr.io/minsley/lobmob-lobboss:latest
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: lobmob-secrets
+            - configMapRef:
+                name: lobboss-config
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1536Mi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: vault
+              mountPath: /opt/vault
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "from lobboss.bot import health_check; health_check()"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "from lobboss.bot import health_check; health_check()"
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 10
+      volumes:
+        - name: vault
+          persistentVolumeClaim:
+            claimName: vault-pvc
+        - name: gh-token
+          secret:
+            secretName: lobmob-secrets
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lobboss-config
+  namespace: lobmob
+data:
+  LOBMOB_ENV: "dev"
+  VAULT_REPO: "minsley/lobmob-vault-dev"
+  VAULT_PATH: "/opt/vault"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lobboss
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobboss
+    app.kubernetes.io/part-of: lobmob
+---
+# lobboss needs permissions to create/list/delete Jobs (for spawning lobsters)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lobboss-role
+  namespace: lobmob
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lobboss-rolebinding
+  namespace: lobmob
+subjects:
+  - kind: ServiceAccount
+    name: lobboss
+    namespace: lobmob
+roleRef:
+  kind: Role
+  name: lobboss-role
+  apiGroup: rbac.authorization.k8s.io
