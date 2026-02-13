@@ -9,6 +9,7 @@ import discord
 
 from lobboss.agent import LobbossAgent
 from lobboss.config import Config
+from lobboss.mcp_tools import set_bot
 
 logger = logging.getLogger("lobboss.bot")
 
@@ -31,6 +32,7 @@ class LobbossBot(discord.Client):
         self._processed: collections.deque[int] = collections.deque(maxlen=DEDUP_MAX)
         self._queue: asyncio.Queue[discord.Message] = asyncio.Queue()
         self._agent = LobbossAgent(config.agent)
+        set_bot(self)
 
     async def setup_hook(self) -> None:
         """Called after login, before the bot starts receiving events."""

@@ -13,6 +13,7 @@ from claude_agent_sdk import (
 )
 
 from lobboss.config import AgentConfig
+from lobboss.mcp_tools import lobmob_mcp
 
 logger = logging.getLogger("lobboss.agent")
 
@@ -45,7 +46,13 @@ class LobbossAgent:
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,
             model=self._resolve_model(self.config.model),
-            allowed_tools=["Read", "Edit", "Bash", "Glob", "Grep"],
+            allowed_tools=[
+                "Read", "Edit", "Bash", "Glob", "Grep",
+                "mcp__lobmob__discord_post",
+                "mcp__lobmob__spawn_lobster",
+                "mcp__lobmob__lobster_status",
+            ],
+            mcp_servers={"lobmob": lobmob_mcp},
             permission_mode="acceptEdits",
             max_turns=25,
         )
