@@ -1,0 +1,15 @@
+.git
+.github
+*.tfstate
+*.tfstate.backup
+infra/
+secrets*.env
+.env
+*.pem
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+docs/
+tests/
+vault-dev/

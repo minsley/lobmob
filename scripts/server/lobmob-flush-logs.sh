@@ -1,8 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-LOG_FILE="/var/log/lobmob-events.log"
-VAULT_DIR="/opt/vault"
+# Load config
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/container-env.sh" ]]; then
+  source "$SCRIPT_DIR/container-env.sh"
+elif [[ -f /etc/lobmob/env ]]; then
+  source /etc/lobmob/env
+fi
+
+LOG_FILE="${LOG_DIR:-/var/log}/lobmob-events.log"
+VAULT_DIR="${VAULT_PATH:-/opt/vault}"
 LOCK_FILE="/tmp/lobmob-flush.lock"
 
 # Nothing to flush
@@ -12,11 +20,6 @@ fi
 
 exec 200>"$LOCK_FILE"
 flock -n 200 || { echo "Another flush is running"; exit 0; }
-
-# Determine identity
-if [ -f /etc/lobmob/env ]; then
-  source /etc/lobmob/env
-fi
 
 if [ -n "${LOBSTER_ID:-}" ]; then
   LOG_SUBDIR="020-logs/lobsters/lobster-$LOBSTER_ID"

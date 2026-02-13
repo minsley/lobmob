@@ -1,23 +1,18 @@
+# lobmob deploy — apply Terraform + k8s manifests
+
 load_secrets
 
-log "Deploying lobboss via Terraform ($LOBMOB_ENV)..."
+log "Deploying lobmob ($LOBMOB_ENV)..."
 cd "$INFRA_DIR"
 
 # Workspace mapping: prod uses 'default' workspace (legacy), dev uses 'dev'
-if [ "$LOBMOB_ENV" = "prod" ]; then
+if [[ "$LOBMOB_ENV" == "prod" ]]; then
   terraform workspace select default 2>/dev/null || true
 else
   terraform workspace select "$LOBMOB_ENV" 2>/dev/null || terraform workspace new "$LOBMOB_ENV"
 fi
 
-# Support --replace flag for full redeploys
-REPLACE_FLAG=""
-if [ "${1:-}" = "--replace" ] || [ "${1:-}" = "--redeploy" ]; then
-  REPLACE_FLAG="-replace=digitalocean_droplet.lobboss"
-  log "Full redeploy requested — lobboss will be recreated"
-fi
-
-terraform plan -var-file="$TFVARS_FILE" $REPLACE_FLAG -out=tfplan
+terraform plan -var-file="$TFVARS_FILE" -out=tfplan
 echo ""
 read -rp "Apply this plan? [y/N] " confirm
 if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -26,22 +21,18 @@ if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
 fi
 
 terraform apply tfplan
-LOBBOSS_IP=$(terraform output -raw lobboss_ip)
-log "Lobboss droplet created at $LOBBOSS_IP"
 
-# Clear stale SSH host key (new droplet has a new key)
-ssh-keygen -R "$LOBBOSS_IP" 2>/dev/null || true
+# Apply k8s manifests
+if [[ "$LOBMOB_ENV" == "dev" ]]; then
+  KUBE_CONTEXT="do-nyc3-lobmob-dev-k8s"
+  OVERLAY="dev"
+else
+  KUBE_CONTEXT="do-nyc3-lobmob-k8s"
+  OVERLAY="prod"
+fi
 
-# Wait for SSH and cloud-init
-wait_for_ssh "$LOBBOSS_IP"
-wait_for_cloud_init "$LOBBOSS_IP"
-
-# Push secrets + deploy scripts
-log "Provisioning secrets via SSH..."
-HOST="$LOBBOSS_IP"
-source "$SCRIPT_DIR/commands/provision-secrets-to.sh"
+log "Applying k8s manifests (overlay=$OVERLAY)..."
+kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/$OVERLAY/"
 
 log ""
-log "Lobboss fully deployed and provisioned at $LOBBOSS_IP"
-log "  SSH:    lobmob ssh-lobboss"
-log "  Status: lobmob status"
+log "Deployed. Check status with: lobmob status"

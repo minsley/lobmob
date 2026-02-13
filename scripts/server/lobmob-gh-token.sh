@@ -2,11 +2,16 @@
 set -euo pipefail
 
 # Load config
-if [ -f /etc/lobmob/env ]; then source /etc/lobmob/env; fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/container-env.sh" ]]; then
+  source "$SCRIPT_DIR/container-env.sh"
+elif [[ -f /etc/lobmob/env ]]; then
+  source /etc/lobmob/env
+fi
 
 APP_ID="${GH_APP_ID:-}"
 INSTALL_ID="${GH_APP_INSTALL_ID:-}"
-PEM_FILE="${GH_APP_PEM:-/etc/lobmob/gh-app.pem}"
+PEM_FILE="${GH_APP_PEM:-${GH_APP_PEM_PATH:-/etc/lobmob/gh-app.pem}}"
 
 if [ -z "$APP_ID" ] || [ -z "$INSTALL_ID" ] || [ ! -f "$PEM_FILE" ]; then
   exit 1

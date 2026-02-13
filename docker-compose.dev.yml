@@ -1,0 +1,15 @@
+# Dev overrides: bind-mount source for live reload
+services:
+  lobboss:
+    volumes:
+      - ./src/lobboss:/app/lobboss:ro
+      - ./src/common:/app/common:ro
+      - ./skills/lobboss:/app/skills:ro
+      - ./vault-dev:/opt/vault
+
+  lobster:
+    volumes:
+      - ./src/lobster:/app/lobster:ro
+      - ./src/common:/app/common:ro
+      - ./skills/lobster:/app/skills:ro
+      - ./vault-dev:/opt/vault

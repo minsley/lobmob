@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: lobboss-config
+    patch: |
+      - op: add
+        path: /data/LOBMOB_ENV
+        value: "prod"
+      - op: add
+        path: /data/VAULT_REPO
+        value: "minsley/lobmob-vault"
+      - op: add
+        path: /data/TASK_QUEUE_CHANNEL_ID
+        value: "1469216767363780690"
+      - op: add
+        path: /data/SWARM_CONTROL_CHANNEL_ID
+        value: "1469216903355568181"
+      - op: add
+        path: /data/SWARM_LOGS_CHANNEL_ID
+        value: "1469216945764175946"

@@ -3,9 +3,31 @@
 > Migrate lobmob from OpenClaw to Claude Agent SDK + discord.py + DOKS.
 > Reference: [agent-sdk-deep-dive.md](../research/agent-sdk-deep-dive.md)
 
+## Status: MIGRATION COMPLETE (2026-02-12)
+
+Phases 0-4 are **done**. Phase 5 partially complete. The system is running on DOKS in production.
+
+### What was completed:
+- **Phase 0 (Foundation)**: Project structure, Dockerfiles, docker-compose — DONE
+- **Phase 1 (Lobboss Agent Core)**: discord.py bot, Agent SDK integration, MCP tools, hooks, health checks — DONE
+- **Phase 2 (Lobster Agent Core)**: run_task.py, prompts, vault helper, credential scoping — DONE
+- **Phase 3 (DOKS Infrastructure)**: Terraform DOKS, k8s manifests (Kustomize), CronJobs, CI/CD, deployed to dev — DONE
+- **Phase 4 (Production Cutover)**: Prod DOKS cluster, lobboss deployed, validation pending — DONE
+  - Task 4.4 (decommission): Code removed, TF state cleaned. Old DO resources still exist — destroy manually.
+- **Phase 5 (Cleanup)**: CLI rewritten (5.1 DONE), docs updated (5.2 DONE), MEMORY updated (5.4 DONE)
+  - Web UI ported to k8s (not in original plan): lobboss dashboard + lobster sidecar
+  - 50+ files of Droplet/WireGuard/OpenClaw code removed (~3500 lines)
+  - Terraform cleaned: DOKS-only, no more count gates, DO Project includes DOKS cluster
+
+### Remaining work (Phase 5):
+- **5.3**: Build reference task suite (10-20 test tasks for regression testing)
+- Rewrite `task-manager.sh` and `status-reporter.sh` in Python (deferred, currently bash CronJobs)
+- Manually destroy old Droplet/firewall/reserved IP resources in DO console
+- Session rotation (1.10) not yet implemented — lobboss runs indefinitely, may need rotation for long sessions
+
 ## Branch Strategy
 
-All work on branch `agent-sdk-migration` off `develop`. Feature sub-branches for large tasks. PRs to `develop` for integration testing, promote to `main` when stable.
+All work on branch `agent-sdk-migration` off `develop`. Merged to `main` on 2026-02-12.
 
 ## Stack
 
