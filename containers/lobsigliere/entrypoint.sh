@@ -33,6 +33,17 @@ if [[ -n "${GIT_USER_EMAIL:-}" ]]; then
     su - engineer -c "git config --global user.email '${GIT_USER_EMAIL}'"
 fi
 
+# Clone lobmob repo into engineer's home (persistent on PVC)
+LOBMOB_REPO="/home/engineer/lobmob"
+if [[ -d "$LOBMOB_REPO/.git" ]]; then
+    echo "Updating lobmob repo..."
+    su - engineer -c "cd '$LOBMOB_REPO' && git fetch origin && git pull origin develop --rebase" || true
+else
+    echo "Cloning lobmob repo..."
+    su - engineer -c "git clone 'https://x-access-token:${GH_TOKEN:-${GH_APP_PRIVATE_KEY:-}}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'"
+    su - engineer -c "cd '$LOBMOB_REPO' && git checkout develop"
+fi
+
 # Set up .bashrc with lobmob environment (idempotent)
 if ! grep -q "lobmob environment" /home/engineer/.bashrc 2>/dev/null; then
 # Interpolated section (bake in current env values)
@@ -42,11 +53,13 @@ cat >> /home/engineer/.bashrc <<ENVBLOCK
 export LOBMOB_ENV="${LOBMOB_ENV:-dev}"
 export KUBERNETES_SERVICE_HOST="${KUBERNETES_SERVICE_HOST:-}"
 export KUBERNETES_SERVICE_PORT="${KUBERNETES_SERVICE_PORT:-443}"
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+export GH_TOKEN="${GH_TOKEN:-${GH_APP_PRIVATE_KEY:-}}"
 ENVBLOCK
 
 # Literal section (no interpolation)
 cat >> /home/engineer/.bashrc <<'BASHRC'
-export PATH="/opt/lobmob/scripts:${PATH}"
+export PATH="/opt/lobmob/scripts:${HOME}/lobmob/scripts:${PATH}"
 
 alias k="kubectl"
 alias kn="kubectl -n lobmob"
@@ -56,6 +69,8 @@ alias kj="kubectl -n lobmob get jobs"
 
 echo "lobsigliere — lobmob remote operations console"
 echo "  env:       ${LOBMOB_ENV}"
+echo "  repo:      ~/lobmob ($(cd ~/lobmob && git branch --show-current 2>/dev/null || echo '?'))"
+echo "  claude:    $(test -n "$ANTHROPIC_API_KEY" && echo 'API key set' || echo 'no API key')"
 echo "  kubectl:   $(kubectl version --client --short 2>/dev/null || kubectl version --client 2>&1 | head -1)"
 echo "  terraform: $(terraform version 2>&1 | head -1)"
 echo ""
