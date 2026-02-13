@@ -284,6 +284,40 @@ Non-Claude capabilities integrated as MCP tools. Claude reasons about *what* to 
 
 These are added incrementally as needed, not upfront. The MCP tool pattern means any API-accessible model capability can be exposed to the agent without changing the framework. Each tool is a thin Python function wrapping an API call — the agent never needs to "be" the other model, just call it.
 
+### Skills vs MCP Tools
+
+These are complementary, not competing:
+
+**Skills** = instructions the agent reads and follows. Markdown documents loaded into context. The agent interprets them and executes multi-step workflows using its built-in tools and MCP tools.
+
+- Flexible — agent can reason, adapt to edge cases, handle unexpected situations
+- Consume context window (loaded into the prompt)
+- Easy to write (markdown), easy to iterate on
+- Less deterministic (agent might misinterpret or skip steps)
+
+**MCP tools** = capabilities the agent invokes. Python functions with typed inputs and structured outputs. The agent calls them, code runs, result comes back.
+
+- Deterministic — code runs exactly the same every time
+- Don't consume context window (just the tool schema definition)
+- Require code to implement
+- More reliable for atomic operations
+
+**Rule of thumb**: skills for workflows that need reasoning, MCP tools for atomic operations that need reliability. Skills can (and should) call MCP tools as part of their steps.
+
+| Component | Type | Why |
+|---|---|---|
+| `task-create` | Skill | Multi-step with judgment (is this a real task? what priority? what type?) |
+| `code-task` | Skill | Complex workflow, agent reasons about code, tests, edge cases |
+| `review-prs` | Skill | Requires judgment (security, code quality, acceptance criteria) |
+| `verify-task` | Skill | QA assessment, subjective evaluation |
+| `ssh_exec` | MCP tool | Atomic, deterministic, no judgment needed |
+| `discord_post` | MCP tool | Atomic, just send a message |
+| `image_generate` | MCP tool | Thin wrapper around external API |
+| `vault_commit` | MCP tool | Atomic git add/commit/push cycle |
+| `spawn-lobster` | Skill → MCP tool | Start as skill for flexibility; convert to MCP tool once the procedure stabilizes and reliability matters more |
+
+Skills that call MCP tools get the best of both worlds — flexible reasoning at the workflow level, reliable execution at the operation level. Example: the `task-create` skill says "post the proposal to Discord" and the agent calls the `discord_post` MCP tool to do it deterministically.
+
 ### Hooks
 
 Replace the "CRITICAL RULES" in AGENTS.md that OpenClaw ignored:
@@ -293,28 +327,132 @@ Replace the "CRITICAL RULES" in AGENTS.md that OpenClaw ignored:
 - **Stop**: Verify response will be posted to correct thread
 - **SessionStart**: Load relevant skill based on channel/context
 
+## Container-Based Dev/Deploy
+
+### The Problem with the Current Loop
+
+Edit scripts locally → SCP to droplet → test on droplet → observe behavior → repeat. Each iteration takes minutes, and agent behavior is the hardest thing to debug remotely.
+
+### Container Strategy
+
+Same image runs locally and on droplets. One Dockerfile per agent type.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Local dev (docker-compose)                             │
+│                                                         │
+│  lobboss container          lobster container (optional) │
+│  ├── discord.py bot         ├── run_task.py             │
+│  ├── Agent SDK              ├── Agent SDK               │
+│  ├── skills/ (bind mount)   ├── skills/ (bind mount)    │
+│  ├── vault/ (bind mount)    └── vault/ (bind mount)     │
+│  └── MCP tools                                          │
+│                                                         │
+│  No WireGuard needed — containers talk directly         │
+│  Discord bot connects to real Discord (dev channels)    │
+│  Vault is a local clone of lobmob-vault-dev             │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│  Production droplet                                     │
+│                                                         │
+│  Host: WireGuard + Docker                               │
+│  └── same container image                               │
+│      ├── --network=host (for WG access)                 │
+│      └── vault/ (mount from host /opt/vault)            │
+│                                                         │
+│  Cloud-init: install Docker, pull image, run container  │
+│  Provision: push secrets into container env / volume    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### What This Enables
+
+- **Fast iteration**: edit skill markdown or Python code, `docker-compose restart`, test in seconds
+- **Local testing**: full task lifecycle without deploying a droplet
+- **Parity**: same image, same dependencies, same behavior locally and in prod
+- **Simpler cloud-init**: install Docker + pull image, instead of installing Node.js + Python + OpenClaw + configuring everything
+- **Version pinning**: image tag = known-good configuration, easy rollback
+
+### WireGuard Considerations
+
+- **Local dev**: skip WG entirely. Containers talk directly. If testing SSH to a real lobster, use the host's WG interface.
+- **Production**: WG runs on the host. Container uses `--network=host` to access the WG interface, or a sidecar WG container shares the network namespace.
+- **Lobster droplets**: same pattern — WG on host, agent container uses host networking.
+
+### Image Structure
+
+Two images (or one with entrypoint selection):
+
+1. **`lobmob-lobboss`**: Python + Node.js + Agent SDK + discord.py + MCP tools + lobboss skills
+2. **`lobmob-lobster`**: Python + Node.js + Agent SDK + lobster skills + `run_task.py` entrypoint
+
+Registry: GitHub Container Registry (GHCR) is free for public repos and integrates with our existing GitHub App auth. DO Container Registry is an alternative if we want to keep things in the DO ecosystem.
+
+### docker-compose.yml (local dev)
+
+```yaml
+services:
+  lobboss:
+    build: ./containers/lobboss
+    env_file: secrets-dev.env
+    volumes:
+      - ./skills/lobboss:/app/skills:ro      # live-reload skills
+      - ./vault-dev:/opt/vault               # local vault clone
+      - ./openclaw/lobboss:/app/persona:ro   # agent persona
+    environment:
+      - LOBMOB_ENV=dev
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+  lobster:  # optional, for local task testing
+    build: ./containers/lobster
+    env_file: secrets-dev.env
+    volumes:
+      - ./skills/lobster:/app/skills:ro
+      - ./vault-dev:/opt/vault
+    profiles: ["testing"]  # only start when explicitly requested
+```
+
+### Migration Impact
+
+This changes the deployment model significantly:
+
+| Aspect | Before | After |
+|---|---|---|
+| Deploy lobboss | Terraform + cloud-init + SCP scripts | Terraform + cloud-init pulls Docker image |
+| Deploy lobster | cloud-init + provision-secrets | cloud-init pulls Docker image + inject secrets |
+| Iterate on agent behavior | SCP → restart systemd → check logs | Edit locally → docker-compose restart → check logs |
+| Iterate on skills | SCP → clear sessions → restart | Edit bind-mounted files → restart (or live-reload) |
+| Rollback | Re-deploy previous scripts | `docker pull previous-tag && docker restart` |
+| Dependencies | Installed via cloud-init (fragile) | Baked into image (reproducible) |
+
 ## Migration Scope
 
-### Phase 1: lobboss
+### Phase 1: lobboss (containerized)
 
-Replace OpenClaw on the manager droplet. This is the critical path — lobboss has all the Discord bugs (dedup, threading, routing) and skill-loading failures.
+Build the lobboss agent as a Docker container, test locally, then deploy to droplet.
 
+- Dockerfile: Python + Node.js + Agent SDK + discord.py + MCP tools
 - Build discord.py bot layer
 - Integrate Agent SDK as long-running `ClaudeSDKClient`
 - Create custom MCP tools (ssh_exec, discord_post)
 - Port lobboss skills to Agent SDK format
-- Update provision scripts to install Agent SDK instead of OpenClaw
-- Test full task lifecycle in dev environment
+- docker-compose for local dev (bind-mount skills + vault)
+- Test full task lifecycle locally against dev Discord channels
+- Deploy container to dev droplet, verify with WireGuard
+- Update cloud-init to pull and run container instead of installing OpenClaw
 
-### Phase 2: lobsters
+### Phase 2: lobsters (containerized)
 
-Replace OpenClaw on worker droplets. Simpler than lobboss — no Discord layer needed, just ephemeral agent sessions.
+Same pattern — build container, test locally, deploy to droplets.
 
+- Dockerfile: Python + Node.js + Agent SDK + lobster skills + `run_task.py` entrypoint
 - Build `run_task.py` script (SSH trigger → Agent SDK `query()` → task execution → exit)
 - Port lobster skills (code-task, verify-task, submit-results)
-- Update lobster cloud-init / provision to install Agent SDK instead of OpenClaw
-- Test in dev: spawn lobster, assign task, verify it executes and creates PR
-- Removes OpenClaw gateway dependency from lobsters entirely
+- Test locally: run container with a task, verify it produces correct PR
+- Deploy to dev droplet, test SSH trigger from lobboss
+- Update lobster cloud-init to pull and run container
 
 ### Phase 3: external model tools (incremental)
 
@@ -322,6 +460,7 @@ Add non-Claude capabilities as MCP tools, driven by actual needs rather than upf
 
 - Each new capability = one MCP tool function wrapping an API
 - No framework changes needed — just add tools to the MCP server config
+- Rebuild and push container image to deploy new tools
 
 ### Why migrate lobsters too (not "if needed")
 
@@ -348,7 +487,13 @@ Additional benefits:
 
 6. **Rollback plan** — Keep OpenClaw config intact during dev testing so we can revert quickly. Remove OpenClaw only after prod migration is validated.
 
-7. **Lobster trigger mechanism** — Currently SSH → `openclaw agent run`. Becomes SSH → `python run_task.py --task <id>`. Need to decide: does `run_task.py` live on the lobster (deployed via provision), or does lobboss SCP it on-demand?
+7. **Lobster trigger mechanism** — Currently SSH → `openclaw agent run`. Becomes SSH → `docker exec` or `python run_task.py --task <id>` inside the container. Lobboss SSHs to host, which runs the task inside the lobster container.
+
+8. **Container registry** — GHCR (free, GitHub App auth integration) vs DO Container Registry (in-ecosystem, paid). GHCR is the default choice unless there's a reason to use DO.
+
+9. **Live-reload vs rebuild** — For skills (markdown), bind-mount and live-reload. For Python code changes (MCP tools, discord bot), rebuild image. Consider a dev mode that watches for changes.
+
+10. **Cron scripts in containers** — Task-manager, pool-manager, watchdog currently run as host cron jobs. Options: (a) keep them on host, talk to container via HTTP/socket, (b) move them into the container, (c) hybrid — deterministic scripts on host, agent-dependent ones in container.
 
 ## References
 
