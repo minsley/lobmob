@@ -57,7 +57,8 @@ if [[ -d "$VAULT_DIR/.git" ]]; then
     su - engineer -c "cd '$VAULT_DIR' && git pull --rebase origin main" || true
 else
     echo "Cloning vault repo..."
-    CLONE_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
+    # Use GH_TOKEN (app token with vault access), not LOBSIGLIERE_GH_TOKEN (lobmob-only)
+    CLONE_TOKEN="${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}"
     LOBMOB_ENV="${LOBMOB_ENV:-prod}"
     if [[ "$LOBMOB_ENV" == "dev" ]]; then
         VAULT_REPO_NAME="lobmob-vault-dev"
@@ -122,7 +123,7 @@ echo "Starting lobsigliere task daemon..."
 su - engineer -c "VAULT_PATH=/home/engineer/vault \
     SYSTEM_WORKSPACE=/home/engineer/lobmob \
     ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' \
-    GH_TOKEN='${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}' \
+    GH_TOKEN='${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}' \
     LOBMOB_ENV='${LOBMOB_ENV:-prod}' \
     python3 /opt/lobmob/scripts/server/lobsigliere-daemon.py" &
 DAEMON_PID=$!

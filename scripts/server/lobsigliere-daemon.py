@@ -194,18 +194,18 @@ async def process_task(task_id: str, task_data: dict):
         await cleanup_workspace()
 
 
-async def ensure_vault():
-    """Clone vault if not present, otherwise pull."""
+async def ensure_vault() -> bool:
+    """Clone vault if not present, otherwise pull. Returns True if vault is ready."""
     vault = Path(VAULT_PATH)
     if (vault / ".git").is_dir():
         await pull_vault(VAULT_PATH)
-        return
+        return True
 
     # Derive vault repo from env
     vault_repo = os.environ.get("VAULT_REPO", "")
     if not vault_repo:
         env = os.environ.get("LOBMOB_ENV", "prod")
-        vault_repo = f"minsley/lobmob-vault-dev" if env == "dev" else f"minsley/lobmob-vault"
+        vault_repo = "minsley/lobmob-vault-dev" if env == "dev" else "minsley/lobmob-vault"
 
     gh_token = os.environ.get("GH_TOKEN", "")
     clone_url = f"https://x-access-token:{gh_token}@github.com/{vault_repo}.git"
@@ -218,8 +218,10 @@ async def ensure_vault():
     )
     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
     if proc.returncode != 0:
-        raise RuntimeError(f"Vault clone failed: {stderr.decode().strip()}")
+        logger.error("Vault clone failed: %s", stderr.decode().strip())
+        return False
     logger.info("Vault cloned successfully")
+    return True
 
 
 async def main_loop():
@@ -227,11 +229,12 @@ async def main_loop():
     logger.info("lobsigliere daemon starting...")
     logger.info("Vault: %s | Workspace: %s | Interval: %ds", VAULT_PATH, WORKSPACE, POLL_INTERVAL)
 
-    await ensure_vault()
-
     while True:
         try:
-            await pull_vault(VAULT_PATH)
+            if not await ensure_vault():
+                logger.warning("Vault not available, retrying in %ds...", POLL_INTERVAL)
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
 
             task_id, task_data = await find_system_task()
             if task_id:
