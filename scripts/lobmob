@@ -1,11 +1,10 @@
 #!/bin/bash
-# lobmob — CLI for managing the OpenClaw swarm
+# lobmob — CLI for managing the agent swarm on DOKS
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INFRA_DIR="$PROJECT_DIR/infra"
-LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
 
 # Environment: prod (default) or dev
 LOBMOB_ENV="${LOBMOB_ENV:-prod}"
@@ -41,43 +40,21 @@ Environment:
   --env, -e             Select environment (default: prod, or set LOBMOB_ENV)
 
 Infrastructure:
-  bootstrap           Interactive wizard — full setup from scratch
-  init                Generate WireGuard keys and prepare config files
-  deploy              Deploy lobboss via Terraform + provision secrets via SSH
-  provision-secrets   Re-push secrets to lobboss (e.g. after key rotation)
-  destroy             Tear down all infrastructure
-
-Fleet Management:
-  spawn [id] [--type research|swe|qa]  Spawn a typed lobster
-  teardown <id>       Destroy a specific lobster
-  teardown-all        Destroy all lobster droplets
-  status              Show fleet status (droplets, WG peers, open PRs)
-  cleanup [hours]     Pool-aware cleanup (sleep idle, destroy excess standby)
-
-Pool Management:
-  pool [active N] [standby N]   Show or update pool config on lobboss
-  sleep-lobster <name>          Power off a lobster (standby)
-  wake-lobster <name>           Power on a standby lobster
-
-Vault:
-  vault-init          Initialize the Obsidian vault GitHub repo
-  vault-sync          Pull latest vault to local machine
-
-SSH:
-  ssh-lobboss         SSH into the lobboss droplet
-  ssh-lobster <id>    SSH into a lobster via lobboss (WG tunnel)
-
-Power:
-  sleep               Cull all lobsters then power off lobboss
-  wake                Power on lobboss and wait for it to come back
+  deploy              Deploy via Terraform
+  destroy             Tear down infrastructure
 
 Connection:
   connect [target]    Port-forward to web dashboard + open browser
                       No args = lobboss. Pass job name for lobster.
 
+Vault:
+  vault-init          Initialize the Obsidian vault GitHub repo
+  vault-sync          Pull latest vault to local machine
+
 Utilities:
-  logs                Tail lobboss cloud-init logs
-  flush-logs          Flush event logs on lobboss to the vault
+  status              Show fleet status
+  logs                Tail lobboss logs
+  flush-logs          Flush event logs to the vault
   prs                 List open PRs on the vault repo
 EOF
 }
@@ -86,30 +63,15 @@ COMMAND="${1:-help}"
 shift || true
 
 case "$COMMAND" in
-  bootstrap)           source "$SCRIPT_DIR/commands/bootstrap.sh" ;;
-  init)                source "$SCRIPT_DIR/commands/init.sh" ;;
   deploy)              source "$SCRIPT_DIR/commands/deploy.sh" ;;
-  provision-secrets)   source "$SCRIPT_DIR/commands/provision-secrets.sh" ;;
   destroy)             source "$SCRIPT_DIR/commands/destroy.sh" ;;
-  spawn)               source "$SCRIPT_DIR/commands/spawn.sh" ;;
-  teardown)            source "$SCRIPT_DIR/commands/teardown.sh" ;;
-  teardown-all)        source "$SCRIPT_DIR/commands/teardown-all.sh" ;;
   status)              source "$SCRIPT_DIR/commands/status.sh" ;;
-  cleanup)             source "$SCRIPT_DIR/commands/cleanup.sh" ;;
-  pool)                source "$SCRIPT_DIR/commands/pool.sh" ;;
-  sleep-lobster)       source "$SCRIPT_DIR/commands/sleep-lobster.sh" ;;
-  wake-lobster)        source "$SCRIPT_DIR/commands/wake-lobster.sh" ;;
   vault-init)          source "$SCRIPT_DIR/commands/vault-init.sh" ;;
   vault-sync)          source "$SCRIPT_DIR/commands/vault-sync.sh" ;;
-  sleep)               source "$SCRIPT_DIR/commands/sleep.sh" ;;
-  wake)                source "$SCRIPT_DIR/commands/wake.sh" ;;
-  ssh-lobboss)         source "$SCRIPT_DIR/commands/ssh-lobboss.sh" ;;
-  ssh-lobster)         source "$SCRIPT_DIR/commands/ssh-lobster.sh" ;;
   logs)                source "$SCRIPT_DIR/commands/logs.sh" ;;
   flush-logs)          source "$SCRIPT_DIR/commands/flush-logs.sh" ;;
   prs)                 source "$SCRIPT_DIR/commands/prs.sh" ;;
   connect)             source "$SCRIPT_DIR/commands/connect.sh" ;;
-  disconnect)          source "$SCRIPT_DIR/commands/disconnect.sh" ;;
   help|--help|-h)      usage ;;
   *)                   err "Unknown command: $COMMAND"; usage; exit 1 ;;
 esac

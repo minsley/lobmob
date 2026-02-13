@@ -3,8 +3,6 @@
 #   lobmob connect                       -> lobboss dashboard
 #   lobmob connect lobster-swe-task-123  -> specific lobster pod
 
-set -euo pipefail
-
 LOCAL_PORT="${LOBMOB_CONNECT_PORT:-8080}"
 TARGET="${1:-lobboss}"
 
@@ -25,9 +23,9 @@ open_browser() {
 }
 
 if [[ "$TARGET" == "lobboss" ]]; then
-  info "Port-forwarding to lobboss service ($LOBMOB_ENV)..."
-  info "Dashboard: http://localhost:$LOCAL_PORT"
-  info "Press Ctrl+C to disconnect"
+  log "Port-forwarding to lobboss service ($LOBMOB_ENV)..."
+  log "Dashboard: http://localhost:$LOCAL_PORT"
+  log "Press Ctrl+C to disconnect"
   echo ""
 
   # Open browser after a short delay
@@ -50,14 +48,14 @@ else
 
   if [[ -z "$POD_NAME" ]]; then
     err "No running pod found for: $TARGET"
-    info "Active lobster pods:"
+    log "Active lobster pods:"
     kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l "app.kubernetes.io/name=lobster" --no-headers 2>/dev/null || true
     exit 1
   fi
 
-  info "Port-forwarding to pod $POD_NAME ($LOBMOB_ENV)..."
-  info "Dashboard: http://localhost:$LOCAL_PORT"
-  info "Press Ctrl+C to disconnect"
+  log "Port-forwarding to pod $POD_NAME ($LOBMOB_ENV)..."
+  log "Dashboard: http://localhost:$LOCAL_PORT"
+  log "Press Ctrl+C to disconnect"
   echo ""
 
   ( sleep 2 && open_browser "http://localhost:$LOCAL_PORT" ) &

@@ -9,10 +9,6 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# doctl (DigitalOcean CLI — used by cron scripts)
-RUN curl -fsSL "https://github.com/digitalocean/doctl/releases/latest/download/doctl-$(curl -fsSL https://api.github.com/repos/digitalocean/doctl/releases/latest | jq -r .tag_name | tr -d v)-linux-$(dpkg --print-architecture).tar.gz" \
-    | tar xz -C /usr/local/bin
-
 # Source
 COPY src/lobboss/ /app/lobboss/
 COPY src/common/ /app/common/
@@ -23,17 +19,13 @@ COPY skills/lobboss/ /app/skills/
 # Web dashboard
 COPY scripts/server/lobmob-web.js /app/scripts/lobmob-web.js
 
-# Cron scripts (used by k8s CronJobs — packaged here for image reuse)
+# Cron scripts (used by k8s CronJobs)
 COPY scripts/server/container-env.sh \
      scripts/server/lobmob-task-manager.sh \
-     scripts/server/lobmob-watchdog.sh \
      scripts/server/lobmob-review-prs.sh \
      scripts/server/lobmob-status-reporter.sh \
-     scripts/server/lobmob-pool-manager.sh \
      scripts/server/lobmob-gh-token.sh \
      scripts/server/lobmob-flush-logs.sh \
-     scripts/server/lobmob-fleet-status.sh \
-     scripts/server/lobmob-cleanup.sh \
      scripts/server/lobmob-log.sh \
      /app/scripts/
 RUN chmod +x /app/scripts/*.sh

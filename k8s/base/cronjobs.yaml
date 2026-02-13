@@ -45,46 +45,6 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: watchdog
-  namespace: lobmob
-  labels:
-    app.kubernetes.io/name: watchdog
-    app.kubernetes.io/part-of: lobmob
-    app.kubernetes.io/component: cron
-spec:
-  schedule: "*/5 * * * *"
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          nodeSelector:
-            lobmob.io/role: lobboss
-          restartPolicy: Never
-          imagePullSecrets:
-            - name: ghcr-pull-secret
-          containers:
-            - name: watchdog
-              image: ghcr.io/minsley/lobmob-lobboss:latest
-              command: ["bash", "/app/scripts/lobmob-watchdog.sh"]
-              envFrom:
-                - secretRef:
-                    name: lobmob-secrets
-                - configMapRef:
-                    name: lobboss-config
-              volumeMounts:
-                - name: vault
-                  mountPath: /opt/vault
-          volumes:
-            - name: vault
-              persistentVolumeClaim:
-                claimName: vault-pvc
----
-apiVersion: batch/v1
-kind: CronJob
-metadata:
   name: review-prs
   namespace: lobmob
   labels:
