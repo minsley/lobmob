@@ -136,6 +136,11 @@ def _split_message(text: str) -> list[str]:
     return chunks
 
 
+def health_check() -> None:
+    """Minimal health check for k8s probes. Exits 0 if the module is importable."""
+    pass
+
+
 def main() -> None:
     # Use JSON logging in containers (LOBMOB_ENV set), human-readable locally
     import os

@@ -96,7 +96,7 @@ variable "doks_enabled" {
 variable "doks_k8s_version" {
   description = "Kubernetes version for DOKS cluster (use `doctl kubernetes options versions` to list)"
   type        = string
-  default     = "1.31.1-do.5"
+  default     = "1.32.10-do.3"
 }
 
 variable "doks_lobboss_node_size" {

@@ -1,4 +1,5 @@
-FROM lobmob-base
+ARG BASE_IMAGE=lobmob-base
+FROM ${BASE_IMAGE}
 
 # GitHub CLI (needed for PR creation)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

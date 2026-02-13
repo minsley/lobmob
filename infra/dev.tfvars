@@ -17,8 +17,9 @@ discord_channels = {
   swarm_logs    = "dev-swarm-logs"
 }
 
-# DOKS — enable when ready to deploy k8s
-doks_enabled            = false
+# DOKS
+doks_enabled            = true
+doks_k8s_version        = "1.32.10-do.3"
 doks_lobboss_node_size  = "s-2vcpu-4gb"
 doks_lobster_node_size  = "s-2vcpu-4gb"
 doks_lobster_max_nodes  = 3

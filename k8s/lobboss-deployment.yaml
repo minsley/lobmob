@@ -22,6 +22,8 @@ spec:
       nodeSelector:
         lobmob.io/role: lobboss
       serviceAccountName: lobboss
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       # Init container: clone or pull the vault repo
       initContainers:
         - name: vault-init
@@ -32,20 +34,21 @@ spec:
               if [ -d /opt/vault/.git ]; then
                 cd /opt/vault && git pull origin main || true
               else
-                git clone "https://x-access-token:$(cat /run/secrets/gh-token)@github.com/${VAULT_REPO}.git" /opt/vault
+                rm -rf /opt/vault/lost+found
+                git clone "https://git:$(cat /run/secrets/gh-token)@github.com/${VAULT_REPO}.git" /opt/vault
               fi
           env:
             - name: VAULT_REPO
               valueFrom:
                 configMapKeyRef:
                   name: lobboss-config
-                  key: vault_repo
+                  key: VAULT_REPO
           volumeMounts:
             - name: vault
               mountPath: /opt/vault
             - name: gh-token
               mountPath: /run/secrets/gh-token
-              subPath: GH_APP_PRIVATE_KEY
+              subPath: GH_TOKEN
               readOnly: true
       containers:
         - name: lobboss
@@ -103,6 +106,7 @@ data:
   LOBMOB_ENV: "dev"
   VAULT_REPO: "minsley/lobmob-vault-dev"
   VAULT_PATH: "/opt/vault"
+  TASK_QUEUE_CHANNEL_ID: "1470139057072767211"
 ---
 apiVersion: v1
 kind: ServiceAccount
