@@ -5,6 +5,8 @@ resources:
   - namespace.yaml
   - lobboss-deployment.yaml
   - lobboss-pvc.yaml
+  - lobboss-service.yaml
+  - lobster-rbac.yaml
   - cronjobs.yaml
   # lobster-job-template.yaml is NOT included here — it's a runtime template
   # used by lobboss Python code, not applied directly with kubectl.

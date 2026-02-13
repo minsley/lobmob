@@ -20,6 +20,9 @@ COPY src/common/ /app/common/
 # Skills
 COPY skills/lobboss/ /app/skills/
 
+# Web dashboard
+COPY scripts/server/lobmob-web.js /app/scripts/lobmob-web.js
+
 # Cron scripts (used by k8s CronJobs — packaged here for image reuse)
 COPY scripts/server/container-env.sh \
      scripts/server/lobmob-task-manager.sh \

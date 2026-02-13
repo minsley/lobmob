@@ -2,8 +2,12 @@
 
 import asyncio
 import collections
+import json
 import logging
+import os
 import signal
+import subprocess
+import tempfile
 
 import discord
 
@@ -37,6 +41,7 @@ class LobbossBot(discord.Client):
     async def setup_hook(self) -> None:
         """Called after login, before the bot starts receiving events."""
         self.loop.create_task(self._process_queue())
+        self.loop.create_task(self._write_health_status())
 
     async def on_ready(self) -> None:
         logger.info("Connected as %s (id=%s)", self.user, self.user.id)
@@ -111,6 +116,33 @@ class LobbossBot(discord.Client):
             for chunk in _split_message(text):
                 await thread.send(chunk)
 
+    async def _write_health_status(self) -> None:
+        """Periodically write health status JSON for the web server to read."""
+        from common.health import HealthChecker
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        checker = HealthChecker(api_key=api_key, bot=self)
+        health_dir = "/tmp/health"
+        health_file = os.path.join(health_dir, "status.json")
+        os.makedirs(health_dir, exist_ok=True)
+
+        while True:
+            try:
+                results = await checker.check_all()
+                data = {**results, "checked_at": asyncio.get_event_loop().time()}
+                # Atomic write via tmp + rename
+                fd, tmp_path = tempfile.mkstemp(dir=health_dir, suffix=".json")
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(data, f)
+                    os.replace(tmp_path, health_file)
+                except Exception:
+                    os.unlink(tmp_path)
+                    raise
+            except Exception:
+                logger.exception("Failed to write health status")
+            await asyncio.sleep(60)
+
     async def close(self) -> None:
         """Shut down agent sessions, then disconnect."""
         await self._agent.close_all()
@@ -142,8 +174,6 @@ def health_check() -> None:
 
 
 def main() -> None:
-    # Use JSON logging in containers (LOBMOB_ENV set), human-readable locally
-    import os
     from common.logging import setup_logging
     json_output = os.environ.get("LOBMOB_ENV") is not None
     setup_logging(json_output=json_output)
@@ -151,17 +181,33 @@ def main() -> None:
     config = Config.from_env()
     bot = LobbossBot(config)
 
+    # Start web server subprocess
+    web_script = "/app/scripts/lobmob-web.js"
+    web_proc = None
+    if os.path.exists(web_script):
+        logger.info("Starting web server: %s", web_script)
+        web_proc = subprocess.Popen(["node", web_script])
+    else:
+        logger.warning("Web server script not found at %s, skipping", web_script)
+
     # Graceful shutdown on SIGTERM (k8s sends this)
     loop = asyncio.new_event_loop()
 
     def _shutdown(sig: signal.Signals) -> None:
         logger.info("Received %s, shutting down...", sig.name)
+        if web_proc and web_proc.poll() is None:
+            web_proc.terminate()
         loop.create_task(bot.close())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _shutdown, sig)
 
-    loop.run_until_complete(bot.start(config.discord.token))
+    try:
+        loop.run_until_complete(bot.start(config.discord.token))
+    finally:
+        if web_proc and web_proc.poll() is None:
+            web_proc.terminate()
+            web_proc.wait(timeout=5)
 
 
 if __name__ == "__main__":

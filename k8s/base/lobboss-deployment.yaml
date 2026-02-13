@@ -54,6 +54,9 @@ spec:
         - name: lobboss
           image: ghcr.io/minsley/lobmob-lobboss:latest
           imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
           envFrom:
             - secretRef:
                 name: lobmob-secrets
@@ -69,6 +72,8 @@ spec:
           volumeMounts:
             - name: vault
               mountPath: /opt/vault
+            - name: health-data
+              mountPath: /tmp/health
           livenessProbe:
             exec:
               command:
@@ -80,11 +85,9 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 3
           readinessProbe:
-            exec:
-              command:
-                - python
-                - -c
-                - "from lobboss.bot import health_check; health_check()"
+            httpGet:
+              path: /health
+              port: 8080
             initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 10
@@ -95,6 +98,8 @@ spec:
         - name: gh-token
           secret:
             secretName: lobmob-secrets
+        - name: health-data
+          emptyDir: {}
       restartPolicy: Always
 ---
 apiVersion: v1

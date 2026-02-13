@@ -1,83 +1,135 @@
 #!/usr/bin/env node
 const http = require('http');
 const https = require('https');
-const { readFileSync, writeFileSync, existsSync } = require('fs');
-const { execSync } = require('child_process');
+const { readFileSync, existsSync } = require('fs');
 
-const CERT_DIR = '/etc/lobmob/certs';
-const CERT_FILE = CERT_DIR + '/cert.pem';
-const KEY_FILE = CERT_DIR + '/key.pem';
-const HAS_CERTS = existsSync(CERT_FILE) && existsSync(KEY_FILE);
-const PORT = HAS_CERTS ? 443 : 8080;
-const ENV_FILE = '/etc/lobmob/secrets.env';
-const WEB_ENV = '/etc/lobmob/web.env';
+const PORT = 8080;
+const NAMESPACE = 'lobmob';
+const HEALTH_FILE = '/tmp/health/status.json';
 
-function loadEnv(path) {
-  if (!existsSync(path)) return {};
-  const env = {};
-  readFileSync(path, 'utf8').split('\n').forEach(line => {
-    const m = line.match(/^([A-Z_]+)=(.*)$/);
-    if (m) env[m[1]] = m[2];
-  });
-  return env;
-}
+// k8s service account credentials (mounted automatically in pods)
+const SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
+const SA_TOKEN_PATH = SA_DIR + '/token';
+const SA_CA_PATH = SA_DIR + '/ca.crt';
+const K8S_HOST = process.env.KUBERNETES_SERVICE_HOST || 'kubernetes.default.svc';
+const K8S_PORT = process.env.KUBERNETES_SERVICE_PORT || '443';
 
-function updateEnvVar(path, key, value) {
-  if (!existsSync(path)) { writeFileSync(path, `${key}=${value}\n`); return; }
-  let content = readFileSync(path, 'utf8');
-  const re = new RegExp(`^${key}=.*$`, 'm');
-  if (re.test(content)) {
-    content = content.replace(re, `${key}=${value}`);
-  } else {
-    content += `\n${key}=${value}`;
-  }
-  writeFileSync(path, content);
-}
-
-function httpsPost(url, params, headers = {}) {
+function k8sGet(path) {
   return new Promise((resolve, reject) => {
-    const body = new URLSearchParams(params).toString();
-    const parsed = new URL(url);
-    const req = https.request({
-hostname: parsed.hostname, path: parsed.pathname,
-method: 'POST',
-headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': body.length, ...headers }
-    }, res => {
-let data = '';
-res.on('data', c => data += c);
-res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    let token, ca;
+    try {
+      token = readFileSync(SA_TOKEN_PATH, 'utf8').trim();
+      ca = readFileSync(SA_CA_PATH);
+    } catch (e) {
+      reject(new Error('Not running in k8s (no service account): ' + e.message));
+      return;
+    }
+    const options = {
+      hostname: K8S_HOST,
+      port: parseInt(K8S_PORT, 10),
+      path: path,
+      method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token },
+      ca: ca,
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (c) => data += c);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(data)); } catch { resolve(data); }
+        } else {
+          reject(new Error('k8s API ' + res.statusCode + ': ' + data.slice(0, 200)));
+        }
+      });
     });
     req.on('error', reject);
-    req.write(body);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('k8s API timeout')); });
     req.end();
   });
 }
 
-function fleetStatus() {
+async function getFleetData() {
+  const result = { jobs: [], stats: { total: 0, running: 0, succeeded: 0, failed: 0, pending: 0 } };
+
+  let jobs, pods;
   try {
-    const out = execSync('lobmob-fleet-status 2>/dev/null || echo "unavailable"', { timeout: 10000 }).toString();
-    return out;
-  } catch { return 'unavailable'; }
+    [jobs, pods] = await Promise.all([
+      k8sGet('/apis/batch/v1/namespaces/' + NAMESPACE + '/jobs?labelSelector=app.kubernetes.io/name=lobster'),
+      k8sGet('/api/v1/namespaces/' + NAMESPACE + '/pods?labelSelector=app.kubernetes.io/name=lobster'),
+    ]);
+  } catch (e) {
+    result.error = e.message;
+    return result;
+  }
+
+  // Index pods by job-name label
+  const podsByJob = {};
+  for (const pod of (pods.items || [])) {
+    const jobName = (pod.metadata.labels || {})['job-name'];
+    if (jobName) {
+      if (!podsByJob[jobName]) podsByJob[jobName] = [];
+      podsByJob[jobName].push(pod);
+    }
+  }
+
+  for (const job of (jobs.items || [])) {
+    const name = job.metadata.name;
+    const labels = job.metadata.labels || {};
+    const taskId = labels['lobmob.io/task-id'] || '?';
+    const lobsterType = labels['lobmob.io/lobster-type'] || '?';
+
+    let status;
+    if (job.status.succeeded > 0) status = 'succeeded';
+    else if (job.status.failed > 0) status = 'failed';
+    else if (job.status.active > 0) status = 'running';
+    else status = 'pending';
+
+    result.stats[status] = (result.stats[status] || 0) + 1;
+    result.stats.total++;
+
+    // Age
+    let age = '';
+    if (job.metadata.creationTimestamp) {
+      const ms = Date.now() - new Date(job.metadata.creationTimestamp).getTime();
+      const mins = Math.floor(ms / 60000);
+      if (mins >= 60) age = Math.floor(mins / 60) + 'h' + (mins % 60) + 'm';
+      else age = mins + 'm';
+    }
+
+    // Logs for running/failed pods
+    let logs = '';
+    if ((status === 'running' || status === 'failed') && podsByJob[name]) {
+      const pod = podsByJob[name][0];
+      try {
+        const logData = await k8sGet('/api/v1/namespaces/' + NAMESPACE + '/pods/' + pod.metadata.name + '/log?container=lobster&tailLines=5');
+        if (typeof logData === 'string') logs = logData.trim().slice(-500);
+        else logs = JSON.stringify(logData).slice(-500);
+      } catch { /* ignore log errors */ }
+    }
+
+    result.jobs.push({ name, taskId, type: lobsterType, status, age, logs });
+  }
+
+  return result;
 }
 
-function fleetStatusJson() {
+function readHealthStatus() {
   try {
-    const raw = execSync('lobmob-fleet-status --json 2>/dev/null', { timeout: 10000 }).toString();
-    return JSON.parse(raw);
-  } catch {
-    // Fall back to parsing text output
-    const text = fleetStatus();
-    return { raw: text, parsed: false };
-  }
+    if (existsSync(HEALTH_FILE)) {
+      return JSON.parse(readFileSync(HEALTH_FILE, 'utf8'));
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 
 function formatUptime(seconds) {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   const m = Math.floor((seconds % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+  if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
 }
 
 const CSS = `
@@ -124,7 +176,7 @@ const CSS = `
   .dot-green { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .dot-yellow { background: var(--yellow); }
   .dot-red { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
   .card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 20px; transition: border-color 0.2s;
@@ -147,24 +199,28 @@ const CSS = `
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); overflow: hidden;
   }
-  .status-raw {
-    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 20px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px;
-    line-height: 1.6; white-space: pre-wrap; overflow-x: auto; color: var(--text-muted);
+  .logs-cell {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11px;
+    color: var(--text-muted); white-space: pre-wrap; max-width: 300px;
+    overflow: hidden; text-overflow: ellipsis;
   }
   .btn {
     display: inline-flex; align-items: center; gap: 8px;
     padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 500;
     text-decoration: none; transition: all 0.2s; cursor: pointer; border: none;
   }
-  .btn-primary { background: var(--accent); color: white; }
-  .btn-primary:hover { background: #d13536; box-shadow: 0 4px 12px var(--accent-glow); }
   .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
   .btn-ghost:hover { background: var(--surface); color: var(--text); }
   footer {
     padding: 20px 0; border-top: 1px solid var(--border); margin-top: 40px;
     display: flex; justify-content: space-between; align-items: center;
     font-size: 12px; color: var(--text-muted);
+  }
+  .health-grid { display: flex; gap: 12px; flex-wrap: wrap; }
+  .health-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 14px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border); font-size: 13px;
   }
   .refresh-note { font-size: 12px; color: var(--text-muted); }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
@@ -178,58 +234,68 @@ const CSS = `
   }
 `;
 
-function parseLobsters(raw) {
-  // Try to parse fleet-status text into structured data
-  const lines = raw.split('\\n').filter(l => l.trim());
-  const lobsters = [];
-  let current = null;
-  for (const line of lines) {
-    // Look for lobster entries like "lobster-xxx  active  10.13.37.x"
-    const m = line.match(/^\\s*(lobster-\\S+|lobboss)\\s+(active|sleeping|standby|offline|provisioning|error)\\s*(.*)/i);
-    if (m) {
-current = { name: m[1], status: m[2].toLowerCase(), info: m[3].trim() };
-lobsters.push(current);
-    }
-  }
-  return lobsters;
-}
-
 function statusBadge(status) {
   const map = {
-    active: '<span class="badge badge-green"><span class="dot dot-green"></span>Active</span>',
-    sleeping: '<span class="badge"><span class="dot dot-yellow"></span>Sleeping</span>',
-    standby: '<span class="badge badge-yellow"><span class="dot dot-yellow"></span>Standby</span>',
-    offline: '<span class="badge"><span class="dot"></span>Offline</span>',
-    provisioning: '<span class="badge badge-yellow"><span class="dot dot-yellow"></span>Provisioning</span>',
-    error: '<span class="badge badge-red"><span class="dot dot-red"></span>Error</span>',
+    running: '<span class="badge badge-green"><span class="dot dot-green"></span>Running</span>',
+    succeeded: '<span class="badge"><span class="dot dot-green"></span>Succeeded</span>',
+    pending: '<span class="badge badge-yellow"><span class="dot dot-yellow"></span>Pending</span>',
+    failed: '<span class="badge badge-red"><span class="dot dot-red"></span>Failed</span>',
   };
-  return map[status] || `<span class="badge">${status}</span>`;
+  return map[status] || '<span class="badge">' + status + '</span>';
 }
 
-function dashboardHtml(statusText) {
-  const esc = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const lobsters = parseLobsters(statusText);
-  const uptime = formatUptime(process.uptime());
-  const activeCount = lobsters.filter(l => l.status === 'active').length;
-  const totalCount = lobsters.length;
+function healthDot(ok) {
+  return ok
+    ? '<span class="dot dot-green"></span>'
+    : '<span class="dot dot-red"></span>';
+}
 
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function dashboardHtml(fleet, health) {
+  const uptime = formatUptime(process.uptime());
+  const s = fleet.stats;
+
+  // Health status card
+  let healthSection = '';
+  if (health) {
+    healthSection = `
+      <div class="card">
+        <div class="card-label">Health</div>
+        <div class="health-grid">
+          <span class="health-item">${healthDot(health.anthropic)}Anthropic</span>
+          <span class="health-item">${healthDot(health.github)}GitHub</span>
+          <span class="health-item">${healthDot(health.discord)}Discord</span>
+        </div>
+        <div class="card-sub">${health.checked_at ? 'Checked ' + new Date(health.checked_at).toLocaleTimeString() : ''}</div>
+      </div>`;
+  }
+
+  // Fleet table
   let fleetSection;
-  if (lobsters.length > 0) {
-    const rows = lobsters.map(l => `
+  if (fleet.jobs.length > 0) {
+    const rows = fleet.jobs.map(j => `
 <tr>
-  <td style="font-weight:500">${esc(l.name)}</td>
-  <td>${statusBadge(l.status)}</td>
-  <td style="color:var(--text-muted)">${esc(l.info)}</td>
+  <td style="font-weight:500">${esc(j.name)}</td>
+  <td>${esc(j.type)}</td>
+  <td>${esc(j.taskId)}</td>
+  <td>${statusBadge(j.status)}</td>
+  <td style="color:var(--text-muted)">${esc(j.age)}</td>
+  <td class="logs-cell">${j.logs ? esc(j.logs) : '<span style="color:var(--text-muted)">—</span>'}</td>
 </tr>`).join('');
     fleetSection = `
 <div class="fleet-table-wrap">
   <table class="fleet-table">
-    <thead><tr><th>Name</th><th>Status</th><th>Details</th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th>Task</th><th>Status</th><th>Age</th><th>Logs</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
 </div>`;
+  } else if (fleet.error) {
+    fleetSection = '<div class="card"><div class="card-sub">Error fetching fleet data: ' + esc(fleet.error) + '</div></div>';
   } else {
-    fleetSection = `<div class="status-raw" id="fleet-raw">${esc(statusText)}</div>`;
+    fleetSection = '<div class="card"><div class="card-sub">No active lobster jobs</div></div>';
   }
 
   return `<!DOCTYPE html>
@@ -243,84 +309,61 @@ function dashboardHtml(statusText) {
 <body>
   <div class="container">
     <header>
-<div class="logo">
-  <span class="logo-icon">🦞</span>
-  <h1>lob<span>mob</span></h1>
-</div>
-<div class="header-actions">
-  <span class="badge badge-green"><span class="dot dot-green"></span>Online</span>
-</div>
+      <div class="logo">
+        <span class="logo-icon">&#x1F99E;</span>
+        <h1>lob<span>mob</span></h1>
+      </div>
+      <div class="header-actions">
+        <span class="badge badge-green"><span class="dot dot-green"></span>Online</span>
+      </div>
     </header>
 
     <div class="grid">
-<div class="card">
-  <div class="card-label">Fleet Size</div>
-  <div class="card-value">${totalCount || '—'}</div>
-  <div class="card-sub">${activeCount} active</div>
-</div>
-<div class="card">
-  <div class="card-label">Uptime</div>
-  <div class="card-value">${uptime}</div>
-  <div class="card-sub">lobboss process</div>
-</div>
-<div class="card">
-  <div class="card-label">Server</div>
-  <div class="card-value" style="font-size:18px">lobboss</div>
-  <div class="card-sub">WireGuard mesh</div>
-</div>
+      <div class="card">
+        <div class="card-label">Fleet Size</div>
+        <div class="card-value">${s.total || '—'}</div>
+        <div class="card-sub">${s.running} running</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Uptime</div>
+        <div class="card-value">${uptime}</div>
+        <div class="card-sub">lobboss process</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Server</div>
+        <div class="card-value" style="font-size:18px">lobboss</div>
+        <div class="card-sub">Kubernetes</div>
+      </div>
+      ${healthSection}
     </div>
 
     <div class="section">
-<div class="section-title">🦞 Fleet Status</div>
-${fleetSection}
-<p class="refresh-note" style="margin-top:12px">Auto-refreshes every 30s · <a href="/api/status" style="color:var(--blue);text-decoration:none">API</a></p>
+      <div class="section-title">&#x1F99E; Fleet Status</div>
+      ${fleetSection}
+      <p class="refresh-note" style="margin-top:12px">Auto-refreshes every 30s · <a href="/api/status" style="color:var(--blue);text-decoration:none">API</a></p>
     </div>
 
     <div class="section">
-<div class="section-title">⚡ Quick Actions</div>
-<div style="display:flex;gap:10px;flex-wrap:wrap">
-  <a href="/oauth/digitalocean" class="btn btn-primary">Connect DigitalOcean</a>
-  <a href="/health" class="btn btn-ghost">Health Check</a>
-</div>
+      <div class="section-title">&#x26A1; Quick Actions</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a href="/health" class="btn btn-ghost">Health Check</a>
+      </div>
     </div>
 
     <footer>
-<span>lobmob fleet management</span>
-<span>port ${PORT}</span>
+      <span>lobmob fleet management</span>
+      <span>port ${PORT}</span>
     </footer>
   </div>
   <script>
     setInterval(async () => {
-try {
-  const r = await fetch('/api/status');
-  if (!r.ok) return;
-  // Reload page on successful fetch to update fleet data
-  location.reload();
-} catch {}
+      try {
+        const r = await fetch('/api/status');
+        if (!r.ok) return;
+        location.reload();
+      } catch {}
     }, 30000);
   </script>
-</body>
-</html>`;
-}
-
-function oauthSuccessHtml() {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>lobmob — OAuth Complete</title>
-  <style>${CSS}</style>
-</head>
-<body>
-  <div class="container" style="display:flex;align-items:center;justify-content:center;min-height:80vh">
-    <div style="text-align:center">
-<div style="font-size:64px;margin-bottom:16px">✅</div>
-<h2 style="margin-bottom:8px">DigitalOcean Connected</h2>
-<p style="color:var(--text-muted);margin-bottom:24px">OAuth tokens have been stored. You can close this tab.</p>
-<a href="/" class="btn btn-ghost">← Back to Dashboard</a>
-    </div>
-  </div>
 </body>
 </html>`;
 }
@@ -337,10 +380,10 @@ function notFoundHtml() {
 <body>
   <div class="container" style="display:flex;align-items:center;justify-content:center;min-height:80vh">
     <div style="text-align:center">
-<div style="font-size:64px;margin-bottom:16px">🦞</div>
-<h2 style="margin-bottom:8px">Page Not Found</h2>
-<p style="color:var(--text-muted);margin-bottom:24px">This lobster wandered off.</p>
-<a href="/" class="btn btn-primary">← Back to Dashboard</a>
+      <div style="font-size:64px;margin-bottom:16px">&#x1F99E;</div>
+      <h2 style="margin-bottom:8px">Page Not Found</h2>
+      <p style="color:var(--text-muted);margin-bottom:24px">This lobster wandered off.</p>
+      <a href="/" class="btn btn-ghost">&#x2190; Back to Dashboard</a>
     </div>
   </div>
 </body>
@@ -348,78 +391,43 @@ function notFoundHtml() {
 }
 
 const handler = async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = new URL(req.url, 'http://' + req.headers.host);
 
   if (url.pathname === '/health') {
+    const health = readHealthStatus();
+    let k8sOk = false;
+    try {
+      await k8sGet('/api/v1/namespaces/' + NAMESPACE);
+      k8sOk = true;
+    } catch { /* ignore */ }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', uptime: process.uptime() }));
+    res.end(JSON.stringify({ status: 'ok', uptime: process.uptime(), k8s: k8sOk, health: health }));
     return;
   }
 
   if (url.pathname === '/api/status') {
-    const data = fleetStatusJson();
-    data.uptime = process.uptime();
+    const fleet = await getFleetData();
+    fleet.uptime = process.uptime();
+    fleet.health = readHealthStatus();
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
-    res.end(JSON.stringify(data));
-    return;
-  }
-
-  if (url.pathname === '/oauth/digitalocean') {
-    const webEnv = loadEnv(WEB_ENV);
-    const clientId = webEnv.DO_OAUTH_CLIENT_ID;
-    if (!clientId) {
-res.writeHead(500); res.end('DO_OAUTH_CLIENT_ID not configured in web.env'); return;
-    }
-    const proto = HAS_CERTS ? "https" : "http";
-    const callbackUrl = proto + "://" + req.headers.host + "/oauth/digitalocean/callback";
-    const authUrl = `https://cloud.digitalocean.com/v1/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=read+write`;
-    res.writeHead(302, { Location: authUrl });
-    res.end();
-    return;
-  }
-
-  if (url.pathname === '/oauth/digitalocean/callback') {
-    const code = url.searchParams.get('code');
-    if (!code) { res.writeHead(400); res.end('Missing code parameter'); return; }
-    const webEnv = loadEnv(WEB_ENV);
-    const proto = HAS_CERTS ? "https" : "http";
-    const callbackUrl = proto + "://" + req.headers.host + "/oauth/digitalocean/callback";
-    try {
-const tokenRes = await httpsPost('https://cloud.digitalocean.com/v1/oauth/token', {
-  grant_type: 'authorization_code',
-  code,
-  client_id: webEnv.DO_OAUTH_CLIENT_ID,
-  client_secret: webEnv.DO_OAUTH_CLIENT_SECRET,
-  redirect_uri: callbackUrl
-});
-const data = JSON.parse(tokenRes.body);
-if (data.access_token) {
-  updateEnvVar(ENV_FILE, 'DO_OAUTH_TOKEN', data.access_token);
-  updateEnvVar(ENV_FILE, 'DO_OAUTH_REFRESH', data.refresh_token);
-  res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(oauthSuccessHtml());
-} else {
-  res.writeHead(500); res.end('Token exchange failed: ' + tokenRes.body);
-}
-    } catch (e) {
-res.writeHead(500); res.end('Error: ' + e.message);
-    }
+    res.end(JSON.stringify(fleet));
     return;
   }
 
   if (url.pathname === '/') {
-    const status = fleetStatus();
-    res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(dashboardHtml(status));
+    const fleet = await getFleetData();
+    const health = readHealthStatus();
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(dashboardHtml(fleet, health));
     return;
   }
 
-  res.writeHead(404, { 'Content-Type': 'text/html' }); res.end(notFoundHtml());
+  res.writeHead(404, { 'Content-Type': 'text/html' });
+  res.end(notFoundHtml());
 };
 
-const server = HAS_CERTS
-  ? https.createServer({ cert: readFileSync(CERT_FILE), key: readFileSync(KEY_FILE) }, handler)
-  : http.createServer(handler);
+const server = http.createServer(handler);
 
 server.listen(PORT, '0.0.0.0', () => {
-  const proto = HAS_CERTS ? "https" : "http";
-  console.log(`lobmob-web listening on ${proto}://0.0.0.0:${PORT}`);
+  console.log('lobmob-web listening on http://0.0.0.0:' + PORT);
 });
