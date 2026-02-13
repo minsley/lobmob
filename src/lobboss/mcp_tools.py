@@ -23,6 +23,14 @@ LOBSTER_IMAGE = os.environ.get(
 )
 VAULT_REPO = os.environ.get("VAULT_REPO", "minsley/lobmob-vault-dev")
 
+# Workflow-specific container images (override default lobster image)
+WORKFLOW_IMAGES = {
+    "android": os.environ.get("LOBSTER_ANDROID_IMAGE", LOBSTER_IMAGE),
+    "unity": os.environ.get("LOBSTER_UNITY_IMAGE", LOBSTER_IMAGE),
+}
+
+VALID_LOBSTER_TYPES = ("swe", "qa", "research", "image-gen")
+
 
 def set_bot(bot: Any) -> None:
     """Inject the Discord bot instance for discord_post to use."""
@@ -87,8 +95,11 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
     lobster_type = args["lobster_type"]
     workflow = args.get("workflow", "default")
 
-    if lobster_type not in ("swe", "qa", "research"):
-        return {"content": [{"type": "text", "text": f"Error: Invalid lobster_type '{lobster_type}'. Must be swe, qa, or research."}]}
+    if lobster_type not in VALID_LOBSTER_TYPES:
+        return {"content": [{"type": "text", "text": f"Error: Invalid lobster_type '{lobster_type}'. Must be one of: {', '.join(VALID_LOBSTER_TYPES)}"}]}
+
+    # Resolve container image: workflow-specific override or default
+    image = WORKFLOW_IMAGES.get(workflow, LOBSTER_IMAGE)
 
     batch_api, _ = _get_k8s_clients()
     job_name = _sanitize_k8s_name(f"lobster-{lobster_type}-{task_id}")
@@ -146,7 +157,7 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                         # run alongside the main container and auto-terminate when it exits.
                         client.V1Container(
                             name="web",
-                            image=LOBSTER_IMAGE,
+                            image=image,
                             restart_policy="Always",
                             command=["node", "/app/scripts/lobmob-web-lobster.js"],
                             ports=[client.V1ContainerPort(container_port=8080, name="http")],
@@ -171,7 +182,7 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                     containers=[
                         client.V1Container(
                             name="lobster",
-                            image=LOBSTER_IMAGE,
+                            image=image,
                             image_pull_policy="Always",
                             args=[
                                 "--task", task_id,
@@ -205,7 +216,19 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                                 ),
                                 client.V1EnvVar(name="TASK_ID", value=task_id),
                                 client.V1EnvVar(name="LOBSTER_TYPE", value=lobster_type),
-                            ],
+                                client.V1EnvVar(name="LOBSTER_WORKFLOW", value=workflow),
+                            ] + (
+                                # Pass Gemini API key to image-gen lobsters
+                                [client.V1EnvVar(
+                                    name="GEMINI_API_KEY",
+                                    value_from=client.V1EnvVarSource(
+                                        secret_key_ref=client.V1SecretKeySelector(
+                                            name="lobmob-secrets", key="GEMINI_API_KEY",
+                                            optional=True,
+                                        )
+                                    ),
+                                )] if lobster_type == "image-gen" else []
+                            ),
                             resources=client.V1ResourceRequirements(
                                 requests={"memory": "1Gi", "cpu": "500m"},
                                 limits={"memory": "3Gi", "cpu": "1500m"},

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 @dataclass
 class LobsterConfig:
     task_id: str = ""
-    lobster_type: str = "research"  # research, swe, qa
+    lobster_type: str = "research"  # research, swe, qa, image-gen
+    workflow: str = "default"  # default, android, unity (applies to swe type)
     vault_path: str = "/opt/vault"
     skills_path: str = "/app/skills"
     anthropic_api_key: str = ""
@@ -20,6 +21,7 @@ class LobsterConfig:
         return cls(
             task_id=os.environ.get("TASK_ID", ""),
             lobster_type=lobster_type,
+            workflow=os.environ.get("LOBSTER_WORKFLOW", "default"),
             vault_path=os.environ.get("VAULT_PATH", "/opt/vault"),
             skills_path=os.environ.get("SKILLS_PATH", "/app/skills"),
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
