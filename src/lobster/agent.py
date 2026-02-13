@@ -88,6 +88,14 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         allowed_tools.extend(["Edit", "Write", "Bash"])
     elif config.lobster_type == "qa":
         allowed_tools.append("Bash")  # read-only bash (enforced by hooks)
+    elif config.lobster_type == "image-gen":
+        allowed_tools.extend(["Write", "Bash"])  # save images, run git for vault
+
+    # MCP servers for specialized types
+    mcp_servers = []
+    if config.lobster_type == "image-gen":
+        from lobster.mcp_gemini import gemini_mcp
+        mcp_servers.append(gemini_mcp)
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
@@ -98,6 +106,7 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         max_budget_usd=10.0,
         cwd=os.environ.get("WORKSPACE", "/workspace"),
         can_use_tool=create_tool_checker(config.lobster_type),
+        mcp_servers=mcp_servers or None,
         stderr=lambda line: logger.debug("CLI: %s", line.rstrip()),
     )
 
