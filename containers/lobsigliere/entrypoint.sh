@@ -10,6 +10,9 @@ fi
 # Clean PVC lost+found if present
 rm -rf /home/engineer/lost+found
 
+# Fix home dir ownership (PVC mounts as root, sshd StrictModes requires user ownership)
+chown engineer:engineer /home/engineer
+
 # Ensure .ssh dir exists (PVC mount overwrites home dir from image build)
 mkdir -p /home/engineer/.ssh
 chmod 700 /home/engineer/.ssh
