@@ -8,20 +8,28 @@ from dataclasses import dataclass, field
 class DiscordConfig:
     token: str = ""
     guild_id: int = 0
-    task_queue_channel: str = ""
-    swarm_control_channel: str = ""
-    swarm_logs_channel: str = ""
+    task_queue_channel_id: int = 0
+    swarm_control_channel_id: int = 0
+    swarm_logs_channel_id: int = 0
+
+    @property
+    def allowed_channel_ids(self) -> set[int]:
+        return {
+            cid for cid in (
+                self.task_queue_channel_id,
+                self.swarm_control_channel_id,
+                self.swarm_logs_channel_id,
+            ) if cid
+        }
 
     @classmethod
     def from_env(cls) -> "DiscordConfig":
-        env = os.environ.get("LOBMOB_ENV", "prod")
-        prefix = "DEV_" if env == "dev" else ""
         return cls(
-            token=os.environ["DISCORD_TOKEN"],
+            token=os.environ["DISCORD_BOT_TOKEN"],
             guild_id=int(os.environ.get("DISCORD_GUILD_ID", "467002962456084481")),
-            task_queue_channel=os.environ.get(f"{prefix}TASK_QUEUE_CHANNEL", ""),
-            swarm_control_channel=os.environ.get(f"{prefix}SWARM_CONTROL_CHANNEL", ""),
-            swarm_logs_channel=os.environ.get(f"{prefix}SWARM_LOGS_CHANNEL", ""),
+            task_queue_channel_id=int(os.environ.get("TASK_QUEUE_CHANNEL_ID", "0")),
+            swarm_control_channel_id=int(os.environ.get("SWARM_CONTROL_CHANNEL_ID", "0")),
+            swarm_logs_channel_id=int(os.environ.get("SWARM_LOGS_CHANNEL_ID", "0")),
         )
 
 

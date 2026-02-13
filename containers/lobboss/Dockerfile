@@ -12,8 +12,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN curl -fsSL "https://github.com/digitalocean/doctl/releases/latest/download/doctl-$(curl -fsSL https://api.github.com/repos/digitalocean/doctl/releases/latest | jq -r .tag_name | tr -d v)-linux-$(dpkg --print-architecture).tar.gz" \
     | tar xz -C /usr/local/bin
 
-# Lobboss source
+# Source
 COPY src/lobboss/ /app/lobboss/
+COPY src/common/ /app/common/
 
 # Skills
 COPY skills/lobboss/ /app/skills/
