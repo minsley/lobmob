@@ -35,11 +35,18 @@ fi
 
 # Set up .bashrc with lobmob environment (idempotent)
 if ! grep -q "lobmob environment" /home/engineer/.bashrc 2>/dev/null; then
-cat >> /home/engineer/.bashrc <<'BASHRC'
+# Interpolated section (bake in current env values)
+cat >> /home/engineer/.bashrc <<ENVBLOCK
 
 # lobmob environment
-export PATH="/opt/lobmob/scripts:${PATH}"
 export LOBMOB_ENV="${LOBMOB_ENV:-dev}"
+export KUBERNETES_SERVICE_HOST="${KUBERNETES_SERVICE_HOST:-}"
+export KUBERNETES_SERVICE_PORT="${KUBERNETES_SERVICE_PORT:-443}"
+ENVBLOCK
+
+# Literal section (no interpolation)
+cat >> /home/engineer/.bashrc <<'BASHRC'
+export PATH="/opt/lobmob/scripts:${PATH}"
 
 alias k="kubectl"
 alias kn="kubectl -n lobmob"
@@ -48,10 +55,9 @@ alias kp="kubectl -n lobmob get pods"
 alias kj="kubectl -n lobmob get jobs"
 
 echo "lobsigliere — lobmob remote operations console"
-echo "  env:       ${LOBMOB_ENV:-dev}"
-echo "  lobmob:    $(lobmob --version 2>/dev/null || echo 'available')"
-echo "  kubectl:   $(kubectl version --client --short 2>/dev/null || echo 'available')"
-echo "  terraform: $(terraform version -json 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || echo 'available')"
+echo "  env:       ${LOBMOB_ENV}"
+echo "  kubectl:   $(kubectl version --client --short 2>/dev/null || kubectl version --client 2>&1 | head -1)"
+echo "  terraform: $(terraform version 2>&1 | head -1)"
 echo ""
 BASHRC
 fi
