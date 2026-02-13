@@ -7,6 +7,14 @@ if [[ ! -f /etc/ssh/ssh_host_ed25519_key ]]; then
     ssh-keygen -A
 fi
 
+# Clean PVC lost+found if present
+rm -rf /home/engineer/lost+found
+
+# Ensure .ssh dir exists (PVC mount overwrites home dir from image build)
+mkdir -p /home/engineer/.ssh
+chmod 700 /home/engineer/.ssh
+chown engineer:engineer /home/engineer/.ssh
+
 # Copy authorized_keys from mounted secret if present
 if [[ -f /run/secrets/ssh-authorized-keys/authorized_keys ]]; then
     cp /run/secrets/ssh-authorized-keys/authorized_keys /home/engineer/.ssh/authorized_keys
@@ -22,7 +30,8 @@ if [[ -n "${GIT_USER_EMAIL:-}" ]]; then
     su - engineer -c "git config --global user.email '${GIT_USER_EMAIL}'"
 fi
 
-# Set up .bashrc with lobmob environment
+# Set up .bashrc with lobmob environment (idempotent)
+if ! grep -q "lobmob environment" /home/engineer/.bashrc 2>/dev/null; then
 cat >> /home/engineer/.bashrc <<'BASHRC'
 
 # lobmob environment
@@ -42,6 +51,7 @@ echo "  kubectl:   $(kubectl version --client --short 2>/dev/null || echo 'avail
 echo "  terraform: $(terraform version -json 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["terraform_version"])' 2>/dev/null || echo 'available')"
 echo ""
 BASHRC
+fi
 
 chown engineer:engineer /home/engineer/.bashrc
 
