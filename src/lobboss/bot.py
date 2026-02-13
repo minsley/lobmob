@@ -7,11 +7,13 @@ import signal
 
 import discord
 
+from lobboss.agent import LobbossAgent
 from lobboss.config import Config
 
 logger = logging.getLogger("lobboss.bot")
 
 DEDUP_MAX = 1000
+MAX_DISCORD_MSG_LEN = 2000
 
 
 class LobbossBot(discord.Client):
@@ -28,7 +30,7 @@ class LobbossBot(discord.Client):
         self._allowed_channels = config.discord.allowed_channel_ids
         self._processed: collections.deque[int] = collections.deque(maxlen=DEDUP_MAX)
         self._queue: asyncio.Queue[discord.Message] = asyncio.Queue()
-        self._agent = None  # Set later when Agent SDK is wired in (Task 1.3)
+        self._agent = LobbossAgent(config.agent)
 
     async def setup_hook(self) -> None:
         """Called after login, before the bot starts receiving events."""
@@ -77,10 +79,59 @@ class LobbossBot(discord.Client):
             finally:
                 self._queue.task_done()
 
+    async def _get_or_create_thread(self, message: discord.Message) -> discord.Thread:
+        """Get the thread for a message, or create one if it's a top-level message in task-queue."""
+        # Already in a thread — use it
+        if isinstance(message.channel, discord.Thread):
+            return message.channel
+
+        # Top-level message in task-queue — create a thread
+        if message.channel.id == self.config.discord.task_queue_channel_id:
+            thread_name = message.content[:100].strip() or f"Task from {message.author.display_name}"
+            thread = await message.create_thread(name=thread_name)
+            logger.info("Created thread %s (%s) for message %s", thread.name, thread.id, message.id)
+            return thread
+
+        # Top-level message in other channels — reply in-channel (use channel id as "thread" key)
+        return message.channel
+
     async def _handle_message(self, message: discord.Message) -> None:
-        """Handle a single message. Agent SDK integration goes here (Task 1.3)."""
-        # For now, just log. Agent SDK wiring replaces this.
-        logger.info("Would process message %s from %s", message.id, message.author.display_name)
+        """Route a message through the Agent SDK and post the response."""
+        thread = await self._get_or_create_thread(message)
+        thread_id = thread.id
+
+        # Show typing indicator while the agent works
+        async with thread.typing():
+            responses = await self._agent.query(message.content, thread_id)
+
+        # Post responses, splitting if needed for Discord's 2000 char limit
+        for text in responses:
+            for chunk in _split_message(text):
+                await thread.send(chunk)
+
+    async def close(self) -> None:
+        """Shut down agent sessions, then disconnect."""
+        await self._agent.close_all()
+        await super().close()
+
+
+def _split_message(text: str) -> list[str]:
+    """Split text into chunks that fit in a Discord message."""
+    if len(text) <= MAX_DISCORD_MSG_LEN:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= MAX_DISCORD_MSG_LEN:
+            chunks.append(text)
+            break
+        # Try to split on newline
+        split_at = text.rfind("\n", 0, MAX_DISCORD_MSG_LEN)
+        if split_at == -1:
+            split_at = MAX_DISCORD_MSG_LEN
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip("\n")
+    return chunks
 
 
 def main() -> None:
