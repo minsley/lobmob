@@ -1,0 +1,130 @@
+# Template used by lobboss Python code to create lobster Jobs.
+# Placeholders (${...}) are filled by the spawn_lobster MCP tool at runtime.
+# This file is NOT applied directly with kubectl.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "lobster-${lobster_type}-${task_id}"
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobster
+    app.kubernetes.io/part-of: lobmob
+    lobmob.io/task-id: "${task_id}"
+    lobmob.io/lobster-type: "${lobster_type}"
+    lobmob.io/workflow: "${workflow}"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 7200  # 2 hour hard timeout
+  ttlSecondsAfterFinished: 3600  # clean up completed jobs after 1h
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lobster
+        app.kubernetes.io/part-of: lobmob
+        lobmob.io/task-id: "${task_id}"
+        lobmob.io/lobster-type: "${lobster_type}"
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        lobmob.io/role: lobster
+      serviceAccountName: lobster
+      # Init container: clone the vault
+      initContainers:
+        - name: vault-clone
+          image: alpine/git:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              git clone "https://x-access-token:${gh_token}@github.com/${vault_repo}.git" /opt/vault
+          volumeMounts:
+            - name: vault
+              mountPath: /opt/vault
+      containers:
+        - name: lobster
+          image: "${lobster_image}"
+          imagePullPolicy: Always
+          args:
+            - "--task"
+            - "${task_id}"
+            - "--type"
+            - "${lobster_type}"
+            - "--vault-path"
+            - "/opt/vault"
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lobmob-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lobmob-secrets
+                  key: GH_APP_PRIVATE_KEY
+            - name: LOBMOB_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: lobboss-config
+                  key: LOBMOB_ENV
+            - name: TASK_ID
+              value: "${task_id}"
+            - name: LOBSTER_TYPE
+              value: "${lobster_type}"
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "3Gi"
+              cpu: "1500m"
+          volumeMounts:
+            - name: vault
+              mountPath: /opt/vault
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: vault
+          emptyDir: {}
+        - name: workspace
+          emptyDir: {}
+---
+# Minimal ServiceAccount for lobsters — no Job management permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lobster
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobster
+    app.kubernetes.io/part-of: lobmob
+---
+# Network policy: lobsters can only reach Anthropic API, GitHub, and DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lobster-egress
+  namespace: lobmob
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: lobster
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS (Anthropic API, GitHub, PyPI, npm)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 443
+    # SSH (git over SSH, if needed)
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 22
