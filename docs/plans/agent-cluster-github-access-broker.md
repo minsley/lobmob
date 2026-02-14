@@ -340,6 +340,26 @@ The vault repo is always included implicitly. `repos` lists additional project r
 
 Every token issuance logged with timestamp, task_id, repos, and action. Visible in lobwife web dashboard and via API. Persisted to PVC state file.
 
+### PEM key rotation: `lobmob setup rotate-pem`
+
+If the PEM key is compromised or the GitHub App's private key is regenerated in GitHub settings, the operator needs to push the new key to the cluster and restart lobwife. This is a single CLI command:
+
+```
+lobmob setup rotate-pem <path-to-new-pem-file>
+lobmob setup rotate-pem --from-stdin < new-key.pem
+```
+
+Flow:
+1. Read new PEM from file path or stdin
+2. Validate it looks like an RSA private key (starts with `-----BEGIN RSA PRIVATE KEY-----`)
+3. Base64-encode and update `GH_APP_PEM` in `secrets.env` (or `secrets-dev.env` if `--env dev`)
+4. Update the `lobwife-secrets` k8s Secret (or `lobmob-secrets` during migration) with the new value
+5. Restart lobwife deployment to pick up the new key: `kubectl rollout restart deployment/lobwife`
+6. Verify: call lobwife's `/health` endpoint and confirm broker reports PEM loaded
+7. All in-flight installation tokens remain valid until their natural expiry (up to 1 hour) — no disruption to running lobsters
+
+The old PEM is immediately invalidated on GitHub's side when a new key is generated, so any tokens lobwife generates with the old key after GitHub's revocation will fail. The restart ensures lobwife picks up the new key promptly.
+
 ### What lobsters CANNOT do
 
 - Access repos not registered for their task

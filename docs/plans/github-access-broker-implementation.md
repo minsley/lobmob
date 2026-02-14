@@ -416,11 +416,107 @@ if prompt_yn "Push secrets to cluster now?"; then
 fi
 ```
 
-#### 5.3 Register commands in CLI dispatcher
+#### 5.3 Create `setup-rotate-pem.sh`
+
+**File**: `scripts/commands/setup-rotate-pem.sh`
+
+Emergency PEM rotation command for when a key is revoked/regenerated on GitHub:
+
+```
+lobmob setup rotate-pem <path-to-pem>
+lobmob setup rotate-pem --from-stdin < new-key.pem
+lobmob --env dev setup rotate-pem <path-to-pem>
+```
+
+Implementation:
+
+```bash
+PEM_SOURCE="${1:-}"
+
+# Read PEM from file or stdin
+if [[ "$PEM_SOURCE" == "--from-stdin" ]]; then
+    PEM_RAW=$(cat)
+elif [[ -n "$PEM_SOURCE" && -f "$PEM_SOURCE" ]]; then
+    PEM_RAW=$(cat "$PEM_SOURCE")
+else
+    err "Usage: lobmob setup rotate-pem <pem-file>"
+    err "       lobmob setup rotate-pem --from-stdin < key.pem"
+    exit 1
+fi
+
+# Validate PEM format
+if [[ "$PEM_RAW" != *"BEGIN RSA PRIVATE KEY"* && "$PEM_RAW" != *"BEGIN PRIVATE KEY"* ]]; then
+    err "File does not appear to be a PEM private key"
+    exit 1
+fi
+
+PEM_B64=$(echo "$PEM_RAW" | base64)
+
+# 1. Update secrets file
+log "Updating $SECRETS_FILE..."
+# Replace GH_APP_PEM line (or append if missing)
+if grep -q "^GH_APP_PEM=" "$SECRETS_FILE"; then
+    portable_sed_i "s|^GH_APP_PEM=.*|GH_APP_PEM=${PEM_B64}|" "$SECRETS_FILE"
+else
+    echo "GH_APP_PEM=${PEM_B64}" >> "$SECRETS_FILE"
+fi
+
+# 2. Update k8s secret
+log "Updating k8s secret..."
+kubectl --context "$KUBE_CONTEXT" -n lobmob create secret generic lobwife-secrets \
+    --from-literal="GH_APP_PEM=${PEM_B64}" \
+    --from-literal="GH_APP_ID=${GH_APP_ID}" \
+    --from-literal="GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+# 3. Restart lobwife
+log "Restarting lobwife..."
+kubectl --context "$KUBE_CONTEXT" -n lobmob rollout restart deployment/lobwife
+kubectl --context "$KUBE_CONTEXT" -n lobmob rollout status deployment/lobwife --timeout=120s
+
+# 4. Verify
+log "Verifying broker health..."
+sleep 5
+kubectl --context "$KUBE_CONTEXT" -n lobmob port-forward svc/lobwife 18080:8080 &>/dev/null &
+PF_PID=$!
+sleep 3
+HEALTH=$(curl -sf http://localhost:18080/health 2>/dev/null || true)
+kill "$PF_PID" 2>/dev/null; wait "$PF_PID" 2>/dev/null || true
+
+if [[ "$HEALTH" == *'"ok"'* ]]; then
+    log "PEM rotation complete. Lobwife is healthy."
+    log "Note: existing installation tokens remain valid up to 1 hour."
+else
+    err "Lobwife health check failed after rotation. Check pod logs."
+    exit 1
+fi
+```
+
+Key details:
+- Reads `GH_APP_ID` and `GH_APP_INSTALL_ID` from existing secrets file (they don't change during PEM rotation)
+- Uses `kubectl create secret --dry-run=client -o yaml | kubectl apply -f -` to upsert the secret
+- During migration (before Phase 4 is complete), also update `lobmob-secrets` if that's where the PEM lives
+- Restarts lobwife and waits for rollout to complete before verifying
+- Environment-aware: `--env dev` targets the dev cluster/secrets
+
+#### 5.4 Register commands in CLI dispatcher
 
 **File**: `scripts/lobmob`
 
-Add `setup` and `setup-github` commands to the case statement and usage text.
+Add `setup`, `setup-github`, and `setup-rotate-pem` commands to the case statement and usage text. The `setup` subcommands use a nested dispatch pattern:
+
+```bash
+setup)
+    SETUP_CMD="${1:-}"
+    shift || true
+    case "$SETUP_CMD" in
+        ""|wizard)    source "$SCRIPT_DIR/commands/setup.sh" ;;
+        github)       source "$SCRIPT_DIR/commands/setup-github.sh" ;;
+        rotate-pem)   source "$SCRIPT_DIR/commands/setup-rotate-pem.sh" ;;
+        *)            err "Unknown setup command: $SETUP_CMD"; exit 1 ;;
+    esac
+    ;;
+```
 
 **Commit checkpoint**: "Add lobmob setup and lobmob setup github commands"
 
@@ -462,6 +558,7 @@ During Phase 1-2, the old PEM injection path must continue working. Verify by de
 | `scripts/git-credential-lobwife` | Git credential helper (bash) |
 | `scripts/commands/setup.sh` | Interactive bootstrap wizard |
 | `scripts/commands/setup-github.sh` | GitHub App manifest flow |
+| `scripts/commands/setup-rotate-pem.sh` | Emergency PEM key rotation |
 
 ### Modified files
 
@@ -470,7 +567,7 @@ During Phase 1-2, the old PEM injection path must continue working. Verify by de
 | `scripts/server/lobwife-daemon.py` | Add TokenBroker class + HTTP routes |
 | `scripts/server/lobwife-web.js` | Add broker status to dashboard |
 | `scripts/commands/verify.sh` | Add broker verification checks |
-| `scripts/lobmob` | Register setup, setup-github commands |
+| `scripts/lobmob` | Register setup, setup-github, setup-rotate-pem commands |
 | `src/lobboss/mcp_tools.py` | Task registration + replace PEM with LOBWIFE_URL |
 | `src/lobster/run_task.py` | Configure git credential helper |
 | `containers/lobwife/requirements.txt` | Add PyJWT, cryptography |
