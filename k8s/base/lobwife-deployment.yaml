@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lobwife
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobwife
+    app.kubernetes.io/part-of: lobmob
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # single instance, PVC is RWO
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: lobwife
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: lobwife
+        app.kubernetes.io/part-of: lobmob
+    spec:
+      serviceAccountName: lobwife
+      imagePullSecrets:
+        - name: ghcr-pull-secret
+      containers:
+        - name: lobwife
+          image: ghcr.io/minsley/lobmob-lobwife:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 22
+              name: ssh
+            - containerPort: 8080
+              name: http
+          env:
+            - name: GIT_USER_NAME
+              value: "lobwife"
+            - name: GIT_USER_EMAIL
+              value: "lobwife@lobmob.local"
+          envFrom:
+            - secretRef:
+                name: lobmob-secrets
+            - configMapRef:
+                name: lobboss-config
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: home
+              mountPath: /home/lobwife
+            - name: vault
+              mountPath: /opt/vault
+            - name: ssh-keys
+              mountPath: /run/secrets/ssh-authorized-keys
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: lobwife-home
+        - name: vault
+          persistentVolumeClaim:
+            claimName: vault-pvc
+        - name: ssh-keys
+          secret:
+            secretName: lobwife-ssh-keys
+            optional: true

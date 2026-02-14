@@ -7,7 +7,10 @@ resources:
   - lobboss-pvc.yaml
   - lobboss-service.yaml
   - lobster-rbac.yaml
-  - cronjobs.yaml
+  - lobwife-deployment.yaml
+  - lobwife-service.yaml
+  - lobwife-pvc.yaml
+  - lobwife-rbac.yaml
   - lobsigliere-deployment.yaml
   - lobsigliere-service.yaml
   - lobsigliere-pvc.yaml
