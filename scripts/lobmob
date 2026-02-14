@@ -57,6 +57,11 @@ Vault:
   vault-init          Initialize the Obsidian vault GitHub repo
   vault-sync          Pull latest vault to local machine
 
+Secrets:
+  secrets push        Push secrets.env to k8s lobmob-secrets
+  secrets push-broker Push GitHub App creds to k8s lobwife-secrets
+  secrets show        Show which secrets are configured
+
 Utilities:
   status              Show fleet status
   verify [target]     Post-deploy verification (lobwife, lobboss, all)
@@ -76,6 +81,7 @@ case "$COMMAND" in
   build)               source "$SCRIPT_DIR/commands/build.sh" ;;
   restart)             source "$SCRIPT_DIR/commands/restart.sh" ;;
   rollout)             source "$SCRIPT_DIR/commands/rollout.sh" ;;
+  secrets)             source "$SCRIPT_DIR/commands/secrets.sh" ;;
   status)              source "$SCRIPT_DIR/commands/status.sh" ;;
   verify)              source "$SCRIPT_DIR/commands/verify.sh" ;;
   vault-init)          source "$SCRIPT_DIR/commands/vault-init.sh" ;;
