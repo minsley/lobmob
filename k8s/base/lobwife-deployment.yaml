@@ -38,6 +38,9 @@ spec:
               value: "lobwife@lobmob.local"
           envFrom:
             - secretRef:
+                name: lobwife-secrets
+                optional: true
+            - secretRef:
                 name: lobmob-secrets
             - configMapRef:
                 name: lobboss-config

@@ -64,12 +64,7 @@ JOB_DEFS = {
         "description": "Fleet summary posted to Discord",
         "concurrency": "forbid",
     },
-    "gh-token-refresh": {
-        "script": "lobmob-gh-token.sh",
-        "schedule": "*/45 * * * *",
-        "description": "GitHub App installation token refresh",
-        "concurrency": "forbid",
-    },
+    # gh-token-refresh removed — token broker generates tokens on-demand
     "flush-logs": {
         "script": "lobmob-flush-logs.sh",
         "schedule": "*/30 * * * *",

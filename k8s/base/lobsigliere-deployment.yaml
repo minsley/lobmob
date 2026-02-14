@@ -29,6 +29,11 @@ spec:
           ports:
             - containerPort: 22
               name: ssh
+          env:
+            - name: GIT_USER_NAME
+              value: "lobsigliere"
+            - name: GIT_USER_EMAIL
+              value: "lobsigliere@lobmob.local"
           envFrom:
             - secretRef:
                 name: lobmob-secrets

@@ -33,7 +33,6 @@ case "$SUBCMD" in
     [[ -n "${ANTHROPIC_API_KEY:-}" ]] && ARGS+=(--from-literal="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
     [[ -n "${DISCORD_BOT_TOKEN:-}" ]] && ARGS+=(--from-literal="DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}")
     [[ -n "${GH_TOKEN:-}" ]] && ARGS+=(--from-literal="GH_TOKEN=${GH_TOKEN}")
-    [[ -n "${GH_APP_PRIVATE_KEY:-}" ]] && ARGS+=(--from-literal="GH_APP_PRIVATE_KEY=${GH_APP_PRIVATE_KEY}")
     [[ -n "${GEMINI_API_KEY:-}" ]] && ARGS+=(--from-literal="GEMINI_API_KEY=${GEMINI_API_KEY}")
 
     if [[ ${#ARGS[@]} -eq 0 ]]; then
