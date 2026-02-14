@@ -42,6 +42,8 @@ class LobbossBot(discord.Client):
         """Called after login, before the bot starts receiving events."""
         self.loop.create_task(self._process_queue())
         self.loop.create_task(self._write_health_status())
+        if self.config.poller.enabled:
+            self.loop.create_task(self._run_task_poller())
 
     async def on_ready(self) -> None:
         logger.info("Connected as %s (id=%s)", self.user, self.user.id)
@@ -115,6 +117,18 @@ class LobbossBot(discord.Client):
         for text in responses:
             for chunk in _split_message(text):
                 await thread.send(chunk)
+
+    async def _run_task_poller(self) -> None:
+        """Background task: poll vault for queued tasks and spawn lobsters."""
+        from lobboss.task_poller import run_poller
+
+        logger.info("Starting task poller")
+        await run_poller(
+            vault_path=self.config.vault_path,
+            interval=self.config.poller.interval_seconds,
+            max_concurrent=self.config.poller.max_concurrent_lobsters,
+            bot=self,
+        )
 
     async def _write_health_status(self) -> None:
         """Periodically write health status JSON for the web server to read."""
