@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lobwife-home
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobwife
+    app.kubernetes.io/part-of: lobmob
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

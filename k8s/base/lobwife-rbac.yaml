@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lobwife
+  namespace: lobmob
+  labels:
+    app.kubernetes.io/name: lobwife
+    app.kubernetes.io/part-of: lobmob
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: lobwife-role
+  namespace: lobmob
+rules:
+  # Read lobster jobs (for task-manager to check status)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  # Read pods (for task-manager and status-reporter)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # ConfigMaps (for state persistence and reading config)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Read secrets (for gh-token-refresh to update token)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: lobwife-rolebinding
+  namespace: lobmob
+subjects:
+  - kind: ServiceAccount
+    name: lobwife
+    namespace: lobmob
+roleRef:
+  kind: Role
+  name: lobwife-role
+  apiGroup: rbac.authorization.k8s.io

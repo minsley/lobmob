@@ -51,6 +51,33 @@ elif [[ "$TARGET" == "lobsigliere" ]]; then
   done
 
   ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" engineer@localhost
+
+elif [[ "$TARGET" == "lobwife" ]]; then
+  log "Port-forwarding to lobwife service ($LOBMOB_ENV)..."
+  log "Dashboard: http://localhost:$LOCAL_PORT"
+  log "Press Ctrl+C to disconnect"
+  echo ""
+
+  ( sleep 2 && open_browser "http://localhost:$LOCAL_PORT" ) &
+
+  kubectl --context "$KUBE_CONTEXT" -n lobmob port-forward svc/lobwife "$LOCAL_PORT:8080"
+
+elif [[ "$TARGET" == "lobwife-ssh" ]]; then
+  SSH_PORT="${LOBMOB_SSH_PORT:-2223}"
+  log "Connecting to lobwife via SSH ($LOBMOB_ENV)..."
+
+  kubectl --context "$KUBE_CONTEXT" -n lobmob port-forward svc/lobwife "$SSH_PORT:22" &>/dev/null &
+  PF_PID=$!
+  trap "kill $PF_PID 2>/dev/null" EXIT
+
+  for i in $(seq 1 20); do
+    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=1 -p "$SSH_PORT" lobwife@localhost true 2>/dev/null; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  ssh -o StrictHostKeyChecking=no -p "$SSH_PORT" lobwife@localhost
 else
   # Find the pod for a lobster job
   POD_NAME=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pods \
