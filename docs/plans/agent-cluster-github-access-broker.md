@@ -1,1130 +1,426 @@
-# Claude Code Agent Cluster - GitHub Access Architecture
+# GitHub Access Broker & Setup Wizard
 
-## System Overview
+> Centralized GitHub credential management for the lobmob agent cluster.
+> Replaces per-pod PEM injection with a token broker on lobwife + automated setup.
 
-This system manages GitHub repository access for a Kubernetes-based cluster of Claude Code agents. The architecture uses:
+## Problem
 
-- **Setup Wizard**: Programmatic GitHub App creation with user interaction
-- **Lobwife**: Credential broker service (K8s deployment)
-- **Lobsters**: Claude Code agent workers (K8s pods)
-- **Token Flow**: Short-lived, repository-scoped installation tokens with automatic refresh
+1. **PEM key sprayed everywhere**: The GitHub App private key is injected into every lobster pod via `lobmob-secrets`. Any pod compromise exposes the full key.
+2. **No repo scoping**: Every lobster gets the same unscoped installation token. A research lobster has the same GitHub access as an SWE lobster.
+3. **No mid-task refresh**: Tokens expire hourly. Long SWE tasks (multi-hour Unity builds, large refactors) will fail mid-push.
+4. **Manual setup**: Creating the GitHub App is a 6-step manual checklist. Barrier to adoption and open-source onboarding.
+5. **Multi-repo tasks not supported**: SWE lobsters will need access to project repos (Unity, Android, etc.) alongside the vault. Current init container only clones the vault.
 
-## Architecture Components
+## Architecture
 
 ```
-┌─────────────┐
-│ Setup Wizard│──┐
-└─────────────┘  │ (creates GitHub App)
-                 ↓
-         ┌──────────────┐
-         │  GitHub API  │
-         └──────────────┘
-                 ↑
-                 │ (requests tokens)
-         ┌──────────────┐
-         │   Lobwife    │←─────────┐
-         │   (Broker)   │          │
-         └──────────────┘          │
-                 ↑                 │
-                 │ (token requests)│ (refresh requests)
-         ┌──────────────┐          │
-         │   Lobster    │──────────┘
-         │   (Agent)    │
-         └──────────────┘
-                 │
-                 ↓
-         ┌──────────────┐
-         │  Git Repos   │
-         └──────────────┘
+                    ┌──────────────┐
+                    │  GitHub API  │
+                    └──────┬───────┘
+                           │
+            ┌──────────────▼──────────────┐
+            │         lobwife             │
+            │  (existing persistent pod)  │
+            │                             │
+            │  Cron scheduler (existing)  │
+            │  + Token broker (new)       │
+            │  + gh-token-refresh (JWT)   │
+            │                             │
+            │  PEM key stays HERE only    │
+            └──────┬──────────────┬───────┘
+                   │              │
+        ┌──────────▼───┐   ┌─────▼──────────┐
+        │   lobboss    │   │    lobster      │
+        │              │   │                 │
+        │ registers    │   │ requests token  │
+        │ task repos   │   │ via credential  │
+        │ at spawn     │   │ helper (HTTP)   │
+        └──────────────┘   └────────┬────────┘
+                                    │
+                           ┌────────▼────────┐
+                           │  Git Repos      │
+                           │  (vault + proj) │
+                           └─────────────────┘
 ```
+
+### Token Flow
+
+1. **lobboss** spawns a lobster Job and calls lobwife `POST /api/tasks/{id}/register` with the repo list (vault + project repos)
+2. **lobster** pod starts with `LOBWIFE_URL` and `TASK_ID` env vars (no PEM, no GH_TOKEN)
+3. **git credential helper** in lobster image calls lobwife `POST /api/token` on every git operation
+4. **lobwife** validates the task is registered, generates a repo-scoped installation token via GitHub API, returns it
+5. For long tasks, the credential helper transparently fetches a fresh token on each git operation — no background daemon needed
+6. **lobwife** logs every token issuance for audit
+
+### What changes vs. current system
+
+| Component | Before | After |
+|-----------|--------|-------|
+| PEM key location | `lobmob-secrets` (all pods) | `lobwife-secrets` (lobwife only) |
+| Lobster gets | Raw PEM key via env var | `LOBWIFE_URL` + `TASK_ID` only |
+| Token generation | `gh-token-refresh` cron (unscoped) | On-demand, repo-scoped per task |
+| Token refresh | None (tasks must finish within 1hr) | Transparent via git credential helper |
+| Vault clone | Init container with baked-in token | Init container calls lobwife for token |
+| Project repo clone | Not supported | Agent SDK Bash tool clones via credential helper |
+| Setup | Manual 6-step checklist | `lobmob setup github` CLI wizard |
 
 ---
 
-## 1. Setup Wizard: GitHub App Creation
-
-### Manifest-Based Flow
-
-The setup wizard guides users through GitHub App creation using the manifest API.
-
-### Wizard Implementation
-
-```python
-# setup_wizard.py
-import json
-import base64
-from flask import Flask, redirect, request, session
-import requests
-
-app = Flask(__name__)
-app.secret_key = 'your-secret-key'
-
-@app.route('/setup/start')
-def start_setup():
-    """Step 1: Collect configuration"""
-    return render_template('setup_form.html')
-
-@app.route('/setup/create-app', methods=['POST'])
-def create_github_app():
-    """Step 2: Generate manifest and redirect to GitHub"""
-    
-    org_name = request.form['org_name']
-    webhook_url = request.form.get('webhook_url', 
-                                    'https://lobwife.your-cluster.com/webhook')
-    
-    # Generate GitHub App manifest
-    manifest = {
-        "name": f"Claude Cluster - {org_name}",
-        "url": "https://your-cluster-dashboard.com",
-        "hook_attributes": {
-            "url": webhook_url
-        },
-        "redirect_url": f"{request.host_url}setup/callback",
-        "public": False,
-        "default_permissions": {
-            "contents": "write",
-            "pull_requests": "write",
-            "metadata": "read"
-        },
-        "default_events": ["push", "pull_request"]
-    }
-    
-    # Store org name for callback
-    session['org_name'] = org_name
-    
-    # Encode and redirect
-    encoded = base64.b64encode(json.dumps(manifest).encode()).decode()
-    return redirect(f"https://github.com/settings/apps/new?manifest={encoded}")
-
-@app.route('/setup/callback')
-def github_callback():
-    """Step 3: Receive app credentials from GitHub"""
-    
-    code = request.args.get('code')
-    if not code:
-        return "Error: No code received", 400
-    
-    # Exchange code for credentials
-    response = requests.post(
-        f"https://api.github.com/app-manifests/{code}/conversions",
-        headers={'Accept': 'application/vnd.github.v3+json'}
-    )
-    
-    if response.status_code != 201:
-        return f"Error creating app: {response.text}", 400
-    
-    credentials = response.json()
-    
-    # Store credentials in Kubernetes secrets
-    store_credentials_in_k8s(
-        app_id=credentials['id'],
-        client_id=credentials['client_id'],
-        client_secret=credentials['client_secret'],
-        private_key=credentials['pem'],
-        webhook_secret=credentials['webhook_secret']
-    )
-    
-    return render_template('setup_complete.html', 
-                          app_slug=credentials['slug'],
-                          install_url=f"https://github.com/apps/{credentials['slug']}/installations/new")
-
-def store_credentials_in_k8s(app_id, client_id, client_secret, private_key, webhook_secret):
-    """Store GitHub App credentials in K8s secrets"""
-    import subprocess
-    import tempfile
-    
-    # Write private key to temp file
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem') as f:
-        f.write(private_key)
-        key_file = f.name
-    
-    # Create K8s secret
-    subprocess.run([
-        'kubectl', 'create', 'secret', 'generic', 'github-app-credentials',
-        '--from-literal', f'app-id={app_id}',
-        '--from-literal', f'client-id={client_id}',
-        '--from-literal', f'client-secret={client_secret}',
-        '--from-file', f'private-key={key_file}',
-        '--from-literal', f'webhook-secret={webhook_secret}',
-        '--namespace', 'lobster-cluster'
-    ], check=True)
-    
-    # Clean up temp file
-    import os
-    os.unlink(key_file)
-```
-
-### Setup Wizard UI Flow
-
-```
-┌────────────────────────────────────────┐
-│  Claude Cluster Setup                  │
-├────────────────────────────────────────┤
-│  Step 1: GitHub Access Configuration   │
-│                                         │
-│  Organization: [acme-corp__________]   │
-│  Webhook URL: [auto-filled_________]   │
-│                                         │
-│  [ Create GitHub App ]                 │
-└────────────────────────────────────────┘
-              ↓
-┌────────────────────────────────────────┐
-│  GitHub.com                             │
-│  Create "Claude Cluster - acme-corp"?  │
-│  Permissions: contents, pull_requests  │
-│  [ Cancel ]  [ Create GitHub App ]     │
-└────────────────────────────────────────┘
-              ↓
-┌────────────────────────────────────────┐
-│  Setup Complete!                        │
-│  ✓ GitHub App created                  │
-│  ✓ Credentials stored in cluster       │
-│                                         │
-│  Next: Install app to repositories     │
-│  [ Open Installation Page ]            │
-└────────────────────────────────────────┘
-```
-
----
-
-## 2. Lobwife: Credential Broker Service
+## 1. Setup Wizard: `lobmob setup`
 
 ### Overview
 
-Lobwife is a K8s service that:
-- Generates repository-scoped installation tokens
-- Validates task-to-repo mappings
-- Handles token refresh requests
-- Provides audit logging
+Interactive CLI command that bootstraps a new lobmob deployment. GitHub App creation is one stage; the full setup covers all prerequisites.
 
-### Deployment
+### `lobmob setup` stages
 
-```yaml
-# lobwife-deployment.yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: lobwife
-  namespace: lobster-cluster
-spec:
-  selector:
-    app: lobwife
-  ports:
-  - port: 8080
-    targetPort: 8080
-  type: ClusterIP
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: lobwife
-  namespace: lobster-cluster
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: lobwife
-  template:
-    metadata:
-      labels:
-        app: lobwife
-    spec:
-      containers:
-      - name: lobwife
-        image: your-registry/lobwife:latest
-        ports:
-        - containerPort: 8080
-        env:
-        - name: GITHUB_APP_ID
-          valueFrom:
-            secretKeyRef:
-              name: github-app-credentials
-              key: app-id
-        - name: GITHUB_PRIVATE_KEY
-          valueFrom:
-            secretKeyRef:
-              name: github-app-credentials
-              key: private-key
-        volumeMounts:
-        - name: task-mappings
-          mountPath: /config
-      volumes:
-      - name: task-mappings
-        configMap:
-          name: task-repo-mappings
+```
+lobmob setup
+  1. Prerequisites check (terraform, kubectl, docker buildx, gh CLI)
+  2. DigitalOcean — prompt for API token, validate
+  3. GitHub App — manifest API flow (see below)
+  4. Discord — prompt for bot token, channel IDs
+  5. Anthropic — prompt for API key
+  6. Write secrets.env (and secrets-dev.env if dev)
+  7. Optionally create k8s secrets from the file
 ```
 
-### Lobwife Implementation
+Each stage is idempotent and can be skipped if already configured. `lobmob setup github` runs only the GitHub stage.
 
-```python
-# lobwife/server.py
-from flask import Flask, request, jsonify
-import jwt
-import time
-import requests
-from datetime import datetime, timedelta
-import os
-import logging
+### `lobmob setup github` flow
 
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+Uses the GitHub App manifest API for one-click App creation:
 
-# Load GitHub App credentials
-GITHUB_APP_ID = os.environ['GITHUB_APP_ID']
-GITHUB_PRIVATE_KEY = os.environ['GITHUB_PRIVATE_KEY'].replace('\\n', '\n')
-INSTALLATION_ID = os.environ.get('GITHUB_INSTALLATION_ID')  # Set per org
-
-# In-memory audit log (use persistent storage in production)
-audit_log = []
-
-def generate_jwt():
-    """Generate GitHub App JWT for authentication"""
-    payload = {
-        'iat': int(time.time()),
-        'exp': int(time.time()) + 600,  # 10 minutes
-        'iss': GITHUB_APP_ID
-    }
-    return jwt.encode(payload, GITHUB_PRIVATE_KEY, algorithm='RS256')
-
-def create_installation_token(repositories, permissions=None):
-    """
-    Generate installation token scoped to specific repositories
-    
-    Args:
-        repositories: List of repo names (e.g., ['org/repo-a', 'org/repo-b'])
-        permissions: Dict of permissions (default: contents:write, pull_requests:write)
-    
-    Returns:
-        dict with 'token' and 'expires_at'
-    """
-    if permissions is None:
-        permissions = {
-            "contents": "write",
-            "pull_requests": "write"
-        }
-    
-    app_jwt = generate_jwt()
-    
-    # Extract repo names without org prefix for API
-    repo_names = [repo.split('/')[-1] for repo in repositories]
-    
-    response = requests.post(
-        f"https://api.github.com/app/installations/{INSTALLATION_ID}/access_tokens",
-        headers={
-            'Authorization': f'Bearer {app_jwt}',
-            'Accept': 'application/vnd.github.v3+json'
-        },
-        json={
-            'repositories': repo_names,
-            'permissions': permissions
-        }
-    )
-    
-    if response.status_code != 201:
-        raise Exception(f"Failed to create token: {response.text}")
-    
-    data = response.json()
-    return {
-        'token': data['token'],
-        'expires_at': data['expires_at']
-    }
-
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy'})
-
-@app.route('/credentials', methods=['POST'])
-def get_credentials():
-    """
-    Generate credentials for a task
-    
-    Request body:
-    {
-        "task_id": "task-abc-123",
-        "repos": ["org/repo-a", "org/repo-b"]
-    }
-    
-    Returns:
-    {
-        "token": "ghs_...",
-        "expires_at": "2024-01-01T12:00:00Z",
-        "expires_in": 3600
-    }
-    """
-    data = request.json
-    task_id = data.get('task_id')
-    repos = data.get('repos', [])
-    
-    if not task_id or not repos:
-        return jsonify({'error': 'task_id and repos required'}), 400
-    
-    try:
-        # Validate repos (optional: check against allowed list)
-        validate_repo_access(task_id, repos)
-        
-        # Generate scoped token
-        token_data = create_installation_token(repos)
-        
-        # Audit log
-        log_entry = {
-            'timestamp': datetime.utcnow().isoformat(),
-            'task_id': task_id,
-            'repos': repos,
-            'action': 'token_created',
-            'expires_at': token_data['expires_at']
-        }
-        audit_log.append(log_entry)
-        logging.info(f"Token created for task {task_id}: {repos}")
-        
-        return jsonify({
-            'token': token_data['token'],
-            'expires_at': token_data['expires_at'],
-            'expires_in': 3600
-        })
-    
-    except Exception as e:
-        logging.error(f"Error creating token for task {task_id}: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/credentials/refresh', methods=['POST'])
-def refresh_credentials():
-    """
-    Refresh credentials for an active task
-    
-    Request body:
-    {
-        "task_id": "task-abc-123"
-    }
-    """
-    data = request.json
-    task_id = data.get('task_id')
-    
-    if not task_id:
-        return jsonify({'error': 'task_id required'}), 400
-    
-    try:
-        # Lookup task to get repos (from task DB or cache)
-        task = get_task_info(task_id)
-        
-        if not task or task.get('status') != 'running':
-            return jsonify({'error': 'Task not active'}), 403
-        
-        repos = task['repos']
-        
-        # Generate new token
-        token_data = create_installation_token(repos)
-        
-        # Audit log
-        log_entry = {
-            'timestamp': datetime.utcnow().isoformat(),
-            'task_id': task_id,
-            'repos': repos,
-            'action': 'token_refreshed',
-            'expires_at': token_data['expires_at']
-        }
-        audit_log.append(log_entry)
-        logging.info(f"Token refreshed for task {task_id}")
-        
-        return jsonify({
-            'token': token_data['token'],
-            'expires_at': token_data['expires_at'],
-            'expires_in': 3600
-        })
-    
-    except Exception as e:
-        logging.error(f"Error refreshing token for task {task_id}: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/audit', methods=['GET'])
-def get_audit_log():
-    """Retrieve audit log entries"""
-    task_id = request.args.get('task_id')
-    
-    if task_id:
-        filtered = [entry for entry in audit_log if entry['task_id'] == task_id]
-        return jsonify(filtered)
-    
-    return jsonify(audit_log[-100:])  # Last 100 entries
-
-def validate_repo_access(task_id, repos):
-    """Validate that task is allowed to access these repos"""
-    # Implement your validation logic here
-    # Could check against ConfigMap, database, etc.
-    pass
-
-def get_task_info(task_id):
-    """Retrieve task information from task database"""
-    # Implement task lookup
-    # This should return task metadata including repos and status
-    # For now, return mock data
-    return {
-        'task_id': task_id,
-        'status': 'running',
-        'repos': ['org/repo-a', 'org/repo-b']
-    }
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
 ```
+1. CLI starts a temporary local HTTP server on localhost:3456
+2. Builds manifest JSON with:
+   - name: "lobmob-fleet" (or user-provided name via --name flag)
+   - permissions: contents:write, pull_requests:write, metadata:read, issues:write
+   - No webhook (not needed — we poll, not push)
+   - redirect_url: http://localhost:3456/callback
+3. Opens browser to: https://github.com/settings/apps/new?manifest={base64}
+   (or https://github.com/organizations/{org}/settings/apps/new?manifest={base64})
+4. User clicks "Create GitHub App" on GitHub
+5. GitHub redirects to localhost:3456/callback?code=XXX
+6. CLI exchanges code for credentials via POST /app-manifests/{code}/conversions
+7. CLI receives: app_id, client_id, client_secret, pem, webhook_secret
+8. CLI prompts: "Install this app to your repositories now? [Y/n]"
+   - Opens: https://github.com/apps/{slug}/installations/new
+   - User selects repos (vault + project repos)
+   - CLI polls for installation_id via GET /app/installations
+9. CLI writes to secrets.env:
+   - GH_APP_ID=...
+   - GH_APP_INSTALL_ID=...
+   - GH_APP_PEM=<base64-encoded PEM>
+10. CLI shuts down temp server
+```
+
+### Implementation notes
+
+- **Bash script** (`scripts/commands/setup.sh` + `scripts/commands/setup-github.sh`), not Python — consistent with CLI patterns
+- Temp HTTP server: `python3 -m http.server` won't work (need routing). Use a small inline Python snippet for the callback server, invoked from bash.
+- The manifest API requires a browser redirect — no way to avoid user interaction
+- For orgs: detect from user input whether to use `/settings/apps/new` or `/organizations/{org}/settings/apps/new`
+- Store PEM as base64 in secrets.env (same as current `GH_APP_PEM` pattern)
 
 ---
 
-## 3. Lobster: Claude Code Agent Workers
+## 2. Token Broker: lobwife endpoints
 
-### Deployment
+### New endpoints on existing lobwife daemon
 
-```yaml
-# lobster-deployment.yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: lobster-task-${TASK_ID}
-  namespace: lobster-cluster
-spec:
-  template:
-    metadata:
-      labels:
-        app: lobster
-        task: ${TASK_ID}
-    spec:
-      restartPolicy: Never
-      containers:
-      - name: lobster
-        image: your-registry/lobster:latest
-        env:
-        - name: TASK_ID
-          value: "${TASK_ID}"
-        - name: TASK_REPOS
-          value: "${TASK_REPOS}"
-        - name: TASK_INSTRUCTIONS
-          value: "${TASK_INSTRUCTIONS}"
-        - name: LOBWIFE_URL
-          value: "http://lobwife.lobster-cluster.svc.cluster.local:8080"
-        - name: ANTHROPIC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: anthropic-credentials
-              key: api-key
-        volumeMounts:
-        - name: skills
-          mountPath: /home/claude/.claude/skills
-      volumes:
-      - name: skills
-        configMap:
-          name: lobster-skills
+Added to `scripts/server/lobwife-daemon.py` alongside the existing cron scheduler API. All endpoints served by the same aiohttp server on port 8081 (proxied through lobwife-web.js on 8080).
+
+### API
+
+```
+POST /api/tasks/{task_id}/register
+  Body: {"repos": ["owner/repo-a", "owner/repo-b"], "lobster_type": "swe"}
+  Called by: lobboss (at job spawn time)
+  Response: {"status": "registered"}
+  Stores: task_id → {repos, lobster_type, registered_at, status: "active"}
+
+POST /api/token
+  Body: {"task_id": "xxx"}
+  Called by: lobster (via git credential helper)
+  Response: {"token": "ghs_...", "expires_at": "ISO8601"}
+  Validates: task is registered and active
+  Generates: repo-scoped installation token via GitHub API
+
+DELETE /api/tasks/{task_id}
+  Called by: lobboss (when job completes/fails) or lobwife cleanup cron
+  Response: {"status": "removed"}
+  Clears: task registration (prevents further token requests)
+
+GET /api/tasks
+  Returns: all registered tasks with status, repos, token count
+  Used by: web dashboard, debugging
+
+GET /api/token/audit
+  Query: ?task_id=xxx (optional)
+  Returns: token issuance log (last 200 entries)
 ```
 
-### Claude Skill: GitHub Token Management
+### Token generation
 
-```markdown
-# github-token-manager/SKILL.md
-
-# GitHub Token Management Skill
-
-This skill provides automatic GitHub token management for lobster agents, including
-initial token retrieval and automatic refresh for long-running tasks.
-
-## Overview
-
-Lobster agents interact with the lobwife broker to obtain short-lived (1-hour),
-repository-scoped GitHub installation tokens. This skill handles:
-
-- Initial token request based on task requirements
-- Automatic token refresh before expiry
-- Git credential helper integration
-- Error handling and retry logic
-
-## Usage in Tasks
-
-When a task requires GitHub access, the agent will:
-
-1. Read `TASK_ID` and `TASK_REPOS` from environment
-2. Request credentials from lobwife
-3. Configure git to use the token
-4. Automatically refresh token every 55 minutes
-5. Perform git operations (clone, commit, push, PR)
-
-## Implementation
-
-### Token Request
+Reuses the existing JWT generation logic from `lobmob-gh-token.sh`, ported to Python:
 
 ```python
-import os
-import requests
-from datetime import datetime, timedelta
+# In lobwife-daemon.py — new TokenBroker class
 
-class GitHubTokenManager:
+class TokenBroker:
     def __init__(self):
-        self.lobwife_url = os.environ['LOBWIFE_URL']
-        self.task_id = os.environ['TASK_ID']
-        self.repos = os.environ['TASK_REPOS'].split(',')
-        self.token = None
-        self.expires_at = None
-    
-    def get_token(self):
-        """Get current token, refresh if needed"""
-        if not self.token or self._needs_refresh():
-            self._request_token()
-        return self.token
-    
-    def _needs_refresh(self):
-        """Check if token needs refresh (5 minutes before expiry)"""
-        if not self.expires_at:
-            return True
-        buffer = timedelta(minutes=5)
-        return datetime.utcnow() >= (self.expires_at - buffer)
-    
-    def _request_token(self):
-        """Request new token from lobwife"""
-        response = requests.post(
-            f"{self.lobwife_url}/credentials",
-            json={
-                'task_id': self.task_id,
-                'repos': self.repos
-            }
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        self.token = data['token']
-        self.expires_at = datetime.fromisoformat(
-            data['expires_at'].replace('Z', '+00:00')
-        )
-        
-        print(f"[Token] Obtained token for {len(self.repos)} repos, expires at {self.expires_at}")
-    
-    def refresh_token(self):
-        """Explicitly refresh token for long-running tasks"""
-        response = requests.post(
-            f"{self.lobwife_url}/credentials/refresh",
-            json={'task_id': self.task_id}
-        )
-        response.raise_for_status()
-        
-        data = response.json()
-        self.token = data['token']
-        self.expires_at = datetime.fromisoformat(
-            data['expires_at'].replace('Z', '+00:00')
-        )
-        
-        print(f"[Token] Refreshed token, expires at {self.expires_at}")
+        self.app_id = os.environ.get("GH_APP_ID")
+        self.install_id = os.environ.get("GH_APP_INSTALL_ID")
+        self.pem_key = self._load_pem()  # from GH_APP_PEM env (base64) or file
+        self.tasks = {}     # task_id → {repos, lobster_type, registered_at, status}
+        self.audit_log = [] # {timestamp, task_id, repos, action}
+
+    def _generate_jwt(self) -> str:
+        """Generate GitHub App JWT (10-min lifetime)."""
+        # Same logic as lobmob-gh-token.sh but in Python
+        # iat, exp, iss → RS256 sign with PEM
+
+    async def create_scoped_token(self, repos: list[str]) -> dict:
+        """Generate installation token scoped to specific repos."""
+        # POST /app/installations/{id}/access_tokens
+        # Body: {"repositories": ["repo-name"], "permissions": {...}}
+
+    async def get_token_for_task(self, task_id: str) -> dict:
+        """Validate task and return scoped token."""
+        task = self.tasks.get(task_id)
+        if not task or task["status"] != "active":
+            raise ValueError(f"Task {task_id} not registered or inactive")
+        token_data = await self.create_scoped_token(task["repos"])
+        self._audit("token_issued", task_id, task["repos"])
+        return token_data
 ```
 
-### Git Credential Helper
+### State persistence
 
-Create a git credential helper that automatically provides tokens:
+Task registrations stored in `~/state/tasks.json` alongside existing `~/state/jobs.json`. Loaded on startup, saved after mutations. Tasks auto-expire after 24 hours (configurable) via a cleanup check in the existing periodic persist loop.
 
-```python
-# /usr/local/bin/git-credential-lobwife
-#!/usr/bin/env python3
-import sys
-import os
-import requests
+### gh-token-refresh replacement
 
-def main():
-    command = sys.argv[1] if len(sys.argv) > 1 else None
-    
-    if command == 'get':
-        # Git is requesting credentials
-        task_id = os.environ.get('TASK_ID')
-        lobwife_url = os.environ.get('LOBWIFE_URL')
-        
-        if not task_id or not lobwife_url:
-            sys.exit(1)
-        
-        # Request fresh token
-        response = requests.post(
-            f"{lobwife_url}/credentials/refresh",
-            json={'task_id': task_id}
-        )
-        
-        if response.status_code != 200:
-            sys.exit(1)
-        
-        token = response.json()['token']
-        
-        # Output credentials in git format
-        print("protocol=https")
-        print("host=github.com")
-        print("username=x-access-token")
-        print(f"password={token}")
-    
-    elif command in ['store', 'erase']:
-        # We don't persist credentials
-        pass
-
-if __name__ == '__main__':
-    main()
-```
-
-### Task Execution Pattern
-
-```python
-# lobster_agent.py
-import os
-import subprocess
-from github_token_manager import GitHubTokenManager
-
-def main():
-    # Initialize token manager
-    token_mgr = GitHubTokenManager()
-    
-    # Get initial token
-    token = token_mgr.get_token()
-    
-    # Configure git
-    setup_git_config(token)
-    
-    # Parse task
-    task_id = os.environ['TASK_ID']
-    repos = os.environ['TASK_REPOS'].split(',')
-    instructions = os.environ['TASK_INSTRUCTIONS']
-    
-    print(f"[Lobster] Starting task {task_id}")
-    print(f"[Lobster] Repositories: {repos}")
-    print(f"[Lobster] Instructions: {instructions}")
-    
-    # Execute task with Claude Code
-    # Claude Code will use git credentials automatically
-    for repo in repos:
-        process_repository(repo, instructions, token_mgr)
-    
-    print(f"[Lobster] Task {task_id} complete")
-
-def setup_git_config(token):
-    """Configure git with credentials"""
-    # Set credential helper
-    subprocess.run(['git', 'config', '--global', 'credential.helper', 
-                   'lobwife'], check=True)
-    
-    # Set user info
-    subprocess.run(['git', 'config', '--global', 'user.name', 
-                   'Claude Lobster'], check=True)
-    subprocess.run(['git', 'config', '--global', 'user.email', 
-                   'lobster@claude-cluster.local'], check=True)
-
-def process_repository(repo_url, instructions, token_mgr):
-    """Process a single repository"""
-    # Ensure fresh token before git operations
-    token = token_mgr.get_token()
-    
-    # Clone repo
-    print(f"[Lobster] Cloning {repo_url}")
-    subprocess.run(['git', 'clone', f"https://github.com/{repo_url}"], 
-                  check=True)
-    
-    repo_name = repo_url.split('/')[-1]
-    os.chdir(repo_name)
-    
-    # Create branch
-    branch_name = f"lobster-task-{os.environ['TASK_ID']}"
-    subprocess.run(['git', 'checkout', '-b', branch_name], check=True)
-    
-    # Execute Claude Code task
-    # (Claude Code performs the actual development work)
-    execute_claude_task(instructions)
-    
-    # Refresh token if needed (task may have taken >55 minutes)
-    token = token_mgr.get_token()
-    
-    # Commit changes
-    subprocess.run(['git', 'add', '.'], check=True)
-    subprocess.run(['git', 'commit', '-m', 
-                   f'Lobster task: {instructions[:50]}'], check=True)
-    
-    # Push branch
-    subprocess.run(['git', 'push', 'origin', branch_name], check=True)
-    
-    # Create PR (using GitHub CLI or API)
-    create_pull_request(repo_url, branch_name, instructions, token)
-
-def execute_claude_task(instructions):
-    """Execute development task using Claude Code"""
-    # This is where Claude Code performs the actual work
-    # based on the instructions
-    pass
-
-def create_pull_request(repo, branch, instructions, token):
-    """Create PR using GitHub API"""
-    import requests
-    
-    org, repo_name = repo.split('/')
-    
-    response = requests.post(
-        f"https://api.github.com/repos/{org}/{repo_name}/pulls",
-        headers={
-            'Authorization': f'token {token}',
-            'Accept': 'application/vnd.github.v3+json'
-        },
-        json={
-            'title': f'Lobster Task: {instructions[:50]}',
-            'body': f'Automated changes by Claude Lobster\n\nTask: {instructions}',
-            'head': branch,
-            'base': 'main'
-        }
-    )
-    
-    if response.status_code == 201:
-        pr_url = response.json()['html_url']
-        print(f"[Lobster] Created PR: {pr_url}")
-    else:
-        print(f"[Lobster] Failed to create PR: {response.text}")
-
-if __name__ == '__main__':
-    main()
-```
-
-## Token Refresh for Long Tasks
-
-For tasks exceeding 55 minutes, implement automatic refresh:
-
-```python
-import threading
-import time
-
-class TokenRefreshDaemon:
-    """Background thread that refreshes token every 55 minutes"""
-    
-    def __init__(self, token_manager):
-        self.token_manager = token_manager
-        self.running = False
-        self.thread = None
-    
-    def start(self):
-        """Start refresh daemon"""
-        self.running = True
-        self.thread = threading.Thread(target=self._refresh_loop, daemon=True)
-        self.thread.start()
-        print("[Token Daemon] Started automatic refresh")
-    
-    def stop(self):
-        """Stop refresh daemon"""
-        self.running = False
-        if self.thread:
-            self.thread.join()
-    
-    def _refresh_loop(self):
-        """Refresh token every 55 minutes"""
-        while self.running:
-            time.sleep(55 * 60)  # 55 minutes
-            if self.running:
-                try:
-                    self.token_manager.refresh_token()
-                except Exception as e:
-                    print(f"[Token Daemon] Refresh failed: {e}")
-
-# Usage in agent
-token_mgr = GitHubTokenManager()
-refresh_daemon = TokenRefreshDaemon(token_mgr)
-refresh_daemon.start()
-
-# Perform long-running task
-execute_task()
-
-refresh_daemon.stop()
-```
-
-## Error Handling
-
-```python
-def get_token_with_retry(token_manager, max_retries=3):
-    """Get token with exponential backoff retry"""
-    import time
-    
-    for attempt in range(max_retries):
-        try:
-            return token_manager.get_token()
-        except requests.exceptions.RequestException as e:
-            if attempt == max_retries - 1:
-                raise
-            
-            wait_time = 2 ** attempt  # Exponential backoff
-            print(f"[Token] Request failed, retrying in {wait_time}s: {e}")
-            time.sleep(wait_time)
-```
-
-## Security Notes
-
-- Tokens are never logged or persisted to disk
-- Git credential helper requests fresh tokens per operation
-- Token expiry is strictly enforced (1 hour max)
-- Each task gets tokens scoped only to required repos
-- Audit trail maintained in lobwife
-
-## Troubleshooting
-
-**Token request fails with 403:**
-- Check GitHub App installation on target repos
-- Verify lobwife has correct installation ID
-- Ensure repos are specified in format: "org/repo-name"
-
-**Git operations fail with authentication error:**
-- Check git credential helper is configured
-- Verify LOBWIFE_URL environment variable
-- Test token manually: `curl -H "Authorization: token $TOKEN" https://api.github.com/user`
-
-**Token expired during long operation:**
-- Ensure refresh daemon is running
-- Check network connectivity to lobwife
-- Review lobwife logs for refresh failures
-```
+Once the broker is operational, `gh-token-refresh` cron job becomes unnecessary — tokens are generated on demand. The cron job definition stays in lobwife's `JOB_DEFS` but can be disabled. Other services (lobboss, lobsigliere) that need GitHub tokens can call lobwife's broker API too.
 
 ---
 
-## 4. Complete Workflow Example
+## 3. Git Credential Helper: lobster-side
 
-### Task Submission
-
-```python
-# task_dispatcher.py
-import subprocess
-import json
-
-def submit_task(repos, instructions):
-    """Submit a task to the lobster cluster"""
-    
-    task_id = generate_task_id()
-    
-    # Create K8s Job for lobster
-    job_manifest = f"""
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: lobster-{task_id}
-  namespace: lobster-cluster
-spec:
-  template:
-    spec:
-      restartPolicy: Never
-      containers:
-      - name: lobster
-        image: your-registry/lobster:latest
-        env:
-        - name: TASK_ID
-          value: "{task_id}"
-        - name: TASK_REPOS
-          value: "{','.join(repos)}"
-        - name: TASK_INSTRUCTIONS
-          value: "{instructions}"
-        - name: LOBWIFE_URL
-          value: "http://lobwife.lobster-cluster.svc.cluster.local:8080"
-        - name: ANTHROPIC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: anthropic-credentials
-              key: api-key
-"""
-    
-    # Apply manifest
-    process = subprocess.run(
-        ['kubectl', 'apply', '-f', '-'],
-        input=job_manifest.encode(),
-        capture_output=True
-    )
-    
-    if process.returncode == 0:
-        print(f"Task {task_id} submitted successfully")
-        return task_id
-    else:
-        print(f"Error submitting task: {process.stderr.decode()}")
-        return None
-
-# Example usage
-submit_task(
-    repos=['myorg/frontend', 'myorg/shared-components'],
-    instructions='Add a button with a label that counts button clicks'
-)
-```
-
-### End-to-End Flow
-
-```
-1. User submits task via API/UI
-   ↓
-2. Task dispatcher creates K8s Job for lobster
-   ↓
-3. Lobster pod starts
-   ↓
-4. Lobster requests token from lobwife
-   - POST /credentials with task_id and repos
-   ↓
-5. Lobwife generates scoped token
-   - Validates task
-   - Calls GitHub API for installation token
-   - Returns token scoped to specific repos
-   ↓
-6. Lobster configures git with token
-   ↓
-7. Lobster clones repos, creates branch
-   ↓
-8. Claude Code executes development work
-   ↓
-9. (If >55 mins) Token auto-refreshes
-   - POST /credentials/refresh
-   - Lobwife generates new token
-   ↓
-10. Lobster commits, pushes, creates PR
-   ↓
-11. Task complete, pod terminates
-```
-
----
-
-## 5. Monitoring and Observability
-
-### Lobwife Metrics
-
-```python
-# Add to lobwife/server.py
-from prometheus_client import Counter, Histogram, generate_latest
-
-# Metrics
-token_requests = Counter('lobwife_token_requests_total', 
-                        'Total token requests', ['status'])
-token_refresh = Counter('lobwife_token_refreshes_total',
-                       'Total token refreshes', ['status'])
-request_duration = Histogram('lobwife_request_duration_seconds',
-                            'Request duration')
-
-@app.route('/metrics')
-def metrics():
-    return generate_latest()
-```
-
-### Audit Query Examples
+### Shell script in lobster image
 
 ```bash
-# View all tokens issued for a task
-curl http://lobwife:8080/audit?task_id=task-abc-123
+#!/bin/bash
+# /usr/local/bin/git-credential-lobwife
+# Git credential helper that fetches tokens from lobwife broker.
+# Configured via: git config --global credential.helper lobwife
 
-# Recent audit log
-curl http://lobwife:8080/audit | jq '.[-10:]'
+case "${1:-}" in
+  get)
+    TASK_ID="${TASK_ID:-}"
+    LOBWIFE_URL="${LOBWIFE_URL:-}"
+    if [[ -z "$TASK_ID" || -z "$LOBWIFE_URL" ]]; then exit 1; fi
 
-# Count refreshes per task
-curl http://lobwife:8080/audit | jq '
-  [.[] | select(.action == "token_refreshed")] 
-  | group_by(.task_id) 
-  | map({task: .[0].task_id, refreshes: length})
-'
+    RESPONSE=$(curl -sf -X POST "$LOBWIFE_URL/api/token" \
+      -H "Content-Type: application/json" \
+      -d "{\"task_id\": \"$TASK_ID\"}" 2>/dev/null)
+
+    if [[ $? -ne 0 || -z "$RESPONSE" ]]; then exit 1; fi
+
+    TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+    if [[ -z "$TOKEN" ]]; then exit 1; fi
+
+    echo "protocol=https"
+    echo "host=github.com"
+    echo "username=x-access-token"
+    echo "password=$TOKEN"
+    ;;
+  store|erase)
+    # No-op — tokens are ephemeral
+    ;;
+esac
+```
+
+### Why a shell script, not Python
+
+- No `requests` dependency needed (uses `curl` + `python3 -c` for JSON parsing)
+- Faster startup than a Python script (git calls the helper on every operation)
+- Bash is already in the lobster image
+- Matches the git credential helper protocol exactly
+
+### Installation
+
+Added to lobster Dockerfile:
+```dockerfile
+COPY scripts/git-credential-lobwife /usr/local/bin/git-credential-lobwife
+RUN chmod +x /usr/local/bin/git-credential-lobwife
+```
+
+Configured in lobster entrypoint or init container:
+```bash
+git config --global credential.helper lobwife
 ```
 
 ---
 
-## 6. Security Considerations
+## 4. Changes to Lobster Job Spawning
 
-### Token Lifecycle
-- Maximum lifetime: 1 hour (GitHub enforced)
-- Automatic expiry (no manual revocation needed for short tasks)
-- Refresh creates entirely new token (old one invalid)
+### lobboss `spawn_lobster()` changes
 
-### Access Control
-- Tokens scoped to exact repos needed per task
-- No "list all repos" capability
-- Cannot access repos outside task scope (403 error)
+In `src/lobboss/mcp_tools.py`:
 
-### Secrets Management
-- GitHub App private key stored in K8s secrets
-- Never exposed to lobster pods
-- Only lobwife has access
-- Rotate via setup wizard re-run
+1. **Register task with lobwife** before creating the k8s Job:
+   ```python
+   # Determine repos for this task
+   repos = [vault_repo]  # Always include vault
+   if task.get("repos"):
+       repos.extend(task["repos"])  # Project repos from task definition
 
-### Network Policies
+   # Register with lobwife broker
+   await register_task_with_lobwife(task_id, repos, lobster_type)
+   ```
+
+2. **Replace GH_APP_PRIVATE_KEY env var** with:
+   ```python
+   client.V1EnvVar(name="LOBWIFE_URL",
+       value="http://lobwife.lobmob.svc.cluster.local:8081")
+   client.V1EnvVar(name="TASK_ID", value=task_id)
+   ```
+
+3. **Update init container** (vault-clone):
+   - Instead of using `GH_TOKEN` from secret, call lobwife for a token
+   - Or: use the git credential helper (requires git config in init container)
+   - Simplest: small curl script that fetches token from lobwife, clones vault
+
+4. **Deregister task** when job completes (via task-manager or lobboss callback):
+   ```python
+   await deregister_task_with_lobwife(task_id)
+   ```
+
+### Task definition changes
+
+Task files in vault gain an optional `repos` field in frontmatter:
 ```yaml
-# Recommended network policy
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: lobster-network-policy
-spec:
-  podSelector:
-    matchLabels:
-      app: lobster
-  policyTypes:
-  - Egress
-  egress:
-  - to:
-    - podSelector:
-        matchLabels:
-          app: lobwife
-    ports:
-    - protocol: TCP
-      port: 8080
-  - to:
-    - namespaceSelector: {}
-    ports:
-    - protocol: TCP
-      port: 53  # DNS
-  - to:
-    - ipBlock:
-        cidr: 0.0.0.0/0
-        except:
-        - 10.0.0.0/8
-        - 172.16.0.0/12
-        - 192.168.0.0/16
-    ports:
-    - protocol: TCP
-      port: 443  # HTTPS to GitHub
+---
+id: 2026-02-15-unity-ui
+type: swe
+status: queued
+repos:
+  - minsley/unity-project
+  - minsley/shared-assets
+---
+Implement the new inventory UI...
 ```
 
----
-
-## 7. Deployment Checklist
-
-- [ ] Run setup wizard to create GitHub App
-- [ ] Install GitHub App to required repositories
-- [ ] Store credentials in K8s secret `github-app-credentials`
-- [ ] Deploy lobwife service
-- [ ] Verify lobwife health: `curl http://lobwife:8080/health`
-- [ ] Create lobster skills ConfigMap
-- [ ] Test single lobster job
-- [ ] Verify token request flow
-- [ ] Test token refresh for >1hr task
-- [ ] Configure monitoring and alerts
-- [ ] Set up audit log retention
-- [ ] Document organization-specific repo access policies
+The vault repo is always included implicitly. `repos` lists additional project repos the lobster needs access to.
 
 ---
 
-## 8. Common Issues
+## 5. Security Model
 
-**Issue: Token request returns 404**
-- Cause: Installation ID not set or incorrect
-- Fix: Verify `GITHUB_INSTALLATION_ID` in lobwife deployment
+### Key isolation
 
-**Issue: Git clone fails with "Repository not found"**
-- Cause: Token not scoped to that repo
-- Fix: Verify repo listed in task TASK_REPOS
+| Secret | Accessible by |
+|--------|---------------|
+| GitHub App PEM | lobwife only |
+| ANTHROPIC_API_KEY | lobboss, lobsters (via k8s secret) |
+| DISCORD_BOT_TOKEN | lobboss only |
+| Installation tokens | Individual lobster (via credential helper, scoped to task repos) |
 
-**Issue: PR creation fails**
-- Cause: GitHub App lacks `pull_requests:write` permission
-- Fix: Update app permissions in GitHub settings, regenerate token
+### Token properties
 
-**Issue: Long task fails after 1 hour**
-- Cause: Token expired, refresh not working
-- Fix: Verify refresh daemon running, check lobwife connectivity
+- **Lifetime**: 1 hour (GitHub enforced maximum)
+- **Scope**: Only repos registered for that task
+- **Permissions**: contents:write, pull_requests:write, metadata:read
+- **Refresh**: Transparent — each git operation triggers a credential helper call. If the cached token is still valid, GitHub returns the same one. If expired, lobwife generates a new one.
+- **Revocation**: Automatic — task deregistration prevents new tokens. Existing tokens expire within 1 hour.
+
+### Audit trail
+
+Every token issuance logged with timestamp, task_id, repos, and action. Visible in lobwife web dashboard and via API. Persisted to PVC state file.
+
+### What lobsters CANNOT do
+
+- Access repos not registered for their task
+- Generate tokens for other tasks
+- Read the GitHub App PEM key
+- Access the k8s Secrets API (RBAC restricts to pod/log read only)
 
 ---
 
-## Appendix: GitHub App Permissions Reference
+## 6. Migration Path
 
-Recommended permissions for Claude Code agents:
+### Phase 1: Add broker to lobwife (additive, no breaking changes)
+
+- Add TokenBroker class and API endpoints to lobwife daemon
+- Add git credential helper to lobster image
+- Add task registration call to lobboss spawn_lobster()
+- Both old (PEM injection) and new (broker) paths work simultaneously
+
+### Phase 2: Switch lobsters to broker (cutover)
+
+- Remove GH_APP_PRIVATE_KEY from lobster env vars in spawn_lobster()
+- Update init container to use credential helper for vault clone
+- Verify long-running tasks refresh tokens correctly
+
+### Phase 3: Remove PEM from shared secret (cleanup)
+
+- Move PEM to lobwife-only secret (`lobwife-secrets`)
+- Remove `GH_APP_PRIVATE_KEY` from `lobmob-secrets`
+- lobboss and lobsigliere use lobwife broker for their own GitHub access
+
+### Phase 4: Setup wizard (independent, can be done anytime)
+
+- Implement `lobmob setup` and `lobmob setup github`
+- Update documentation to reference wizard instead of manual checklist
+
+---
+
+## 7. Troubleshooting
+
+**Token request returns 404 from lobwife:**
+- Task not registered. Check lobboss logs for registration call.
+- Task expired (>24h). Re-register or extend timeout.
+
+**Git clone fails with "Repository not found":**
+- Repo not in task's registered repo list. Check vault task frontmatter `repos` field.
+- GitHub App not installed on that repo. Run `lobmob setup github` and add repo.
+
+**Git push fails after long task:**
+- Credential helper should auto-refresh. Check lobwife connectivity from pod:
+  `curl -sf http://lobwife.lobmob.svc.cluster.local:8081/health`
+- Check lobwife logs for token generation errors.
+
+**lobwife can't generate tokens (JWT errors):**
+- PEM key not loaded. Check `GH_APP_PEM` env var in lobwife deployment.
+- App ID or Installation ID wrong. Verify in GitHub App settings.
+- Clock skew. JWT uses `iat`/`exp` — k8s nodes must have synced clocks.
+
+---
+
+## Appendix: GitHub App Permissions
+
+### Required (all lobster types)
 
 ```json
 {
-  "contents": "write",           // Clone, commit, push
-  "pull_requests": "write",      // Create/update PRs
-  "metadata": "read",            // Read repo metadata
-  "issues": "write",             // Optional: Create issues
-  "workflows": "write"           // Optional: Modify GitHub Actions
-}
-```
-
-Minimal permissions for read-only tasks:
-
-```json
-{
-  "contents": "read",
+  "contents": "write",
+  "pull_requests": "write",
   "metadata": "read"
 }
 ```
+
+### Optional (enable as needed)
+
+```json
+{
+  "issues": "write",
+  "workflows": "write",
+  "actions": "read"
+}
+```
+
+### Read-only (research lobsters)
+
+Future: broker could issue read-only tokens for research tasks by passing reduced permissions to the installation token API. Not implemented in v1 — all tokens get write access.
