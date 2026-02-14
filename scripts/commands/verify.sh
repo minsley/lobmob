@@ -13,28 +13,23 @@ TARGET="${1:-all}"
 PASS=0
 FAIL=0
 
+pass() {
+  log "  PASS  $1"
+  PASS=$((PASS + 1))
+}
+
+fail() {
+  err "  FAIL  $1"
+  FAIL=$((FAIL + 1))
+}
+
 check() {
   local label="$1"
   shift
   if "$@" >/dev/null 2>&1; then
-    log "  PASS  $label"
-    PASS=$((PASS + 1))
+    pass "$label"
   else
-    err "  FAIL  $label"
-    FAIL=$((FAIL + 1))
-  fi
-}
-
-check_output() {
-  local label="$1"
-  shift
-  local output
-  if output=$("$@" 2>&1) && [[ -n "$output" ]]; then
-    log "  PASS  $label"
-    PASS=$((PASS + 1))
-  else
-    err "  FAIL  $label"
-    FAIL=$((FAIL + 1))
+    fail "$label"
   fi
 }
 
@@ -47,13 +42,17 @@ verify_lobwife() {
   check "lobwife pod exists" \
     kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l app.kubernetes.io/name=lobwife --no-headers
 
-  POD=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l app.kubernetes.io/name=lobwife -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [[ -n "$POD" ]]; then
-    PHASE=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pod "$POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)
-    check "pod phase is Running" [[ "$PHASE" == "Running" ]]
+  POD=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l app.kubernetes.io/name=lobwife \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
-    READY=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pod "$POD" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-    check "pod is Ready" [[ "$READY" == "True" ]]
+  if [[ -n "$POD" ]]; then
+    PHASE=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pod "$POD" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$PHASE" == "Running" ]]; then pass "pod phase is Running"; else fail "pod phase is Running (got: $PHASE)"; fi
+
+    READY=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pod "$POD" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+    if [[ "$READY" == "True" ]]; then pass "pod is Ready"; else fail "pod is Ready (got: $READY)"; fi
   fi
   echo ""
 
@@ -61,29 +60,41 @@ verify_lobwife() {
   log "HTTP API:"
   kubectl --context "$KUBE_CONTEXT" -n lobmob port-forward svc/lobwife 18080:8080 &>/dev/null &
   PF_PID=$!
-  sleep 3
+  # Wait for port-forward to be ready
+  for i in $(seq 1 10); do
+    if curl -sf http://localhost:18080/health >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
 
   # Health endpoint
   HEALTH=$(curl -sf http://localhost:18080/health 2>/dev/null || true)
-  check "GET /health returns ok" [[ "$HEALTH" == *'"status"'*'"ok"'* ]]
+  if [[ "$HEALTH" == *'"status"'* && "$HEALTH" == *'"ok"'* ]]; then
+    pass "GET /health returns ok"
+  else
+    fail "GET /health returns ok"
+  fi
 
   # API status
   STATUS=$(curl -sf http://localhost:18080/api/status 2>/dev/null || true)
-  check "GET /api/status returns jobs" [[ "$STATUS" == *'"jobs"'* ]]
+  if [[ "$STATUS" == *'"jobs"'* ]]; then pass "GET /api/status returns jobs"; else fail "GET /api/status returns jobs"; fi
 
   # Jobs list
   JOBS=$(curl -sf http://localhost:18080/api/jobs 2>/dev/null || true)
-  check "GET /api/jobs lists task-manager" [[ "$JOBS" == *'"task-manager"'* ]]
-  check "GET /api/jobs lists review-prs" [[ "$JOBS" == *'"review-prs"'* ]]
-  check "GET /api/jobs lists flush-logs" [[ "$JOBS" == *'"flush-logs"'* ]]
+  if [[ "$JOBS" == *'"task-manager"'* ]]; then pass "GET /api/jobs lists task-manager"; else fail "GET /api/jobs lists task-manager"; fi
+  if [[ "$JOBS" == *'"review-prs"'* ]]; then pass "GET /api/jobs lists review-prs"; else fail "GET /api/jobs lists review-prs"; fi
+  if [[ "$JOBS" == *'"flush-logs"'* ]]; then pass "GET /api/jobs lists flush-logs"; else fail "GET /api/jobs lists flush-logs"; fi
 
   # Individual job detail
   JOB_DETAIL=$(curl -sf http://localhost:18080/api/jobs/task-manager 2>/dev/null || true)
-  check "GET /api/jobs/task-manager returns detail" [[ "$JOB_DETAIL" == *'"schedule"'* ]]
+  if [[ "$JOB_DETAIL" == *'"schedule"'* ]]; then pass "GET /api/jobs/task-manager returns detail"; else fail "GET /api/jobs/task-manager returns detail"; fi
 
   # Web dashboard
   DASHBOARD=$(curl -sf http://localhost:18080/ 2>/dev/null || true)
-  check "GET / returns HTML dashboard" [[ "$DASHBOARD" == *'lobwife'* ]]
+  if [[ "$DASHBOARD" == *'lobwife'* ]]; then pass "GET / returns HTML dashboard"; else fail "GET / returns HTML dashboard"; fi
+
+  # Manual trigger
+  TRIGGER=$(curl -sf -X POST http://localhost:18080/api/jobs/flush-logs/trigger 2>/dev/null || true)
+  if [[ "$TRIGGER" == *'triggered'* ]]; then pass "POST /api/jobs/flush-logs/trigger works"; else fail "POST /api/jobs/flush-logs/trigger works"; fi
 
   kill "$PF_PID" 2>/dev/null || true
   wait "$PF_PID" 2>/dev/null || true
@@ -100,8 +111,7 @@ verify_lobwife() {
   log "CronJob cleanup:"
   CRON_COUNT=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get cronjobs --no-headers 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$CRON_COUNT" == "0" ]]; then
-    log "  PASS  No CronJobs found (migrated to lobwife)"
-    PASS=$((PASS + 1))
+    pass "No CronJobs found (migrated to lobwife)"
   else
     warn "  WARN  $CRON_COUNT CronJobs still exist — delete with: kubectl -n lobmob delete cronjobs --all"
   fi
