@@ -21,11 +21,33 @@ lobmob-vault/
 │   ├── topics/                # Research results, documentation
 │   └── assets/                # Images, screenshots (Git LFS)
 └── 040-fleet/
-    ├── registry.md            # Live lobster registry
-    ├── config.md              # Swarm configuration
-    ├── lobboss-skills/        # OpenClaw skills distributed to lobboss
-    └── lobster-skills/        # OpenClaw skills distributed to lobsters
+    ├── registry.md            # Fleet registry — active lobsters and their state
+    └── config.md              # Swarm configuration (scaling, model routing)
 ```
+
+## Automated Scanning
+
+### Lobsigliere Daemon
+
+The lobsigliere background daemon polls the vault every 30 seconds and scans:
+
+**Directory:** `010-tasks/active/`
+
+It reads every `*.md` file in that directory and looks for YAML frontmatter matching:
+- `type: system`
+- `status: queued`
+
+When a matching task is found, the daemon:
+1. Claims it atomically (sets `status: system-active`, pushes to vault)
+2. Executes via Agent SDK in the lobmob workspace
+3. Creates a branch and PR to `develop`
+4. Updates the task file with results (`status: completed` or `status: failed`)
+
+### Task Manager CronJob
+
+The `task-manager` CronJob runs every 5 minutes and scans the same `010-tasks/active/`
+directory for non-system tasks (`type: swe`, `research`, `qa`) with `status: queued`.
+It assigns these to lobster workers via lobboss.
 
 ## Conventions
 
@@ -48,13 +70,13 @@ Referenced from markdown: `![[assets/<topic>/image.png]]`
 
 ## Who Writes Where
 
-| Path | Lobboss | Lobster | Human |
-|---|---|---|---|
-| `000-inbox/` | | via PR | via PR |
-| `010-tasks/active/` | direct to main | via PR | |
-| `010-tasks/completed/` | direct to main | via PR | |
-| `010-tasks/failed/` | direct to main | | |
-| `020-logs/lobboss/` | direct to main | | |
-| `020-logs/lobsters/<id>/` | | via PR | |
-| `030-knowledge/` | | via PR | via PR |
-| `040-fleet/` | direct to main | | |
+| Path | Lobboss | Lobster | Lobsigliere | Human |
+|---|---|---|---|---|
+| `000-inbox/` | | via PR | | via PR |
+| `010-tasks/active/` | direct to main | via PR | direct to main (status updates) | |
+| `010-tasks/completed/` | direct to main | via PR | | |
+| `010-tasks/failed/` | direct to main | | direct to main | |
+| `020-logs/lobboss/` | direct to main | | | |
+| `020-logs/lobsters/<id>/` | | via PR | | |
+| `030-knowledge/` | | via PR | | via PR |
+| `040-fleet/` | direct to main | | | |

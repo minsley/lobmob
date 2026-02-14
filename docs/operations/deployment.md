@@ -3,135 +3,155 @@
 ## Prerequisites
 
 - [Terraform](https://www.terraform.io/downloads) >= 1.5
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [gh](https://cli.github.com/) (GitHub CLI)
-- [wg](https://www.wireguard.com/install/) (WireGuard tools — for key generation)
+- [Docker](https://www.docker.com/) with buildx (for image builds)
 - A DigitalOcean account with API token
-- A GitHub account with fine-grained PAT
+- A GitHub account with App installation or fine-grained PAT
 - A Discord bot application with token
 
 See [[operations/setup-checklist]] for complete setup instructions.
 
-## Step 1: Initialize
+## Step 1: Create the Vault Repo
 
 ```bash
-cd lobmob
-chmod +x scripts/lobmob
-./scripts/lobmob init
+lobmob vault-init
 ```
 
-This generates WireGuard keys and creates two config files:
+Creates the GitHub repo and seeds it with the vault structure from `vault-seed/`.
 
-| File | What to fill in |
-|---|---|
-| `infra/terraform.tfvars` | `vault_repo` (WG public key auto-filled) |
-| `secrets.env` | `DO_TOKEN`, `GH_TOKEN`, `DISCORD_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `VAULT_DEPLOY_KEY_B64` (WG private key auto-filled) |
-
-## Step 2: Create the Vault Repo
+## Step 2: Deploy Infrastructure + Services
 
 ```bash
-./scripts/lobmob vault-init
-```
-
-This creates the GitHub repo and seeds it with the vault structure from
-`vault-seed/`.
-
-## Step 3: Deploy the Lobboss
-
-```bash
-./scripts/lobmob deploy
+lobmob deploy
 ```
 
 This runs a fully automated sequence:
-1. `terraform plan` → shows resources to create (VPC, firewalls, droplet)
-2. Asks for confirmation
-3. `terraform apply` → creates the droplet with secret-free cloud-init
-4. Waits for SSH connectivity (~1-2 min)
-5. Waits for cloud-init to finish (~3-5 min)
-6. Pushes secrets via SSH:
-   - `/etc/lobmob/secrets.env` (API tokens)
-   - `/root/.ssh/vault_key` (deploy key)
-   - `/etc/wireguard/wg0.conf` (WG private key)
-7. Runs `lobmob-provision` on the lobboss (authenticates gh, doctl, clones vault, configures OpenClaw)
+1. Loads secrets from `secrets.env`
+2. Runs `terraform apply` to create the DOKS cluster
+3. Configures kubectl context for the new cluster
+4. Creates k8s namespace, secrets, and config maps
+5. Applies all k8s manifests via `kubectl apply -k k8s/overlays/prod/`
 
-**No secrets ever appear in Terraform state or cloud-init user_data.**
+For dev environment: `lobmob --env dev deploy`
+
+### What Gets Created
+
+| Resource | Type | Purpose |
+|---|---|---|
+| DOKS cluster | Terraform | Managed Kubernetes (free control plane) |
+| `lobmob` namespace | k8s | All resources live here |
+| `lobmob-secrets` | k8s Secret | API tokens and keys |
+| `lobboss-config` | k8s ConfigMap | Environment config |
+| `lobboss` | k8s Deployment | Manager agent |
+| `lobsigliere` | k8s Deployment | Ops console + task daemon |
+| CronJobs (5) | k8s CronJob | Automated maintenance tasks |
+| ServiceAccounts (3) | k8s SA | RBAC for lobboss, lobster, lobsigliere |
+
+Lobster Jobs are created dynamically by lobboss when tasks are assigned.
+
+## Step 3: Build and Push Images
+
+Images must be built for `linux/amd64` (DOKS node architecture):
+
+```bash
+# Build base image first
+docker buildx build --builder amd64-builder --platform linux/amd64 \
+  -t ghcr.io/minsley/lobmob-base:latest --push \
+  -f containers/base/Dockerfile .
+
+# Then lobboss, lobster, lobsigliere (all depend on base)
+docker buildx build --builder amd64-builder --platform linux/amd64 \
+  --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
+  -t ghcr.io/minsley/lobmob-lobboss:latest --push \
+  -f containers/lobboss/Dockerfile .
+
+docker buildx build --builder amd64-builder --platform linux/amd64 \
+  --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
+  -t ghcr.io/minsley/lobmob-lobster:latest --push \
+  -f containers/lobster/Dockerfile .
+
+docker buildx build --builder amd64-builder --platform linux/amd64 \
+  --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
+  -t ghcr.io/minsley/lobmob-lobsigliere:latest --push \
+  -f containers/lobsigliere/Dockerfile .
+```
+
+After pushing, restart deployments to pick up new images:
+```bash
+kubectl -n lobmob rollout restart deployment/lobboss deployment/lobsigliere
+```
 
 ## Step 4: Verify
 
-Run the automated smoke test:
 ```bash
-tests/smoke-lobboss
+lobmob status
 ```
 
 Or check manually:
 ```bash
-./scripts/lobmob ssh-lobboss
-# On the lobboss:
-wg show wg0          # WireGuard interface up
-gh auth status        # GitHub authenticated
-doctl account get     # DO API working
-ls /opt/vault/        # Vault cloned
-cat /etc/lobmob/.awaiting-secrets  # Should not exist (file removed after provisioning)
+kubectl -n lobmob get pods                    # all pods running
+kubectl -n lobmob logs deploy/lobboss         # lobboss connected to Discord
+kubectl -n lobmob logs deploy/lobsigliere     # sshd + daemon running
 ```
 
-## Post-Deploy: Pool Defaults
-
-The lobboss comes pre-configured with a warm lobster pool:
-- `POOL_ACTIVE=1` — one idle lobster kept running at all times
-- `POOL_STANDBY=2` — two powered-off lobsters ready to wake (~1-2 min)
-
-Adjust after deploy if needed:
+Connect to the lobboss web dashboard:
 ```bash
-./scripts/lobmob pool active 2 standby 3
+lobmob connect                                # port-forward to localhost:8080
 ```
 
-The pool manager cron runs every 5 minutes and will start filling the pool
-automatically after the first `lobmob spawn`.
-
-## Step 5: Configure Discord
-
-1. Invite the bot to your Discord server (if not done during setup)
-2. Create channels: `#task-queue`, `#swarm-control`, `#swarm-logs`
-
-OpenClaw is configured automatically during provisioning. The `lobmob-provision` script runs `openclaw onboard`, writes Discord channel config, and starts the gateway as a systemd service. See [[operations/openclaw-setup]] for troubleshooting details.
-
-## Step 6: Test a Lobster
-
+SSH to lobsigliere:
 ```bash
-./scripts/lobmob spawn test01
-./scripts/lobmob status
+lobmob connect lobsigliere                    # port-forward SSH
+ssh -p 2222 engineer@localhost                # then SSH in
 ```
 
-The spawn process:
-1. Lobboss creates a droplet with secret-free cloud-init (WireGuard + packages + systemd service)
-2. Waits for WireGuard connectivity over the mesh
-3. Waits for cloud-init to complete
-4. SSHes into the lobster over WireGuard to push secrets
-5. Authenticates gh, clones vault, configures OpenClaw, starts the gateway
+## Updating Secrets
 
-Verify with the smoke test:
-```bash
-tests/smoke-lobster 10.0.0.3
-```
+After rotating tokens or API keys:
 
-The gateway runs as a systemd service (`openclaw-gateway`) and restarts automatically on failure. Check its status with `systemctl status openclaw-gateway` on the lobster.
+1. Update `secrets.env`
+2. Re-apply the k8s Secret:
+   ```bash
+   lobmob deploy   # or manually recreate the secret
+   ```
+3. Restart deployments to pick up new values:
+   ```bash
+   kubectl -n lobmob rollout restart deployment/lobboss deployment/lobsigliere
+   ```
 
-For full end-to-end testing, see [[operations/testing]].
+Lobsters pick up secrets at spawn time (from the k8s Secret), so existing
+jobs will use old tokens until they complete.
 
-## Re-Provisioning Secrets
+## Applying Manifest Changes
 
-After rotating tokens or API keys, update `secrets.env` and re-push:
+After modifying k8s manifests:
 
 ```bash
-./scripts/lobmob provision-secrets
+# Validate first
+kubectl apply -k k8s/overlays/prod/ --dry-run=client
+
+# Apply
+kubectl apply -k k8s/overlays/prod/
 ```
 
-This SSHes into the lobboss and re-runs the full provision flow. Lobsters will
-need to be respawned to pick up new secrets.
+For dev: `kubectl apply -k k8s/overlays/dev/`
 
 ## Tearing Down
 
 ```bash
-./scripts/lobmob destroy
+lobmob destroy
 ```
 
-This destroys all lobsters first, then the lobboss, VPC, and firewalls.
+This destroys the DOKS cluster and all resources within it.
+
+## Environment-Specific Deployment
+
+| | Prod | Dev |
+|---|---|---|
+| Command | `lobmob deploy` | `lobmob --env dev deploy` |
+| Secrets file | `secrets.env` | `secrets-dev.env` |
+| Terraform vars | `infra/prod.tfvars` | `infra/dev.tfvars` |
+| TF workspace | `default` | `dev` |
+| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` |
+| k8s overlay | `k8s/overlays/prod/` | `k8s/overlays/dev/` |

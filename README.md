@@ -1,9 +1,9 @@
-<!-- lobmob — OpenClaw agent swarm on DigitalOcean -->
+<!-- lobmob — Agent swarm on DigitalOcean Kubernetes -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 # lobmob
 
-OpenClaw agent swarm management system for DigitalOcean. A persistent manager agent (lobboss) coordinates ephemeral worker agents (lobsters) to execute tasks. Communication flows through Discord and SSH over WireGuard. A shared Obsidian vault on GitHub provides persistent storage.
+Agent swarm management on DigitalOcean Kubernetes (DOKS). A persistent manager agent (lobboss) coordinates ephemeral worker agents (lobsters) to execute tasks via Claude Agent SDK. Communication flows through Discord. A shared Obsidian vault on GitHub provides persistent storage.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -12,64 +12,70 @@ OpenClaw agent swarm management system for DigitalOcean. A persistent manager ag
 └──────┬───────────────────────────────────────┬───────────────┘
        │                                       │
        ▼                                       ▼
-┌────────────────────┐              ┌────────────────────────┐
-│  LOBBOSS DROPLET   │    SSH/WG    │  LOBSTER DROPLET (N)   │
-│                    │◄────────────►│                        │
-│  OpenClaw Gateway  │              │  OpenClaw Gateway      │
-│  Lobboss Agent     │              │  Lobster Agent         │
-│  WireGuard Hub     │              │  WireGuard Peer        │
-│  PR Reviewer       │              │  Task Executor         │
-│                    │              │                        │
-│  /opt/vault (main) │              │  /opt/vault (branch)   │
-└───────────────┬────┘              └──────────────┬─────────┘
-                │     ┌──────────┐                 │
-                └────►│  GitHub  │◄────────────────┘
-                      │  Vault   │       (PRs)
-                      │  Repo    │
-                      └──────────┘
+┌─────────────────── DOKS CLUSTER (lobmob namespace) ──────────┐
+│                                                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │  LOBBOSS     │  │  LOBSTER (N) │  │  LOBSIGLIERE     │   │
+│  │  Deployment  │  │  k8s Jobs    │  │  Deployment      │   │
+│  │              │  │              │  │                   │   │
+│  │  discord.py  │  │  Agent SDK   │  │  SSH server       │   │
+│  │  Agent SDK   │  │  query()     │  │  task daemon      │   │
+│  │  MCP tools   │  │  (ephemeral) │  │  kubectl/tf/gh   │   │
+│  │  web dash    │  │              │  │  Claude Code CLI  │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────────┘   │
+│         │                  │                                  │
+│  ┌──────┴──────────────────┴──────────────────┐              │
+│  │           k8s Secrets + ConfigMaps          │              │
+│  └─────────────────────────────────────────────┘              │
+└──────────────────────┬────────────────────────────────────────┘
+                       │     ┌──────────┐
+                       └────►│  GitHub  │◄── Vault repo (tasks, logs)
+                             │          │◄── lobmob repo (code PRs)
+                             └──────────┘
 ```
 
 ## How It Works
 
 1. Tasks are submitted via Discord or pushed directly to the vault repo
-2. Lobboss assigns tasks to lobsters and spawns new droplets as needed
-3. Lobsters execute tasks, write results to the vault, and open pull requests
-4. Lobboss reviews and merges PRs, then posts summaries to Discord
+2. Lobboss proposes tasks, gets human confirmation, creates task files in the vault
+3. Lobsters are spawned as ephemeral k8s Jobs, execute tasks via Agent SDK, and open PRs
+4. Lobboss reviews PRs semantically, merges or requests changes
+5. System tasks (`type: system`) are auto-processed by lobsigliere's background daemon
 
-All inter-node traffic flows over an encrypted WireGuard mesh. Secrets are never stored in Terraform state or cloud-init user-data — they're pushed via SSH after boot.
+All traffic stays within the k8s cluster. Secrets are managed via k8s Secrets. No SSH mesh or VPN required.
 
 ## Project Structure
 
 | Directory | Purpose |
 |---|---|
-| `infra/` | Terraform — VPC, firewall, lobboss droplet |
-| `templates/` | Cloud-init YAML for droplet bootstrapping |
-| `scripts/lobmob` | CLI for deployment and fleet management |
-| `skills/` | OpenClaw skill definitions (manager + worker) |
-| `openclaw/` | Agent persona definitions (AGENTS.md) |
-| `vault-seed/` | Initial Obsidian vault structure for the shared repo |
-| `tests/` | Smoke tests and end-to-end lifecycle tests |
-| `docs/` | Project documentation (Obsidian vault) |
+| `src/lobboss/` | Manager agent — discord.py + Agent SDK |
+| `src/lobster/` | Worker agent — ephemeral Agent SDK task runner |
+| `src/common/` | Shared modules (vault operations, logging, health) |
+| `containers/` | Dockerfiles (base, lobboss, lobster, lobsigliere) |
+| `k8s/base/` | Kubernetes manifests (Kustomize base) |
+| `k8s/overlays/` | Environment-specific overlays (dev, prod) |
+| `scripts/lobmob` | CLI dispatcher for deployment and fleet management |
+| `scripts/commands/` | CLI command modules (deploy, status, connect, etc.) |
+| `scripts/server/` | Server-side scripts (cron jobs, web dashboard, daemon) |
+| `skills/` | Agent SDK skill definitions (lobboss + lobster) |
+| `infra/` | Terraform (DOKS cluster provisioning) |
+| `vault-seed/` | Initial Obsidian vault structure |
+| `tests/` | Smoke tests and lifecycle tests |
+| `docs/` | Project documentation |
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/minsley/lobmob.git
 cd lobmob
-./scripts/lobmob bootstrap     # interactive wizard — walks you through everything
-```
 
-The bootstrap wizard generates WireGuard keys, creates config files from the included examples, initialises the vault repo, and deploys lobboss. You'll need your DigitalOcean, GitHub, Discord, and Anthropic credentials ready.
+# Set up secrets
+cp secrets.env.example secrets.env   # fill in all tokens
+cp infra/prod.tfvars.example infra/prod.tfvars
 
-For a step-by-step manual setup instead:
-
-```bash
-./scripts/lobmob init          # generate WG keys + config files
-# Fill in secrets.env and infra/terraform.tfvars
-./scripts/lobmob vault-init    # create the shared vault repo
-./scripts/lobmob deploy        # deploy lobboss
-tests/smoke-lobboss            # verify
-./scripts/lobmob spawn         # spawn a lobster
+# Deploy
+lobmob deploy                        # terraform + kubectl apply
+lobmob status                        # verify fleet
 ```
 
 See `docs/operations/setup-checklist.md` for full prerequisites and `docs/operations/deployment.md` for the deployment guide.
@@ -77,24 +83,32 @@ See `docs/operations/setup-checklist.md` for full prerequisites and `docs/operat
 ## Prerequisites
 
 - Terraform >= 1.5
+- kubectl
 - GitHub CLI (`gh`)
-- WireGuard tools (`wg`)
+- Docker with buildx (for image builds)
 - DigitalOcean account + API token
-- GitHub account + fine-grained PAT
+- GitHub account + App installation (for token rotation)
 - Discord bot application + token
 - Anthropic API key
 
-## Tests
+## Lobster Types
 
-| Script | What it tests |
-|---|---|
-| `tests/smoke-lobboss` | Lobboss health (14 checks) |
-| `tests/smoke-lobster <ip>` | Lobster health (12 checks) |
-| `tests/push-task` | Push a task to the vault |
-| `tests/await-task-pickup` | Verify lobboss assigns queued tasks |
-| `tests/await-task-completion` | Full lifecycle: execute, PR, review, merge |
-| `tests/event-logging` | Event logging infrastructure and flush |
-| `tests/pool-state` | Lobster pool matches configured targets |
+| Type | Use For | Model |
+|---|---|---|
+| `research` | Research, writing, documentation, analysis | Sonnet |
+| `swe` | Code changes, features, bug fixes | Opus |
+| `qa` | Code review, testing, verification | Sonnet |
+| `image-gen` | Image generation tasks | Sonnet + Gemini |
+| `system` | Infrastructure, CI/CD, tooling (auto-processed by lobsigliere) | Opus |
+
+## Environments
+
+| | Prod | Dev |
+|---|---|---|
+| DOKS cluster | `lobmob-k8s` | `lobmob-dev-k8s` |
+| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` |
+| Vault repo | `lobmob-vault` | `lobmob-vault-dev` |
+| CLI usage | `lobmob <cmd>` | `lobmob --env dev <cmd>` |
 
 ## Documentation
 
@@ -105,8 +119,9 @@ Full docs are in `docs/` (openable as an Obsidian vault):
 - [Deployment guide](docs/operations/deployment.md)
 - [Daily operations](docs/operations/daily-ops.md)
 - [Testing](docs/operations/testing.md)
-- [OpenClaw setup](docs/operations/openclaw-setup.md)
 - [CLI reference](docs/reference/cli.md)
+- [Vault structure](docs/reference/vault-structure.md)
+- [Token management](docs/operations/token-management.md)
 
 ## Contributing
 

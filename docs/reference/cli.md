@@ -6,8 +6,16 @@ your local machine.
 ## Setup
 ```bash
 chmod +x scripts/lobmob
-# Optional: symlink to PATH
+# Symlink to PATH
 ln -s $(pwd)/scripts/lobmob /usr/local/bin/lobmob
+```
+
+## Environment Selection
+
+```bash
+lobmob <command>                   # uses prod environment (default)
+lobmob --env dev <command>         # uses dev environment
+LOBMOB_ENV=dev lobmob <command>    # alternative env selection
 ```
 
 ## Commands
@@ -16,21 +24,21 @@ ln -s $(pwd)/scripts/lobmob /usr/local/bin/lobmob
 
 | Command | Description |
 |---|---|
-| `lobmob bootstrap` | Interactive wizard — walks through full setup from scratch |
-| `lobmob init` | Generate WireGuard keys, create terraform.tfvars + secrets.env, run terraform init |
-| `lobmob deploy` | Terraform apply + wait for SSH + push secrets + provision lobboss |
-| `lobmob provision-secrets` | Re-push secrets to lobboss (e.g. after key rotation) |
-| `lobmob destroy` | Tear down ALL infrastructure (lobsters + lobboss + VPC) |
+| `lobmob deploy` | Terraform apply + kubectl apply (creates cluster + deploys services) |
+| `lobmob destroy` | Tear down DOKS cluster and all resources |
 
 ### Fleet Management
 
 | Command | Description |
 |---|---|
-| `lobmob spawn [id]` | Spawn a new lobster (auto or named ID) |
-| `lobmob teardown <name>` | Destroy a specific lobster by droplet name |
-| `lobmob teardown-all` | Destroy all lobster droplets |
-| `lobmob status` | Show WireGuard peers, active droplets, open PRs |
-| `lobmob cleanup [hours]` | Destroy lobsters older than N hours (default: 2) |
+| `lobmob status` | Show pods, jobs, CronJobs, and open PRs |
+| `lobmob connect` | Port-forward to lobboss web dashboard (localhost:8080) |
+| `lobmob connect lobsigliere` | Port-forward SSH to lobsigliere (localhost:2222) |
+| `lobmob connect <job-name>` | Port-forward to a lobster's web sidecar |
+| `lobmob logs` | Tail lobboss pod logs |
+| `lobmob logs <job-name>` | Tail a specific lobster's logs |
+| `lobmob flush-logs` | Flush event logs to vault |
+| `lobmob prs` | List open PRs on the vault repo |
 
 ### Vault
 
@@ -39,42 +47,19 @@ ln -s $(pwd)/scripts/lobmob /usr/local/bin/lobmob
 | `lobmob vault-init` | Create the GitHub vault repo and seed it |
 | `lobmob vault-sync` | Clone or pull the vault to `vault-local/` |
 
-### Power
-
-| Command | Description |
-|---|---|
-| `lobmob sleep` | Cull all lobsters then power off lobboss |
-| `lobmob wake` | Power on lobboss and wait for SSH |
-
-### SSH
-
-| Command | Description |
-|---|---|
-| `lobmob ssh-lobboss` | SSH into the lobboss droplet |
-| `lobmob ssh-lobster <ip-or-id>` | SSH into a lobster via lobboss ProxyJump |
-
-### Utilities
-
-| Command | Description |
-|---|---|
-| `lobmob logs` | Tail lobboss cloud-init logs |
-| `lobmob prs` | List open PRs on the vault repo |
-
 ## Configuration Files
 
 | File | Purpose | Gitignored? |
 |---|---|---|
-| `infra/terraform.tfvars` | Non-secret infra config (region, sizing, vault repo) | Yes |
-| `secrets.env` | All secrets (API tokens, private keys) | Yes |
-
-The CLI reads `secrets.env` for secret operations and Terraform state for
-the lobboss IP. Run `lobmob init` to generate both config files.
+| `secrets.env` | Prod secrets (API tokens, keys) | Yes |
+| `secrets-dev.env` | Dev secrets | Yes |
+| `infra/prod.tfvars` | Prod Terraform config | Yes |
+| `infra/dev.tfvars` | Dev Terraform config | Yes |
 
 ## Dependencies
 
 - terraform >= 1.5
-- doctl
+- kubectl
 - gh (GitHub CLI)
-- wg (wireguard-tools)
-- ssh
+- docker with buildx
 - jq
