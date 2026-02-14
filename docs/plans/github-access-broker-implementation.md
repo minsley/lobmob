@@ -3,13 +3,25 @@
 > Step-by-step execution plan for Claude Code.
 > Architecture: [agent-cluster-github-access-broker.md](./agent-cluster-github-access-broker.md)
 
+## Status: ALL PHASES COMPLETE (2026-02-14)
+
+All 6 phases implemented on `feature/github-access-broker`. Ready for deployment to dev and end-to-end testing.
+
+**Remaining operational steps:**
+1. Build lobwife + lobboss + lobster images
+2. Push broker secrets: `lobmob secrets push-broker`
+3. Deploy to dev: `LOBMOB_ENV=dev lobmob apply`
+4. Verify: `LOBMOB_ENV=dev lobmob verify lobwife`
+5. End-to-end test: post task in Discord, verify broker token flow
+6. Open PR to develop after validation
+
 ## Branch
 
 `feature/github-access-broker` from `develop`. PR targets `develop`.
 
 ## Phases
 
-### Phase 1: Token Broker on lobwife
+### Phase 1: Token Broker on lobwife (DONE)
 
 **Goal**: Add credential broker endpoints to the existing lobwife daemon. No changes to lobsters or lobboss yet — old and new paths coexist.
 
@@ -148,7 +160,7 @@ Add broker checks to `scripts/commands/verify.sh`:
 
 ---
 
-### Phase 2: Git Credential Helper
+### Phase 2: Git Credential Helper (DONE)
 
 **Goal**: Create the lobster-side credential helper and install it in the image.
 
@@ -192,7 +204,7 @@ Same COPY + chmod.
 
 ---
 
-### Phase 3: Wire Lobboss to Broker
+### Phase 3: Wire Lobboss to Broker (DONE)
 
 **Goal**: lobboss registers tasks with lobwife at spawn time. Lobsters use credential helper instead of PEM injection.
 
@@ -293,7 +305,7 @@ Or add to lobboss's job completion handler if one exists.
 
 ---
 
-### Phase 4: Migrate PEM Key to lobwife-only Secret
+### Phase 4: Migrate PEM Key to lobwife-only Secret (DONE)
 
 **Goal**: Remove PEM from the shared `lobmob-secrets`. Only lobwife holds it.
 
@@ -335,7 +347,7 @@ The cron job currently generates tokens via JWT+PEM. Update it to call the broke
 
 ---
 
-### Phase 5: Setup Wizard
+### Phase 5: Setup Wizard (DONE)
 
 **Goal**: `lobmob setup` and `lobmob setup github` CLI commands.
 
@@ -522,7 +534,7 @@ setup)
 
 ---
 
-### Phase 6: Testing & Verification
+### Phase 6: Testing & Verification (DONE)
 
 #### 6.1 Update `lobmob verify lobwife` for broker checks
 
