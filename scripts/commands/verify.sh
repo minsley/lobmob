@@ -95,6 +95,42 @@ verify_lobwife() {
   # Manual trigger
   TRIGGER=$(curl -sf -X POST http://localhost:18080/api/jobs/flush-logs/trigger 2>/dev/null || true)
   if [[ "$TRIGGER" == *'triggered'* ]]; then pass "POST /api/jobs/flush-logs/trigger works"; else fail "POST /api/jobs/flush-logs/trigger works"; fi
+  echo ""
+
+  # Token broker
+  log "Token broker:"
+  BROKER_STATUS=$(curl -sf http://localhost:18080/health 2>/dev/null || true)
+  if [[ "$BROKER_STATUS" == *'"broker"'* ]]; then pass "broker status in /health"; else fail "broker status in /health"; fi
+
+  # Register test task
+  REG=$(curl -sf -X POST http://localhost:18080/api/tasks/verify-test/register \
+    -H "Content-Type: application/json" \
+    -d '{"repos": ["test/verify-repo"], "lobster_type": "test"}' 2>/dev/null || true)
+  if [[ "$REG" == *'"registered"'* ]]; then pass "POST /api/tasks/{id}/register"; else fail "POST /api/tasks/{id}/register"; fi
+
+  # List tasks
+  TASKS=$(curl -sf http://localhost:18080/api/tasks 2>/dev/null || true)
+  if [[ "$TASKS" == *'"verify-test"'* ]]; then pass "GET /api/tasks lists registered task"; else fail "GET /api/tasks lists registered task"; fi
+
+  # Request token (may return 503 if no PEM — that's valid, broker is reachable)
+  TOKEN_RESP=$(curl -s -X POST http://localhost:18080/api/token \
+    -H "Content-Type: application/json" \
+    -d '{"task_id": "verify-test"}' 2>/dev/null || true)
+  if [[ "$TOKEN_RESP" == *'"token"'* ]]; then
+    pass "POST /api/token returns scoped token"
+  elif [[ "$TOKEN_RESP" == *'not configured'* ]]; then
+    pass "POST /api/token reachable (no PEM configured)"
+  else
+    fail "POST /api/token"
+  fi
+
+  # Deregister
+  DEREG=$(curl -sf -X DELETE http://localhost:18080/api/tasks/verify-test 2>/dev/null || true)
+  if [[ "$DEREG" == *'"removed"'* ]]; then pass "DELETE /api/tasks/{id}"; else fail "DELETE /api/tasks/{id}"; fi
+
+  # Audit log
+  AUDIT=$(curl -sf http://localhost:18080/api/token/audit 2>/dev/null || true)
+  if [[ "$AUDIT" == *'"task_registered"'* ]]; then pass "GET /api/token/audit shows events"; else fail "GET /api/token/audit shows events"; fi
 
   kill "$PF_PID" 2>/dev/null || true
   wait "$PF_PID" 2>/dev/null || true
