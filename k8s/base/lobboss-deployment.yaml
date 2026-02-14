@@ -25,6 +25,7 @@ spec:
       imagePullSecrets:
         - name: ghcr-pull-secret
       # Init container: clone or pull the vault repo
+      # Uses GH_TOKEN (PAT) not the broker — lobboss must not depend on lobwife for startup
       initContainers:
         - name: vault-init
           image: alpine/git:latest

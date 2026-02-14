@@ -102,6 +102,14 @@ verify_lobwife() {
   BROKER_STATUS=$(curl -sf http://localhost:18080/health 2>/dev/null || true)
   if [[ "$BROKER_STATUS" == *'"broker"'* ]]; then pass "broker status in /health"; else fail "broker status in /health"; fi
 
+  # Check PEM loaded
+  BROKER_ENABLED=$(echo "$BROKER_STATUS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('broker',{}).get('enabled',''))" 2>/dev/null || true)
+  if [[ "$BROKER_ENABLED" == "True" ]]; then
+    pass "broker PEM loaded (enabled=True)"
+  else
+    warn "  WARN  broker PEM not loaded (enabled=$BROKER_ENABLED) — push with: lobmob secrets push-broker"
+  fi
+
   # Register test task
   REG=$(curl -sf -X POST http://localhost:18080/api/tasks/verify-test/register \
     -H "Content-Type: application/json" \
@@ -118,6 +126,19 @@ verify_lobwife() {
     -d '{"task_id": "verify-test"}' 2>/dev/null || true)
   if [[ "$TOKEN_RESP" == *'"token"'* ]]; then
     pass "POST /api/token returns scoped token"
+    # If we got a real token and a vault repo is configured, try a git ls-remote
+    VAULT_REPO="${VAULT_REPO:-}"
+    if [[ -n "$VAULT_REPO" ]]; then
+      REAL_TOKEN=$(echo "$TOKEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null || true)
+      if [[ -n "$REAL_TOKEN" ]]; then
+        LS_REMOTE=$(git ls-remote --heads "https://x-access-token:${REAL_TOKEN}@github.com/${VAULT_REPO}.git" 2>/dev/null || true)
+        if [[ -n "$LS_REMOTE" ]]; then
+          pass "git ls-remote via broker token works (${VAULT_REPO})"
+        else
+          fail "git ls-remote via broker token (${VAULT_REPO})"
+        fi
+      fi
+    fi
   elif [[ "$TOKEN_RESP" == *'not configured'* ]]; then
     pass "POST /api/token reachable (no PEM configured)"
   else
