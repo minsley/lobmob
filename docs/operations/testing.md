@@ -6,53 +6,35 @@ Test scripts live in `tests/` and verify deployments and the task lifecycle.
 
 | Script | What it tests | Duration |
 |---|---|---|
-| `tests/smoke-lobboss` | Lobboss health (14 checks) | ~10s |
-| `tests/smoke-lobster <ip>` | Lobster health (12 checks) | ~15s |
 | `tests/push-task` | Push a task to the vault | ~5s |
-| `tests/await-task-pickup <id> [<id>...]` | Lobboss assigns queued tasks | up to 10m |
+| `tests/await-task-pickup <id> [<id>...]` | Lobboss assigns queued tasks, k8s Job created | up to 10m |
 | `tests/await-task-completion <id>` | Full lifecycle: PR opened, merged, task completed | up to 15m |
 | `tests/event-logging` | Event log+flush functions, vault export, event types | ~30s |
 
-All scripts exit 0 on success, 1 on failure.
-
-## Smoke Tests
-
-### Lobboss
-
-```bash
-tests/smoke-lobboss
-```
-
-Checks: SSH reachable, cloud-init complete, WireGuard up, tools installed (gh, doctl, node, openclaw), secrets provisioned, vault cloned, git identity, OpenClaw config, crons.
-
-### Lobster
-
-```bash
-tests/smoke-lobster 10.0.0.3           # by WireGuard IP
-tests/smoke-lobster lobster-swe-001-salty-squidward  # by lobster name (resolved via fleet registry)
-```
-
-Checks: WireGuard ping (from lobboss), SSH (via ProxyJump), WireGuard interface, tools (gh, node, openclaw), secrets, vault, OpenClaw config, AGENTS.md, git identity.
+All scripts exit 0 on success, 1 on failure. Use `LOBMOB_ENV=dev` to target the dev cluster.
 
 ## Task Lifecycle Tests
 
 ### Push a Task
 
 ```bash
-tests/push-task                                         # default haiku task
-tests/push-task --title "My task" --objective "Do X"    # custom
+tests/push-task                                                   # default haiku task (research)
+tests/push-task --title "My task" --objective "Do X"              # custom
+tests/push-task --type swe --title "Fix bug" --objective "..."    # specify lobster type
+LOBMOB_ENV=dev tests/push-task                                    # push to dev vault
 ```
 
-Clones/pulls `vault-local/`, creates a task file in `010-tasks/active/`, commits, and pushes to main. Prints the task ID.
+Clones/pulls `vault-local/`, creates a task file in `010-tasks/active/` with `type:` in frontmatter, commits, and pushes to main. Prints the task ID.
 
 ### Await Task Pickup
 
 ```bash
 tests/await-task-pickup task-2026-02-06-d67f
 tests/await-task-pickup --timeout 5 task-1 task-2    # multiple tasks, 5m timeout
+LOBMOB_ENV=dev tests/await-task-pickup task-2026-02-14-abcd
 ```
 
-Polls the vault for each task to transition from `status: queued` to `status: active` with an `assigned_to` value. Verifies assigned lobsters exist in the fleet.
+Polls the vault for each task to transition from `status: queued` to `status: active` with an `assigned_to` value. Verifies the assigned lobster k8s Job exists and checks pod phase via kubectl.
 
 ### Await Task Completion
 
@@ -69,24 +51,23 @@ Polls for three stages:
 ## Running the Full E2E Flow
 
 ```bash
-# 1. Verify lobboss is healthy
-tests/smoke-lobboss
+# 1. Check fleet status
+lobmob --env dev status
 
-# 2. Spawn a lobster and verify
-lobmob spawn test01
-tests/smoke-lobster test01
+# 2. Push a test task
+LOBMOB_ENV=dev tests/push-task --title "Write a haiku" --objective "Write a haiku about the sea..."
 
-# 3. Set up OpenClaw on the lobster (see [[operations/openclaw-setup]])
-#    Then push a task
-tests/push-task --title "Write a haiku" --objective "Write a haiku about the sea..."
+# 3. Wait for lobboss to assign and spawn a lobster
+LOBMOB_ENV=dev tests/await-task-pickup task-YYYY-MM-DD-XXXX
 
-# 4. Trigger lobboss to assign the task (or wait for it to notice)
-# 5. Trigger lobster agent to execute (or wait for Discord message)
-# 6. Verify completion
-tests/await-task-completion task-YYYY-MM-DD-XXXX
+# 4. Wait for full completion (PR + merge + vault update)
+LOBMOB_ENV=dev tests/await-task-completion task-YYYY-MM-DD-XXXX
+
+# 5. Check lobster logs if needed
+lobmob --env dev logs <job-name>
 ```
 
-Note: Steps 4 and 5 currently require manually triggering the agents via `openclaw agent --message "..."` on each node. See [[operations/openclaw-setup]] for details.
+The task poller in lobboss automatically picks up queued tasks and spawns lobster Jobs. No manual triggering needed.
 
 ## Event Logging
 
