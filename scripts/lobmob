@@ -62,6 +62,11 @@ Secrets:
   secrets push-broker Push GitHub App creds to k8s lobwife-secrets
   secrets show        Show which secrets are configured
 
+Setup:
+  setup               Interactive bootstrap wizard
+  setup github        Create GitHub App via manifest flow
+  setup rotate-pem    Rotate the GitHub App PEM key
+
 Utilities:
   status              Show fleet status
   verify [target]     Post-deploy verification (lobwife, lobboss, all)
@@ -90,6 +95,16 @@ case "$COMMAND" in
   flush-logs)          source "$SCRIPT_DIR/commands/flush-logs.sh" ;;
   prs)                 source "$SCRIPT_DIR/commands/prs.sh" ;;
   connect)             source "$SCRIPT_DIR/commands/connect.sh" ;;
+  setup)
+    SETUP_CMD="${1:-}"
+    shift || true
+    case "$SETUP_CMD" in
+      ""|wizard)    source "$SCRIPT_DIR/commands/setup.sh" ;;
+      github)       source "$SCRIPT_DIR/commands/setup-github.sh" ;;
+      rotate-pem)   source "$SCRIPT_DIR/commands/setup-rotate-pem.sh" ;;
+      *)            err "Unknown setup command: $SETUP_CMD"; exit 1 ;;
+    esac
+    ;;
   help|--help|-h)      usage ;;
   *)                   err "Unknown command: $COMMAND"; usage; exit 1 ;;
 esac
