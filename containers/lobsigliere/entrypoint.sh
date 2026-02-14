@@ -32,6 +32,10 @@ fi
 if [[ -n "${GIT_USER_EMAIL:-}" ]]; then
     su - engineer -c "git config --global user.email '${GIT_USER_EMAIL}'"
 fi
+# Configure lobwife token broker as git credential helper
+if [[ -n "${LOBWIFE_URL:-}" ]]; then
+    su - engineer -c "git config --global credential.helper lobwife"
+fi
 
 # Clone lobmob repo into engineer's home (persistent on PVC)
 LOBMOB_REPO="/home/engineer/lobmob"
@@ -80,6 +84,7 @@ export KUBERNETES_SERVICE_HOST="${KUBERNETES_SERVICE_HOST:-}"
 export KUBERNETES_SERVICE_PORT="${KUBERNETES_SERVICE_PORT:-443}"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 export GH_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
+export LOBWIFE_URL="${LOBWIFE_URL:-}"
 ENVBLOCK
 
 # Literal section (no interpolation)
@@ -124,6 +129,7 @@ su - engineer -c "VAULT_PATH=/home/engineer/vault \
     SYSTEM_WORKSPACE=/home/engineer/lobmob \
     ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' \
     GH_TOKEN='${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}' \
+    LOBWIFE_URL='${LOBWIFE_URL:-}' \
     LOBMOB_ENV='${LOBMOB_ENV:-prod}' \
     python3 /opt/lobmob/scripts/server/lobsigliere-daemon.py" &
 DAEMON_PID=$!
