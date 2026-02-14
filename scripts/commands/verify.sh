@@ -110,10 +110,15 @@ verify_lobwife() {
     warn "  WARN  broker PEM not loaded (enabled=$BROKER_ENABLED) — push with: lobmob secrets push-broker"
   fi
 
+  # Determine a real repo for token scoping (from lobboss-config or env)
+  VAULT_REPO=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get configmap lobboss-config \
+    -o jsonpath='{.data.VAULT_REPO}' 2>/dev/null || true)
+  VERIFY_REPO="${VAULT_REPO:-minsley/lobmob-vault}"
+
   # Register test task
   REG=$(curl -sf -X POST http://localhost:18080/api/tasks/verify-test/register \
     -H "Content-Type: application/json" \
-    -d '{"repos": ["test/verify-repo"], "lobster_type": "test"}' 2>/dev/null || true)
+    -d "{\"repos\": [\"${VERIFY_REPO}\"], \"lobster_type\": \"test\"}" 2>/dev/null || true)
   if [[ "$REG" == *'"registered"'* ]]; then pass "POST /api/tasks/{id}/register"; else fail "POST /api/tasks/{id}/register"; fi
 
   # List tasks
@@ -127,8 +132,7 @@ verify_lobwife() {
   if [[ "$TOKEN_RESP" == *'"token"'* ]]; then
     pass "POST /api/token returns scoped token"
     # If we got a real token and a vault repo is configured, try a git ls-remote
-    VAULT_REPO="${VAULT_REPO:-}"
-    if [[ -n "$VAULT_REPO" ]]; then
+    if [[ -n "${VAULT_REPO:-}" ]]; then
       REAL_TOKEN=$(echo "$TOKEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null || true)
       if [[ -n "$REAL_TOKEN" ]]; then
         LS_REMOTE=$(git ls-remote --heads "https://x-access-token:${REAL_TOKEN}@github.com/${VAULT_REPO}.git" 2>/dev/null || true)
