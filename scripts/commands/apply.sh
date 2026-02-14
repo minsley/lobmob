@@ -19,7 +19,7 @@ else
   log "Applying k8s manifests ($LOBMOB_ENV, overlay=$OVERLAY)..."
 fi
 
-kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/$OVERLAY/" "${EXTRA_ARGS[@]}"
+kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/$OVERLAY/" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 if [[ "${1:-}" != "--dry-run" ]]; then
   log "Applied. Check status with: lobmob status"
