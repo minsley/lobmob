@@ -14,6 +14,16 @@ log "Lobboss:"
 kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l app.kubernetes.io/name=lobboss --no-headers 2>/dev/null || echo "  (not found)"
 echo ""
 
+# lobwife
+log "Lobwife:"
+kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l app.kubernetes.io/name=lobwife --no-headers 2>/dev/null || echo "  (not found)"
+echo ""
+
+# lobsigliere
+log "Lobsigliere:"
+kubectl --context "$KUBE_CONTEXT" -n lobmob get pods -l app.kubernetes.io/name=lobsigliere --no-headers 2>/dev/null || echo "  (not found)"
+echo ""
+
 # lobster jobs
 log "Lobster jobs:"
 kubectl --context "$KUBE_CONTEXT" -n lobmob get jobs -l app.kubernetes.io/name=lobster --no-headers 2>/dev/null || echo "  (none)"
