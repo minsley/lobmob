@@ -125,6 +125,16 @@ class JobRunner:
                     "enabled": True,
                 }
 
+    def _get_next_run(self, name: str) -> str | None:
+        """Get next run time for a job, or None if not scheduled."""
+        job = self.scheduler.get_job(name)
+        if job is None:
+            return None
+        try:
+            return str(job.next_run_time)
+        except AttributeError:
+            return None
+
     def schedule_all(self):
         for name, defn in JOB_DEFS.items():
             if not self.state.get(name, {}).get("enabled", True):
@@ -140,8 +150,7 @@ class JobRunner:
                 replace_existing=True,
                 misfire_grace_time=60,
             )
-            nxt = self.scheduler.get_job(name).next_run_time
-            log.info("Scheduled %s (%s) — next run: %s", name, defn["schedule"], nxt)
+            log.info("Scheduled %s (%s)", name, defn["schedule"])
 
     async def _run_job(self, name: str):
         """Execute a job's bash script via subprocess."""
@@ -272,7 +281,6 @@ class JobRunner:
         jobs = {}
         for name, defn in JOB_DEFS.items():
             s = self.state.get(name, {})
-            job = self.scheduler.get_job(name)
             jobs[name] = {
                 "description": defn["description"],
                 "schedule": defn["schedule"],
@@ -283,7 +291,7 @@ class JobRunner:
                 "last_duration": s.get("last_duration"),
                 "run_count": s.get("run_count", 0),
                 "fail_count": s.get("fail_count", 0),
-                "next_run": str(job.next_run_time) if job else None,
+                "next_run": self._get_next_run(name),
             }
         return jobs
 
@@ -292,7 +300,6 @@ class JobRunner:
             return None
         defn = JOB_DEFS[name]
         s = self.state.get(name, {})
-        job = self.scheduler.get_job(name)
         return {
             "name": name,
             "description": defn["description"],
@@ -307,7 +314,7 @@ class JobRunner:
             "last_output": s.get("last_output"),
             "run_count": s.get("run_count", 0),
             "fail_count": s.get("fail_count", 0),
-            "next_run": str(job.next_run_time) if job else None,
+            "next_run": self._get_next_run(name),
         }
 
 

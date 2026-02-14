@@ -121,10 +121,15 @@ cat > /home/lobwife/.claude/settings.json <<'JSON'
 JSON
 chown -R lobwife:lobwife /home/lobwife/.claude
 
+# Export env vars so su can pass them through
+export VAULT_PATH="/home/lobwife/vault"
+export LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+
 # Start lobwife daemon in background (runs as lobwife user)
+# Output to stdout (captured by k8s) and tee to log file
 echo "Starting lobwife daemon..."
-su - lobwife -c "VAULT_PATH=/home/lobwife/vault \
-    LOBMOB_ENV='${LOBMOB_ENV:-prod}' \
+su - lobwife -c "VAULT_PATH='${VAULT_PATH}' \
+    LOBMOB_ENV='${LOBMOB_ENV}' \
     GH_TOKEN='${GH_TOKEN:-}' \
     GH_APP_ID='${GH_APP_ID:-}' \
     GH_APP_INSTALL_ID='${GH_APP_INSTALL_ID:-}' \
@@ -136,17 +141,17 @@ su - lobwife -c "VAULT_PATH=/home/lobwife/vault \
     TASK_QUEUE_CHANNEL_ID='${TASK_QUEUE_CHANNEL_ID:-}' \
     SWARM_CONTROL_CHANNEL_ID='${SWARM_CONTROL_CHANNEL_ID:-}' \
     SWARM_LOGS_CHANNEL_ID='${SWARM_LOGS_CHANNEL_ID:-}' \
-    python3 /opt/lobmob/scripts/server/lobwife-daemon.py \
-    >> /home/lobwife/state/daemon.log 2>&1" &
+    python3 /opt/lobmob/scripts/server/lobwife-daemon.py 2>&1 \
+    | tee -a /home/lobwife/state/daemon.log" &
 DAEMON_PID=$!
 
 # Start web dashboard in background
 echo "Starting lobwife web dashboard..."
-su - lobwife -c "node /opt/lobmob/scripts/server/lobwife-web.js \
-    >> /home/lobwife/state/web.log 2>&1" &
+su - lobwife -c "node /opt/lobmob/scripts/server/lobwife-web.js 2>&1 \
+    | tee -a /home/lobwife/state/web.log" &
 WEB_PID=$!
 
-# Cleanup handler — stop processes when container exits
+# Cleanup handler — stop child process trees when container exits
 cleanup() {
     echo "Stopping lobwife processes..."
     kill "$WEB_PID" 2>/dev/null || true

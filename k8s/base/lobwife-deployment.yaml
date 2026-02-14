@@ -51,8 +51,6 @@ spec:
           volumeMounts:
             - name: home
               mountPath: /home/lobwife
-            - name: vault
-              mountPath: /opt/vault
             - name: ssh-keys
               mountPath: /run/secrets/ssh-authorized-keys
               readOnly: true
@@ -72,9 +70,6 @@ spec:
         - name: home
           persistentVolumeClaim:
             claimName: lobwife-home
-        - name: vault
-          persistentVolumeClaim:
-            claimName: vault-pvc
         - name: ssh-keys
           secret:
             secretName: lobwife-ssh-keys
