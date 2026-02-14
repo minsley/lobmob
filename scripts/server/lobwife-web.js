@@ -28,13 +28,21 @@ function daemonGet(path) {
   });
 }
 
-function daemonPost(path) {
+function daemonRequest(method, path, body) {
   return new Promise((resolve, reject) => {
+    const headers = {};
+    let bodyStr;
+    if (body) {
+      bodyStr = typeof body === 'string' ? body : JSON.stringify(body);
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(bodyStr);
+    }
     const req = http.request({
       hostname: DAEMON_HOST,
       port: DAEMON_PORT,
       path: path,
-      method: 'POST',
+      method: method,
+      headers: headers,
       timeout: 10000,
     }, (res) => {
       let data = '';
@@ -45,8 +53,13 @@ function daemonPost(path) {
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    if (bodyStr) req.write(bodyStr);
     req.end();
   });
+}
+
+function daemonPost(path, body) {
+  return daemonRequest('POST', path, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -449,16 +462,24 @@ const handler = async (req, res) => {
       return;
     }
 
-    // API proxy — pass through to daemon
+    // API proxy — pass through to daemon (GET, POST, DELETE)
     if (url.pathname.startsWith('/api/')) {
       try {
         let data;
         if (req.method === 'POST') {
-          data = await daemonPost(url.pathname);
+          // Read request body and forward
+          const body = await new Promise((resolve) => {
+            let b = '';
+            req.on('data', (c) => b += c);
+            req.on('end', () => { try { resolve(JSON.parse(b)); } catch { resolve(b || undefined); } });
+          });
+          data = await daemonPost(url.pathname, body);
+        } else if (req.method === 'DELETE') {
+          data = await daemonRequest('DELETE', url.pathname);
         } else {
           data = await daemonGet(url.pathname);
         }
-        const statusCode = typeof data === 'object' && data.error ? 404 : 200;
+        const statusCode = typeof data === 'object' && data.error ? (data.error.includes('not registered') ? 403 : 404) : 200;
         res.writeHead(statusCode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
         res.end(JSON.stringify(data));
       } catch (e) {
