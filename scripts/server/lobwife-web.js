@@ -213,6 +213,7 @@ function statusBadge(status, running) {
 
 function dashboardHtml(data) {
   const jobs = data.jobs || {};
+  const broker = data.broker || {};
   const names = Object.keys(jobs);
   const running = names.filter(n => jobs[n].running).length;
   const healthy = names.filter(n => jobs[n].last_status === 'success').length;
@@ -273,6 +274,11 @@ function dashboardHtml(data) {
         <div class="card-label">Uptime</div>
         <div class="card-value">${uptime}</div>
         <div class="card-sub">daemon process</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Token Broker</div>
+        <div class="card-value" style="font-size:18px;color:${broker.enabled ? 'var(--green)' : 'var(--text-muted)'}">${broker.enabled ? 'Active' : 'Disabled'}</div>
+        <div class="card-sub">${broker.active_tasks || 0} tasks, ${broker.total_tokens_issued || 0} tokens issued</div>
       </div>
     </div>
 

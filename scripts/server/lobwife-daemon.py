@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""lobwife-daemon — persistent cron scheduler with HTTP API.
+"""lobwife-daemon — persistent cron scheduler + GitHub token broker.
 
 Replaces k8s CronJobs with in-process scheduling via APScheduler.
 Runs bash scripts on schedule, exposes HTTP API for status/control.
+Also serves as the centralized GitHub credential broker for lobster agents.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -18,7 +20,12 @@ from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from aiohttp import web
+from aiohttp import web, ClientSession
+
+try:
+    import jwt as pyjwt
+except ImportError:
+    pyjwt = None
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -30,6 +37,12 @@ STATE_FILE = STATE_DIR / "jobs.json"
 DAEMON_PORT = 8081  # Web dashboard on 8080, daemon API on 8081
 VAULT_PATH = os.environ.get("VAULT_PATH", "/home/lobwife/vault")
 MAX_OUTPUT_LINES = 200  # Truncate stored output
+
+# Token broker config
+TASKS_FILE = STATE_DIR / "tasks.json"
+AUDIT_FILE = STATE_DIR / "token-audit.json"
+TASK_MAX_AGE_HOURS = 24
+AUDIT_MAX_ENTRIES = 500
 
 # Job definitions: name -> {script, schedule (cron), description}
 JOB_DEFS = {
@@ -98,6 +111,173 @@ def save_state(state: dict):
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2, default=str))
     tmp.rename(STATE_FILE)
+
+
+# ---------------------------------------------------------------------------
+# Token broker
+# ---------------------------------------------------------------------------
+
+
+class TokenBroker:
+    """GitHub credential broker — generates repo-scoped installation tokens."""
+
+    def __init__(self):
+        self.app_id = os.environ.get("GH_APP_ID", "")
+        self.install_id = os.environ.get("GH_APP_INSTALL_ID", "")
+        self.pem_key = self._load_pem()
+        self.tasks: dict = {}
+        self.audit_log: list = []
+        self._load_state()
+        if self.pem_key:
+            log.info("Token broker enabled (app_id=%s)", self.app_id)
+        else:
+            log.warning("Token broker disabled — no PEM key configured")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.pem_key and self.app_id and self.install_id)
+
+    def _load_pem(self) -> str | None:
+        """Load PEM from GH_APP_PEM (base64) or GH_APP_PEM_PATH (file)."""
+        pem_b64 = os.environ.get("GH_APP_PEM", "")
+        if pem_b64:
+            try:
+                return base64.b64decode(pem_b64).decode("utf-8")
+            except Exception as e:
+                log.error("Failed to decode GH_APP_PEM: %s", e)
+                return None
+        pem_path = os.environ.get("GH_APP_PEM_PATH", "")
+        if pem_path and Path(pem_path).exists():
+            return Path(pem_path).read_text()
+        return None
+
+    def _generate_jwt(self) -> str:
+        """Create GitHub App JWT signed with PEM (10-min lifetime)."""
+        if not pyjwt:
+            raise RuntimeError("PyJWT not installed — cannot generate JWT")
+        now = int(time.time())
+        payload = {"iat": now - 60, "exp": now + 540, "iss": self.app_id}
+        return pyjwt.encode(payload, self.pem_key, algorithm="RS256")
+
+    async def create_scoped_token(self, repos: list[str]) -> dict:
+        """Generate installation token scoped to specific repos via GitHub API."""
+        app_jwt = self._generate_jwt()
+        # GitHub API wants repo names without owner prefix
+        repo_names = [r.split("/")[-1] for r in repos]
+        body = {
+            "repositories": repo_names,
+            "permissions": {
+                "contents": "write",
+                "pull_requests": "write",
+                "metadata": "read",
+            },
+        }
+        url = f"https://api.github.com/app/installations/{self.install_id}/access_tokens"
+        async with ClientSession() as session:
+            async with session.post(
+                url,
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {app_jwt}",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+            ) as resp:
+                if resp.status != 201:
+                    text = await resp.text()
+                    raise RuntimeError(f"GitHub API {resp.status}: {text[:300]}")
+                data = await resp.json()
+                return {"token": data["token"], "expires_at": data["expires_at"]}
+
+    def register_task(self, task_id: str, repos: list[str], lobster_type: str):
+        """Register a task's repo access. Called by lobboss at spawn."""
+        self.tasks[task_id] = {
+            "repos": repos,
+            "lobster_type": lobster_type,
+            "registered_at": datetime.now(timezone.utc).isoformat(),
+            "status": "active",
+            "token_count": 0,
+        }
+        self._save_state()
+        self._audit("task_registered", task_id, repos)
+        log.info("Registered task %s: repos=%s type=%s", task_id, repos, lobster_type)
+
+    def deregister_task(self, task_id: str):
+        """Remove task registration."""
+        if task_id in self.tasks:
+            self._audit("task_deregistered", task_id, self.tasks[task_id]["repos"])
+            del self.tasks[task_id]
+            self._save_state()
+            log.info("Deregistered task %s", task_id)
+
+    async def get_token_for_task(self, task_id: str) -> dict:
+        """Validate task is active, return repo-scoped token."""
+        if not self.enabled:
+            raise RuntimeError("Token broker not configured (no PEM key)")
+        task = self.tasks.get(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not registered")
+        if task["status"] != "active":
+            raise ValueError(f"Task {task_id} is {task['status']}, not active")
+        token_data = await self.create_scoped_token(task["repos"])
+        task["token_count"] += 1
+        self._audit("token_issued", task_id, task["repos"])
+        return token_data
+
+    def cleanup_expired(self):
+        """Remove task registrations older than TASK_MAX_AGE_HOURS."""
+        now = datetime.now(timezone.utc)
+        expired = []
+        for task_id, task in self.tasks.items():
+            registered = datetime.fromisoformat(task["registered_at"])
+            age_hours = (now - registered).total_seconds() / 3600
+            if age_hours > TASK_MAX_AGE_HOURS:
+                expired.append(task_id)
+        for task_id in expired:
+            log.info("Expiring stale task registration: %s", task_id)
+            self.deregister_task(task_id)
+
+    def _audit(self, action: str, task_id: str, repos: list[str]):
+        self.audit_log.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "task_id": task_id,
+            "repos": repos,
+            "action": action,
+        })
+        if len(self.audit_log) > AUDIT_MAX_ENTRIES:
+            self.audit_log = self.audit_log[-AUDIT_MAX_ENTRIES:]
+
+    def _load_state(self):
+        if TASKS_FILE.exists():
+            try:
+                self.tasks = json.loads(TASKS_FILE.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning("Failed to load tasks state: %s", e)
+        if AUDIT_FILE.exists():
+            try:
+                self.audit_log = json.loads(AUDIT_FILE.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning("Failed to load audit log: %s", e)
+
+    def _save_state(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = TASKS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.tasks, indent=2, default=str))
+        tmp.rename(TASKS_FILE)
+
+    def save_audit(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = AUDIT_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.audit_log, indent=2, default=str))
+        tmp.rename(AUDIT_FILE)
+
+    def get_summary(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "app_id": self.app_id or None,
+            "active_tasks": len([t for t in self.tasks.values() if t["status"] == "active"]),
+            "total_tokens_issued": sum(t.get("token_count", 0) for t in self.tasks.values()),
+            "audit_entries": len(self.audit_log),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -323,14 +503,17 @@ class JobRunner:
 # ---------------------------------------------------------------------------
 
 
-def build_app(runner: JobRunner) -> web.Application:
+def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
     app = web.Application()
+
+    # --- Health & status ---
 
     async def handle_health(request):
         return web.json_response({
             "status": "ok",
             "uptime": time.monotonic(),
             "jobs_running": len(runner.running),
+            "broker": broker.get_summary(),
         })
 
     async def handle_status(request):
@@ -338,7 +521,10 @@ def build_app(runner: JobRunner) -> web.Application:
             "status": "ok",
             "uptime": time.monotonic(),
             "jobs": runner.get_status(),
+            "broker": broker.get_summary(),
         })
+
+    # --- Cron job management ---
 
     async def handle_jobs(request):
         return web.json_response(runner.get_status())
@@ -368,13 +554,68 @@ def build_app(runner: JobRunner) -> web.Application:
         status = 200 if "disabled" in msg else 404
         return web.json_response({"message": msg}, status=status)
 
+    # --- Token broker ---
+
+    async def handle_register_task(request):
+        task_id = request.match_info["task_id"]
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        repos = data.get("repos", [])
+        lobster_type = data.get("lobster_type", "unknown")
+        if not repos:
+            return web.json_response({"error": "repos required"}, status=400)
+        broker.register_task(task_id, repos, lobster_type)
+        return web.json_response({"status": "registered", "task_id": task_id})
+
+    async def handle_deregister_task(request):
+        task_id = request.match_info["task_id"]
+        broker.deregister_task(task_id)
+        return web.json_response({"status": "removed", "task_id": task_id})
+
+    async def handle_list_tasks(request):
+        return web.json_response(broker.tasks)
+
+    async def handle_get_token(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        task_id = data.get("task_id", "")
+        if not task_id:
+            return web.json_response({"error": "task_id required"}, status=400)
+        try:
+            token_data = await broker.get_token_for_task(task_id)
+            return web.json_response(token_data)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=403)
+        except RuntimeError as e:
+            return web.json_response({"error": str(e)}, status=503)
+
+    async def handle_token_audit(request):
+        task_id = request.query.get("task_id")
+        if task_id:
+            filtered = [e for e in broker.audit_log if e["task_id"] == task_id]
+            return web.json_response(filtered)
+        return web.json_response(broker.audit_log[-200:])
+
+    # --- Routes ---
+
     app.router.add_get("/health", handle_health)
     app.router.add_get("/api/status", handle_status)
+    # Cron jobs
     app.router.add_get("/api/jobs", handle_jobs)
     app.router.add_get("/api/jobs/{name}", handle_job_detail)
     app.router.add_post("/api/jobs/{name}/trigger", handle_trigger)
     app.router.add_post("/api/jobs/{name}/enable", handle_enable)
     app.router.add_post("/api/jobs/{name}/disable", handle_disable)
+    # Token broker
+    app.router.add_post("/api/tasks/{task_id}/register", handle_register_task)
+    app.router.add_delete("/api/tasks/{task_id}", handle_deregister_task)
+    app.router.add_get("/api/tasks", handle_list_tasks)
+    app.router.add_post("/api/token", handle_get_token)
+    app.router.add_get("/api/token/audit", handle_token_audit)
 
     return app
 
@@ -392,17 +633,21 @@ async def main():
     runner.scheduler.start()
     log.info("Scheduler started with %d jobs", len(JOB_DEFS))
 
-    # Periodic state persistence (every 5 min)
+    broker = TokenBroker()
+
+    # Periodic state persistence + broker cleanup (every 5 min)
     async def persist_loop():
         while True:
             await asyncio.sleep(300)
             save_state(runner.state)
-            log.debug("State persisted to %s", STATE_FILE)
+            broker.cleanup_expired()
+            broker.save_audit()
+            log.debug("State persisted")
 
     asyncio.create_task(persist_loop())
 
     # HTTP API server
-    app = build_app(runner)
+    app = build_app(runner, broker)
     api_runner = web.AppRunner(app)
     await api_runner.setup()
     site = web.TCPSite(api_runner, "0.0.0.0", DAEMON_PORT)
@@ -420,6 +665,8 @@ async def main():
     runner.scheduler.shutdown(wait=False)
     await api_runner.cleanup()
     save_state(runner.state)
+    broker._save_state()
+    broker.save_audit()
     log.info("Shutdown complete")
 
 

@@ -22,6 +22,10 @@ COPY scripts/server/lobmob-web-lobster.js /app/scripts/lobmob-web-lobster.js
 # Lobster prompts
 COPY src/lobster/prompts/ /app/lobster/prompts/
 
+# Git credential helper for lobwife token broker
+COPY scripts/git-credential-lobwife /usr/local/bin/git-credential-lobwife
+RUN chmod +x /usr/local/bin/git-credential-lobwife
+
 ENTRYPOINT ["python", "-m", "lobster.run_task"]
 
 LABEL org.opencontainers.image.description="lobmob lobster — ephemeral Agent SDK task worker"
