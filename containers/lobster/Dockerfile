@@ -24,7 +24,8 @@ COPY src/lobster/prompts/ /app/lobster/prompts/
 
 # Git credential helper for lobwife token broker
 COPY scripts/git-credential-lobwife /usr/local/bin/git-credential-lobwife
-RUN chmod +x /usr/local/bin/git-credential-lobwife
+RUN chmod +x /usr/local/bin/git-credential-lobwife \
+    && git config --system credential.helper lobwife
 
 ENTRYPOINT ["python", "-m", "lobster.run_task"]
 

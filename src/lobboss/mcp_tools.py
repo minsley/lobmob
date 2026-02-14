@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+import aiohttp
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 logger = logging.getLogger("lobboss.mcp_tools")
@@ -30,6 +31,10 @@ WORKFLOW_IMAGES = {
 }
 
 VALID_LOBSTER_TYPES = ("swe", "qa", "research", "image-gen")
+
+LOBWIFE_URL = os.environ.get(
+    "LOBWIFE_URL", "http://lobwife.lobmob.svc.cluster.local:8081"
+)
 
 
 def set_bot(bot: Any) -> None:
@@ -82,6 +87,28 @@ async def discord_post(args: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": f"Posted message {msg.id} to channel {channel_id}"}]}
 
 
+async def _register_task_with_broker(task_id: str, repos: list[str], lobster_type: str) -> bool:
+    """Register a task's repo access with the lobwife token broker.
+
+    Returns True on success, False on failure (non-fatal — falls back to legacy auth).
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{LOBWIFE_URL}/api/tasks/{task_id}/register",
+                json={"repos": repos, "lobster_type": lobster_type},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info("Registered task %s with broker: repos=%s", task_id, repos)
+                    return True
+                text = await resp.text()
+                logger.warning("Broker registration failed (%d): %s", resp.status, text[:200])
+    except Exception as e:
+        logger.warning("Broker registration error (non-fatal): %s", e)
+    return False
+
+
 @tool("spawn_lobster", "Spawn a lobster worker agent for a task", {
     "task_id": str,
     "lobster_type": str,
@@ -107,6 +134,21 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
     batch_api, _ = _get_k8s_clients()
     job_name = _sanitize_k8s_name(f"lobster-{lobster_type}-{task_id}")
 
+    # Determine repos this task needs access to
+    task_repos = [VAULT_REPO]
+    try:
+        from common.vault import read_task
+        vault_path = os.environ.get("VAULT_PATH", "/opt/vault")
+        task_data = read_task(vault_path, task_id)
+        extra_repos = task_data.get("metadata", {}).get("repos", [])
+        if extra_repos:
+            task_repos.extend(extra_repos)
+    except Exception:
+        pass  # Task file may not exist yet or vault unavailable
+
+    # Register task repos with lobwife token broker (non-fatal)
+    await _register_task_with_broker(task_id, task_repos, lobster_type)
+
     labels = {
         "app.kubernetes.io/name": "lobster",
         "app.kubernetes.io/part-of": "lobmob",
@@ -114,6 +156,18 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
         "lobmob.io/lobster-type": lobster_type,
         "lobmob.io/workflow": workflow,
     }
+
+    # Init container: clone vault using a token from lobwife broker
+    vault_clone_script = (
+        'TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token"'
+        ' -H "Content-Type: application/json"'
+        ' -d "{\\"task_id\\": \\"${TASK_ID}\\"}"'
+        " | python3 -c \"import sys,json; print(json.load(sys.stdin)['token'])\" 2>/dev/null)"
+        " && git clone \"https://x-access-token:${TOKEN}@github.com/"
+        + VAULT_REPO
+        + '.git" /opt/vault'
+        " || echo 'Broker token failed, vault clone skipped'"
+    )
 
     job = client.V1Job(
         api_version="batch/v1",
@@ -136,21 +190,12 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                     init_containers=[
                         client.V1Container(
                             name="vault-clone",
-                            image="alpine/git:latest",
+                            image=image,
                             command=["/bin/sh", "-c"],
-                            args=[
-                                f'git clone "https://x-access-token:$(GH_TOKEN)@github.com/{VAULT_REPO}.git" /opt/vault'
-                            ],
+                            args=[vault_clone_script],
                             env=[
-                                client.V1EnvVar(
-                                    name="GH_TOKEN",
-                                    value_from=client.V1EnvVarSource(
-                                        secret_key_ref=client.V1SecretKeySelector(
-                                            name="lobmob-secrets",
-                                            key="GH_APP_PRIVATE_KEY",
-                                        )
-                                    ),
-                                ),
+                                client.V1EnvVar(name="LOBWIFE_URL", value=LOBWIFE_URL),
+                                client.V1EnvVar(name="TASK_ID", value=task_id),
                             ],
                             volume_mounts=[
                                 client.V1VolumeMount(name="vault", mount_path="/opt/vault"),
@@ -201,14 +246,7 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                                         )
                                     ),
                                 ),
-                                client.V1EnvVar(
-                                    name="GH_TOKEN",
-                                    value_from=client.V1EnvVarSource(
-                                        secret_key_ref=client.V1SecretKeySelector(
-                                            name="lobmob-secrets", key="GH_APP_PRIVATE_KEY"
-                                        )
-                                    ),
-                                ),
+                                client.V1EnvVar(name="LOBWIFE_URL", value=LOBWIFE_URL),
                                 client.V1EnvVar(
                                     name="LOBMOB_ENV",
                                     value_from=client.V1EnvVarSource(
