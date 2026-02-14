@@ -24,7 +24,6 @@ COPY scripts/server/container-env.sh \
      scripts/server/lobmob-task-manager.sh \
      scripts/server/lobmob-review-prs.sh \
      scripts/server/lobmob-status-reporter.sh \
-     scripts/server/lobmob-gh-token.sh \
      scripts/server/lobmob-flush-logs.sh \
      scripts/server/lobmob-log.sh \
      /app/scripts/

@@ -20,8 +20,14 @@ You're inside **lobwife**, the persistent cron scheduler for lobmob. This pod re
 | task-manager | Every 5 min | lobmob-task-manager.sh |
 | review-prs | Every 2 min | lobmob-review-prs.sh |
 | status-reporter | Every 30 min | lobmob-status-reporter.sh |
-| gh-token-refresh | Every 45 min | lobmob-gh-token.sh |
 | flush-logs | Every 30 min | lobmob-flush-logs.sh |
+
+## Token Broker API (port 8081)
+
+- `POST /api/broker/register` — Register a task for token access
+- `POST /api/token` — Get a GitHub App installation token for a registered task
+- `POST /api/broker/deregister` — Deregister a task (revokes access)
+- `GET /api/broker/status` — Broker status (registered tasks, token cache)
 
 ## HTTP API (port 8081)
 

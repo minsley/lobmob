@@ -55,11 +55,27 @@ class AgentConfig:
 
 
 @dataclass
+class PollerConfig:
+    enabled: bool = True
+    interval_seconds: int = 60
+    max_concurrent_lobsters: int = 5
+
+    @classmethod
+    def from_env(cls) -> "PollerConfig":
+        return cls(
+            enabled=os.environ.get("TASK_POLLER_ENABLED", "true").lower() in ("true", "1", "yes"),
+            interval_seconds=int(os.environ.get("TASK_POLL_INTERVAL", "60")),
+            max_concurrent_lobsters=int(os.environ.get("MAX_CONCURRENT_LOBSTERS", "5")),
+        )
+
+
+@dataclass
 class Config:
     environment: str = "prod"
     vault_path: str = "/opt/vault"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    poller: PollerConfig = field(default_factory=PollerConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -68,4 +84,5 @@ class Config:
             vault_path=os.environ.get("VAULT_PATH", "/opt/vault"),
             discord=DiscordConfig.from_env(),
             agent=AgentConfig.from_env(),
+            poller=PollerConfig.from_env(),
         )

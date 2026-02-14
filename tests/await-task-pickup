@@ -5,14 +5,13 @@
 # Watches the vault repo for each task's frontmatter to change:
 #   status: queued  →  status: active
 #   assigned_to:    →  assigned_to: lobster-<id>
-# Then confirms the assigned lobster droplet exists in the fleet.
+# Then confirms the assigned lobster k8s Job exists.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INFRA_DIR="$PROJECT_DIR/infra"
 VAULT_LOCAL="$PROJECT_DIR/vault-local"
-LOBMOB_SSH_KEY="$HOME/.ssh/lobmob_ed25519"
 
 # Colors
 RED='\033[0;31m'
@@ -21,20 +20,12 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-lobmob_ssh() {
-  ssh -i "$LOBMOB_SSH_KEY" -o StrictHostKeyChecking=accept-new "$@"
-}
-
-get_lobboss_ip() {
-  terraform -chdir="$INFRA_DIR" output -raw lobboss_ip 2>/dev/null
-}
-
 # --- Parse arguments ---
 
 TIMEOUT_MINUTES=10
 TASK_IDS=()
 
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
     --timeout) TIMEOUT_MINUTES="$2"; shift 2 ;;
     --help|-h) echo "Usage: await-task-pickup [--timeout <minutes>] <task-id> [task-id...]"; exit 0 ;;
@@ -42,26 +33,34 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ ${#TASK_IDS[@]} -eq 0 ]; then
+if [[ ${#TASK_IDS[@]} -eq 0 ]]; then
   echo "Usage: await-task-pickup [--timeout <minutes>] <task-id> [task-id...]"
   exit 1
 fi
 
 # --- Preflight ---
 
-VAULT_REPO=$(grep vault_repo "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
-if [ -z "$VAULT_REPO" ]; then
-  echo -e "${RED}vault_repo not found in infra/terraform.tfvars${NC}"
+LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+if [[ "$LOBMOB_ENV" == "dev" ]]; then
+  TFVARS_FILE="$INFRA_DIR/dev.tfvars"
+  KUBE_CONTEXT="do-nyc3-lobmob-dev-k8s"
+else
+  TFVARS_FILE="$INFRA_DIR/prod.tfvars"
+  KUBE_CONTEXT="do-nyc3-lobmob-k8s"
+fi
+
+VAULT_REPO=$(grep vault_repo "$TFVARS_FILE" 2>/dev/null | cut -d'"' -f2)
+if [[ -z "$VAULT_REPO" ]]; then
+  echo -e "${RED}vault_repo not found in ${TFVARS_FILE}${NC}"
   exit 1
 fi
 
-LOBBOSS_IP=$(get_lobboss_ip)
-if [ -z "$LOBBOSS_IP" ]; then
-  echo -e "${RED}Cannot resolve lobboss IP from Terraform state${NC}"
+if ! kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+  echo -e "${RED}Cannot reach k8s cluster (context: $KUBE_CONTEXT)${NC}"
   exit 1
 fi
 
-if [ ! -d "$VAULT_LOCAL/.git" ]; then
+if [[ ! -d "$VAULT_LOCAL/.git" ]]; then
   echo -e "${YELLOW}Cloning vault repo...${NC}"
   gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
 fi
@@ -75,7 +74,7 @@ trap 'rm -rf "$STATE_DIR"' EXIT
 # Read a YAML frontmatter field from a task file
 read_field() {
   local file="$1" field="$2"
-  if [ ! -f "$file" ]; then
+  if [[ ! -f "$file" ]]; then
     return
   fi
   sed -n '/^---$/,/^---$/p' "$file" | grep "^${field}:" | head -1 | sed "s/^${field}:[[:space:]]*//"
@@ -86,15 +85,20 @@ find_task_file() {
   local task_id="$1"
   for dir in active completed failed; do
     local path="$VAULT_LOCAL/010-tasks/$dir/${task_id}.md"
-    if [ -f "$path" ]; then
+    if [[ -f "$path" ]]; then
       echo "$path"
       return
     fi
   done
 }
 
+# Sanitize a task ID for k8s label matching (same logic as Python _sanitize_k8s_name)
+sanitize_k8s_name() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-63
+}
+
 echo ""
-echo -e "${YELLOW}await-task-pickup${NC}  timeout=${TIMEOUT_MINUTES}m  tasks=${#TASK_IDS[@]}"
+echo -e "${YELLOW}await-task-pickup${NC}  env=${LOBMOB_ENV}  timeout=${TIMEOUT_MINUTES}m  tasks=${#TASK_IDS[@]}"
 echo ""
 
 # --- Initial status ---
@@ -104,14 +108,14 @@ git -C "$VAULT_LOCAL" pull --quiet origin main 2>/dev/null || true
 
 for TASK_ID in "${TASK_IDS[@]}"; do
   TASK_FILE=$(find_task_file "$TASK_ID")
-  if [ -z "$TASK_FILE" ]; then
+  if [[ -z "$TASK_FILE" ]]; then
     echo -e "  ${RED}NOT FOUND${NC}  $TASK_ID"
     echo "not_found" > "$STATE_DIR/$TASK_ID"
   else
     STATUS=$(read_field "$TASK_FILE" "status")
     ASSIGNED=$(read_field "$TASK_FILE" "assigned_to")
-    if [ "$STATUS" = "active" ] && [ -n "$ASSIGNED" ]; then
-      echo -e "  ${GREEN}ALREADY ASSIGNED${NC}  $TASK_ID → $ASSIGNED"
+    if [[ "$STATUS" == "active" ]] && [[ -n "$ASSIGNED" ]]; then
+      echo -e "  ${GREEN}ALREADY ASSIGNED${NC}  $TASK_ID -> $ASSIGNED"
       echo "active" > "$STATE_DIR/$TASK_ID"
       echo "$ASSIGNED" > "$STATE_DIR/${TASK_ID}.lobster"
     else
@@ -130,7 +134,7 @@ TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
 POLL_INTERVAL=15
 ELAPSED=0
 
-while [ "$ELAPSED" -lt "$TIMEOUT_SECONDS" ]; do
+while [[ "$ELAPSED" -lt "$TIMEOUT_SECONDS" ]]; do
   # Pull latest
   git -C "$VAULT_LOCAL" pull --quiet origin main 2>/dev/null || true
 
@@ -140,33 +144,33 @@ while [ "$ELAPSED" -lt "$TIMEOUT_SECONDS" ]; do
     CURRENT=$(cat "$STATE_DIR/$TASK_ID" 2>/dev/null || echo "unknown")
 
     # Skip tasks already resolved
-    if [ "$CURRENT" = "active" ] || [ "$CURRENT" = "completed" ] || [ "$CURRENT" = "not_found" ]; then
+    if [[ "$CURRENT" == "active" ]] || [[ "$CURRENT" == "completed" ]] || [[ "$CURRENT" == "not_found" ]]; then
       continue
     fi
 
     ALL_DONE=false
 
     TASK_FILE=$(find_task_file "$TASK_ID")
-    if [ -z "$TASK_FILE" ]; then
+    if [[ -z "$TASK_FILE" ]]; then
       continue
     fi
 
     STATUS=$(read_field "$TASK_FILE" "status")
     ASSIGNED=$(read_field "$TASK_FILE" "assigned_to")
 
-    if [ "$STATUS" = "active" ] && [ -n "$ASSIGNED" ]; then
+    if [[ "$STATUS" == "active" ]] && [[ -n "$ASSIGNED" ]]; then
       echo ""
-      echo -e "  ${GREEN}PICKED UP${NC}  $TASK_ID → $ASSIGNED  (${ELAPSED}s)"
+      echo -e "  ${GREEN}PICKED UP${NC}  $TASK_ID -> $ASSIGNED  (${ELAPSED}s)"
       echo "active" > "$STATE_DIR/$TASK_ID"
       echo "$ASSIGNED" > "$STATE_DIR/${TASK_ID}.lobster"
-    elif [ "$STATUS" = "completed" ]; then
+    elif [[ "$STATUS" == "completed" ]]; then
       echo ""
       echo -e "  ${GREEN}COMPLETED${NC}  $TASK_ID  (${ELAPSED}s)"
       echo "completed" > "$STATE_DIR/$TASK_ID"
     fi
   done
 
-  if [ "$ALL_DONE" = true ]; then
+  if [[ "$ALL_DONE" == true ]]; then
     break
   fi
 
@@ -177,17 +181,17 @@ done
 
 echo ""
 
-# --- Check lobster fleet ---
+# --- Check lobster jobs ---
 
 echo ""
-echo -e "${YELLOW}Checking lobster fleet:${NC}"
+echo -e "${YELLOW}Lobster jobs:${NC}"
 
-LOBSTER_LIST=$(lobmob_ssh -o ConnectTimeout=10 "root@$LOBBOSS_IP" \
-  'source /etc/lobmob/env && doctl compute droplet list --tag-name "$LOBSTER_TAG" --format Name,Status --no-header' 2>/dev/null || echo "")
+JOB_LIST=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get jobs \
+  -l app.kubernetes.io/name=lobster --no-headers 2>/dev/null || echo "")
 
-if [ -n "$LOBSTER_LIST" ]; then
-  echo "$LOBSTER_LIST" | while read -r line; do
-    echo -e "  ${CYAN}droplet${NC}  $line"
+if [[ -n "$JOB_LIST" ]]; then
+  echo "$JOB_LIST" | while read -r line; do
+    echo -e "  ${CYAN}job${NC}  $line"
   done
   echo ""
 fi
@@ -201,18 +205,26 @@ for TASK_ID in "${TASK_IDS[@]}"; do
   STATUS=$(cat "$STATE_DIR/$TASK_ID" 2>/dev/null || echo "unknown")
   ASSIGNED=$(cat "$STATE_DIR/${TASK_ID}.lobster" 2>/dev/null || echo "")
 
-  if [ "$STATUS" = "active" ] && [ -n "$ASSIGNED" ]; then
-    if echo "$LOBSTER_LIST" | grep -q "$ASSIGNED"; then
-      echo -e "  ${GREEN}PASS${NC}  $TASK_ID → $ASSIGNED (droplet running)"
+  if [[ "$STATUS" == "active" ]] && [[ -n "$ASSIGNED" ]]; then
+    # Verify k8s Job exists for this task
+    SANITIZED=$(sanitize_k8s_name "$TASK_ID")
+    JOB_FOUND=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get jobs \
+      -l "lobmob.io/task-id=$SANITIZED" --no-headers 2>/dev/null || echo "")
+
+    if [[ -n "$JOB_FOUND" ]]; then
+      # Check pod phase
+      POD_PHASE=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get pods \
+        -l "job-name=$ASSIGNED" -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "unknown")
+      echo -e "  ${GREEN}PASS${NC}  $TASK_ID -> $ASSIGNED (job exists, pod $POD_PHASE)"
       PASS=$((PASS + 1))
     else
-      echo -e "  ${YELLOW}WARN${NC}  $TASK_ID → $ASSIGNED (assigned but droplet not found)"
-      PASS=$((PASS + 1))  # Assignment happened, lobster may have been torn down
+      echo -e "  ${YELLOW}WARN${NC}  $TASK_ID -> $ASSIGNED (assigned but job not found in k8s)"
+      PASS=$((PASS + 1))  # Assignment happened, job may have completed and been cleaned up
     fi
-  elif [ "$STATUS" = "completed" ]; then
+  elif [[ "$STATUS" == "completed" ]]; then
     echo -e "  ${GREEN}PASS${NC}  $TASK_ID (completed)"
     PASS=$((PASS + 1))
-  elif [ "$STATUS" = "not_found" ]; then
+  elif [[ "$STATUS" == "not_found" ]]; then
     echo -e "  ${RED}FAIL${NC}  $TASK_ID (task file not found in vault)"
     FAIL=$((FAIL + 1))
   else
@@ -224,7 +236,7 @@ done
 TOTAL=$((PASS + FAIL))
 echo ""
 echo -e "${GREEN}$PASS${NC}/$TOTAL tasks picked up"
-if [ "$FAIL" -gt 0 ]; then
+if [[ "$FAIL" -gt 0 ]]; then
   echo -e "${RED}$FAIL not picked up${NC}"
   exit 1
 fi

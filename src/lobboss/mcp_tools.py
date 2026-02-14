@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+import aiohttp
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 logger = logging.getLogger("lobboss.mcp_tools")
@@ -30,6 +31,10 @@ WORKFLOW_IMAGES = {
 }
 
 VALID_LOBSTER_TYPES = ("swe", "qa", "research", "image-gen")
+
+LOBWIFE_URL = os.environ.get(
+    "LOBWIFE_URL", "http://lobwife.lobmob.svc.cluster.local:8081"
+)
 
 
 def set_bot(bot: Any) -> None:
@@ -82,30 +87,59 @@ async def discord_post(args: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": f"Posted message {msg.id} to channel {channel_id}"}]}
 
 
-@tool("spawn_lobster", "Spawn a lobster worker agent for a task", {
-    "task_id": str,
-    "lobster_type": str,
-    "workflow": str,
-})
-async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
-    """Spawn a lobster worker by creating a k8s Job."""
+async def _register_task_with_broker(task_id: str, repos: list[str], lobster_type: str) -> bool:
+    """Register a task's repo access with the lobwife token broker.
+
+    Returns True on success, False on failure (non-fatal — falls back to legacy auth).
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{LOBWIFE_URL}/api/tasks/{task_id}/register",
+                json={"repos": repos, "lobster_type": lobster_type},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info("Registered task %s with broker: repos=%s", task_id, repos)
+                    return True
+                text = await resp.text()
+                logger.warning("Broker registration failed (%d): %s", resp.status, text[:200])
+    except Exception as e:
+        logger.warning("Broker registration error (non-fatal): %s", e)
+    return False
+
+
+async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "default") -> str:
+    """Spawn a lobster worker by creating a k8s Job.
+
+    Returns the job name on success. Raises ValueError for bad input,
+    RuntimeError for k8s failures.
+    """
     from kubernetes import client
 
-    task_id = args["task_id"]
-    lobster_type = args["lobster_type"]
-    workflow = args.get("workflow", "default")
-
     if lobster_type == "system":
-        return {"content": [{"type": "text", "text": "System tasks are processed autonomously by lobsigliere every 30s. Do not spawn lobsters for type=system."}]}
+        raise ValueError("System tasks are processed by lobsigliere, not lobsters")
 
     if lobster_type not in VALID_LOBSTER_TYPES:
-        return {"content": [{"type": "text", "text": f"Error: Invalid lobster_type '{lobster_type}'. Must be one of: {', '.join(VALID_LOBSTER_TYPES)}"}]}
+        raise ValueError(f"Invalid lobster_type '{lobster_type}'. Must be one of: {', '.join(VALID_LOBSTER_TYPES)}")
 
-    # Resolve container image: workflow-specific override or default
     image = WORKFLOW_IMAGES.get(workflow, LOBSTER_IMAGE)
 
     batch_api, _ = _get_k8s_clients()
     job_name = _sanitize_k8s_name(f"lobster-{lobster_type}-{task_id}")
+
+    task_repos = [VAULT_REPO]
+    try:
+        from common.vault import read_task
+        vault_path = os.environ.get("VAULT_PATH", "/opt/vault")
+        task_data = read_task(vault_path, task_id)
+        extra_repos = task_data.get("metadata", {}).get("repos", [])
+        if extra_repos:
+            task_repos.extend(extra_repos)
+    except Exception:
+        pass
+
+    await _register_task_with_broker(task_id, task_repos, lobster_type)
 
     labels = {
         "app.kubernetes.io/name": "lobster",
@@ -114,6 +148,17 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
         "lobmob.io/lobster-type": lobster_type,
         "lobmob.io/workflow": workflow,
     }
+
+    vault_clone_script = (
+        'TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token"'
+        ' -H "Content-Type: application/json"'
+        ' -d "{\\"task_id\\": \\"${TASK_ID}\\"}"'
+        " | python3 -c \"import sys,json; print(json.load(sys.stdin)['token'])\" 2>/dev/null)"
+        " && git clone \"https://x-access-token:${TOKEN}@github.com/"
+        + VAULT_REPO
+        + '.git" /opt/vault'
+        " || { echo 'Broker token failed, vault clone aborted'; exit 1; }"
+    )
 
     job = client.V1Job(
         api_version="batch/v1",
@@ -136,28 +181,17 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                     init_containers=[
                         client.V1Container(
                             name="vault-clone",
-                            image="alpine/git:latest",
+                            image=image,
                             command=["/bin/sh", "-c"],
-                            args=[
-                                f'git clone "https://x-access-token:$(GH_TOKEN)@github.com/{VAULT_REPO}.git" /opt/vault'
-                            ],
+                            args=[vault_clone_script],
                             env=[
-                                client.V1EnvVar(
-                                    name="GH_TOKEN",
-                                    value_from=client.V1EnvVarSource(
-                                        secret_key_ref=client.V1SecretKeySelector(
-                                            name="lobmob-secrets",
-                                            key="GH_APP_PRIVATE_KEY",
-                                        )
-                                    ),
-                                ),
+                                client.V1EnvVar(name="LOBWIFE_URL", value=LOBWIFE_URL),
+                                client.V1EnvVar(name="TASK_ID", value=task_id),
                             ],
                             volume_mounts=[
                                 client.V1VolumeMount(name="vault", mount_path="/opt/vault"),
                             ],
                         ),
-                        # Native sidecar (k8s 1.29+): restartPolicy=Always makes this
-                        # run alongside the main container and auto-terminate when it exits.
                         client.V1Container(
                             name="web",
                             image=image,
@@ -201,14 +235,7 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                                         )
                                     ),
                                 ),
-                                client.V1EnvVar(
-                                    name="GH_TOKEN",
-                                    value_from=client.V1EnvVarSource(
-                                        secret_key_ref=client.V1SecretKeySelector(
-                                            name="lobmob-secrets", key="GH_APP_PRIVATE_KEY"
-                                        )
-                                    ),
-                                ),
+                                client.V1EnvVar(name="LOBWIFE_URL", value=LOBWIFE_URL),
                                 client.V1EnvVar(
                                     name="LOBMOB_ENV",
                                     value_from=client.V1EnvVarSource(
@@ -221,7 +248,6 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
                                 client.V1EnvVar(name="LOBSTER_TYPE", value=lobster_type),
                                 client.V1EnvVar(name="LOBSTER_WORKFLOW", value=workflow),
                             ] + (
-                                # Pass Gemini API key to image-gen lobsters
                                 [client.V1EnvVar(
                                     name="GEMINI_API_KEY",
                                     value_from=client.V1EnvVarSource(
@@ -255,10 +281,26 @@ async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
         result = batch_api.create_namespaced_job(namespace=NAMESPACE, body=job)
         logger.info("Created k8s Job %s for task %s (type=%s, workflow=%s)",
                      job_name, task_id, lobster_type, workflow)
-        return {"content": [{"type": "text", "text": f"Spawned job: {result.metadata.name} (type={lobster_type}, workflow={workflow})"}]}
+        return result.metadata.name
     except Exception as e:
         logger.error("Failed to create k8s Job %s: %s", job_name, e)
-        return {"content": [{"type": "text", "text": f"Error creating job {job_name}: {e}"}]}
+        raise RuntimeError(f"Failed to create job {job_name}: {e}") from e
+
+
+@tool("spawn_lobster", "Spawn a lobster worker agent for a task", {
+    "task_id": str,
+    "lobster_type": str,
+    "workflow": str,
+})
+async def spawn_lobster(args: dict[str, Any]) -> dict[str, Any]:
+    """MCP tool wrapper around _spawn_lobster_core."""
+    try:
+        job_name = await _spawn_lobster_core(
+            args["task_id"], args["lobster_type"], args.get("workflow", "default"),
+        )
+        return {"content": [{"type": "text", "text": f"Spawned job: {job_name} (type={args['lobster_type']}, workflow={args.get('workflow', 'default')})"}]}
+    except (ValueError, RuntimeError) as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool("lobster_status", "Get status of lobster workers", {

@@ -25,6 +25,7 @@ spec:
       imagePullSecrets:
         - name: ghcr-pull-secret
       # Init container: clone or pull the vault repo
+      # Uses GH_TOKEN (PAT) not the broker — lobboss must not depend on lobwife for startup
       initContainers:
         - name: vault-init
           image: alpine/git:latest
@@ -109,6 +110,7 @@ metadata:
   namespace: lobmob
 data:
   VAULT_PATH: "/opt/vault"
+  LOBWIFE_URL: "http://lobwife.lobmob.svc.cluster.local:8081"
 ---
 apiVersion: v1
 kind: ServiceAccount

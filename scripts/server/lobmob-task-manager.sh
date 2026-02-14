@@ -11,7 +11,15 @@ VAULT_DIR="${VAULT_PATH:-/opt/vault}"
 LOG="${LOG_DIR:-/var/log}/lobmob-task-manager.log"
 NOW=$(date +%s)
 
+LOBWIFE_URL="${LOBWIFE_URL:-http://lobwife.lobmob.svc.cluster.local:8081}"
+
 cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
+
+# Helper: deregister task from token broker (best-effort)
+broker_deregister() {
+  local task_id="$1"
+  curl -sf -X DELETE "${LOBWIFE_URL}/api/tasks/${task_id}" 2>/dev/null || true
+}
 
 # Helper: post to Discord thread via Discord bot API directly
 discord_post() {
@@ -119,6 +127,7 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   if [[ "$elapsed_min" -lt 30 ]]; then
     # Re-queue
     echo "$(date -Iseconds) ORPHAN RE-QUEUE: $task_id — $assigned_to gone after ${elapsed_min}m" >> "$LOG"
+    broker_deregister "$task_id"
     sed -i "s/^status: active/status: queued/" "$task_file"
     sed -i "s/^assigned_to: .*/assigned_to:/" "$task_file"
     sed -i "s/^assigned_at: .*/assigned_at:/" "$task_file"
@@ -129,6 +138,7 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   else
     # Mark failed
     echo "$(date -Iseconds) ORPHAN FAILED: $task_id — $assigned_to gone after ${elapsed_min}m, no PR" >> "$LOG"
+    broker_deregister "$task_id"
     sed -i "s/^status: active/status: failed/" "$task_file"
     cd "$VAULT_DIR" && git add -A && git commit -m "[task-manager] Fail $task_id ($assigned_to offline, no PR)" --quiet 2>/dev/null
     git push origin main --quiet 2>/dev/null || true
@@ -137,31 +147,4 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   fi
 done
 
-# ── 3. Auto-Assign Queued Tasks ─────────────────────────────────────
-for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
-  [[ -f "$task_file" ]] || continue
-  status=$(fm status "$task_file")
-  [[ "$status" == "queued" ]] || continue
-
-  task_id=$(basename "$task_file" .md)
-  task_type=$(fm type "$task_file")
-  task_type="${task_type:-research}"
-  thread_id=$(fm discord_thread_id "$task_file" | tr -d '"')
-
-  # In k8s, lobboss spawns Jobs on demand via the Agent SDK.
-  # Task-manager marks it assigned; lobboss picks it up and spawns.
-  ASSIGN_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  echo "$(date -Iseconds) AUTO-ASSIGN: $task_id (type=$task_type) -> k8s-spawn" >> "$LOG"
-
-  sed -i "s/^status: queued/status: active/" "$task_file"
-  sed -i "s/^assigned_to:.*/assigned_to: k8s-spawn/" "$task_file"
-  sed -i "s/^assigned_at:.*/assigned_at: $ASSIGN_TIME/" "$task_file"
-
-  cd "$VAULT_DIR" && git add -A && git commit -m "[task-manager] Assign $task_id (k8s-spawn)" --quiet 2>/dev/null
-  git push origin main --quiet 2>/dev/null || true
-
-  echo "$(date -Iseconds) Task $task_id queued for k8s Job spawn by lobboss" >> "$LOG"
-
-  [[ -n "$thread_id" ]] && discord_post "$thread_id" \
-    "**[task-manager]** Assigned **$task_id** — lobboss will spawn a **$task_type** lobster."
-done
+# ── 3. (Removed) Auto-assign now handled by lobboss task poller ────
