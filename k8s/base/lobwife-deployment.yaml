@@ -31,6 +31,8 @@ spec:
               name: ssh
             - containerPort: 8080
               name: http
+            - containerPort: 8081
+              name: api
           env:
             - name: GIT_USER_NAME
               value: "lobwife"

@@ -38,7 +38,7 @@ RUN useradd -m -s /bin/bash -G sudo lobwife \
 COPY containers/lobwife/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 22 8080
+EXPOSE 22 8080 8081
 
 ENTRYPOINT ["/entrypoint.sh"]
 

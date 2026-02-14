@@ -21,7 +21,7 @@ def _count_active_lobster_jobs() -> int:
     )
     return sum(
         1 for j in jobs.items
-        if j.status.active and j.status.active > 0
+        if j.status and j.status.active and j.status.active > 0
     )
 
 
