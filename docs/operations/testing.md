@@ -9,6 +9,7 @@ Test scripts live in `tests/` and verify deployments and the task lifecycle.
 | `tests/push-task` | Push a task to the vault | ~5s |
 | `tests/await-task-pickup <id> [<id>...]` | Lobboss assigns queued tasks, k8s Job created | up to 10m |
 | `tests/await-task-completion <id>` | Full lifecycle: PR opened, merged, task completed | up to 15m |
+| `tests/e2e-task` | Full E2E: push → pickup → execution → PR → completion | configurable (default 10m) |
 | `tests/event-logging` | Event log+flush functions, vault export, event types | ~30s |
 
 All scripts exit 0 on success, 1 on failure. Use `LOBMOB_ENV=dev` to target the dev cluster.
@@ -49,6 +50,23 @@ Polls for three stages:
 3. **Task completed** — task file in the vault has `status: completed`
 
 ## Running the Full E2E Flow
+
+### Automated (recommended)
+
+```bash
+# Run the entire lifecycle in one command
+LOBMOB_ENV=dev tests/e2e-task
+
+# Custom task with longer timeout
+LOBMOB_ENV=dev tests/e2e-task --type swe --title "Fix the bug" --objective "..." --timeout 20
+
+# Default haiku smoke test against prod
+tests/e2e-task
+```
+
+The `e2e-task` script runs all 6 stages automatically: push task → await pickup → watch k8s Job → wait for PR merge → verify task completion. It evaluates results (frontmatter fields, Result/Notes sections filled in, output file for the default haiku task) and reports per-stage timing.
+
+### Manual (step by step)
 
 ```bash
 # 1. Check fleet status
