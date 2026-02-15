@@ -4,13 +4,12 @@ updated:
 
 # Fleet Registry
 
-Active lobsters in the lobmob swarm. Updated by lobboss.
+Active components in the lobmob swarm. Updated by lobboss.
 
-## Lobboss
+## lobboss
 | Field | Value |
 |---|---|
-| droplet | lobmob-lobboss |
-| wg_ip | 10.0.0.1 |
+| type | k8s Deployment |
 | role | coordinator |
 | status | online |
 
@@ -18,14 +17,12 @@ Active lobsters in the lobmob swarm. Updated by lobboss.
 
 <!-- Lobboss adds entries here when lobsters are spawned -->
 <!-- Format:
-### lobster-<id>
+### lobster-<type>-<task-id>
 | Field | Value |
 |---|---|
-| droplet_id | |
-| droplet_name | lobster-<id> |
-| public_ip | |
-| wg_ip | 10.0.0.N |
-| wg_pubkey | |
-| status | online / offline / destroyed |
+| job_name | lobster-<type>-<task-id> |
+| type | research / swe / qa |
+| task_id | |
+| status | running / completed / failed |
 | spawned_at | |
 -->

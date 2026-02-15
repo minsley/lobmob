@@ -8,26 +8,30 @@ updated:
 | Parameter | Value |
 |---|---|
 | Max concurrent lobsters | 10 |
-| Idle timeout (minutes) | 30 |
-| Stale cleanup (hours) | 2 |
+| Job timeout (hours) | 2 |
+| Job TTL after completion (hours) | 1 |
 | Auto-scale threshold | Queue depth > active lobsters |
 
 ## Model Routing
 | Task type | Model |
 |---|---|
-| Default | claude-sonnet-4-5 |
-| Complex reasoning | claude-opus-4-6 |
-| Simple formatting | claude-haiku-4-5 |
+| research | claude-sonnet-4-5 |
+| swe | claude-opus-4-6 |
+| qa | claude-sonnet-4-5 |
+| image-gen | claude-sonnet-4-5 |
 
-## Droplet Sizing
-| Role | Size | Monthly |
-|---|---|---|
-| Lobboss | s-2vcpu-4gb | $24 |
-| Lobster | s-1vcpu-2gb | $12 (per-second billing) |
+## Infrastructure
+| Component | Runtime |
+|---|---|
+| lobboss | k8s Deployment (DOKS) |
+| lobsters | k8s Jobs (ephemeral) |
+| lobwife | k8s Deployment (cron + broker) |
+| lobsigliere | k8s Deployment (system tasks) |
+| Images | GHCR (amd64) |
 
 ## Discord Channels
 | Channel | Purpose |
 |---|---|
 | #task-queue | Task lifecycle — one parent message per task, all updates in threads |
 | #swarm-control | User commands to lobboss for fleet management |
-| #swarm-logs | Fleet events — spawns, merges, convergence, teardowns, status |
+| #swarm-logs | Fleet events — spawns, merges, completions, status |

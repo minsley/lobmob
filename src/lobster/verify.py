@@ -10,9 +10,7 @@ import os
 import re
 from pathlib import Path
 
-import yaml
-
-from common.vault import FRONTMATTER_RE
+from common.vault import parse_frontmatter
 
 logger = logging.getLogger("lobster.verify")
 
@@ -42,14 +40,6 @@ async def _run(cmd: str, cwd: str) -> tuple[int, str]:
         return 1, ""
 
 
-def _parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter as a dict."""
-    match = FRONTMATTER_RE.match(content)
-    if match:
-        return yaml.safe_load(match.group(1)) or {}
-    return {}
-
-
 async def verify_completion(task_id: str, lobster_type: str, vault_path: str) -> list[str]:
     """Check completion criteria for a finished lobster run.
 
@@ -64,7 +54,7 @@ async def verify_completion(task_id: str, lobster_type: str, vault_path: str) ->
         return missing
 
     content = task_file.read_text()
-    meta = _parse_frontmatter(content)
+    meta = parse_frontmatter(content)
 
     if meta.get("status") != "completed":
         missing.append(f"task_status: status is '{meta.get('status', 'unset')}', expected 'completed'")

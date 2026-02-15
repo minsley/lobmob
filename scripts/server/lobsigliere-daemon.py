@@ -10,12 +10,8 @@ import logging
 import os
 import re
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
-# Add lobmob src to path so we can import common/lobster modules
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from common.vault import commit_and_push, pull_vault, read_task, write_task
 from lobster.agent import run_task
