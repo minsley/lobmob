@@ -46,10 +46,19 @@ fi
 
 # --- Clone or pull vault ---
 
-if [ -d "$VAULT_LOCAL/.git" ]; then
-  echo -e "${YELLOW}Pulling latest vault...${NC}"
-  git -C "$VAULT_LOCAL" checkout main 2>/dev/null || true
-  git -C "$VAULT_LOCAL" pull origin main
+if [[ -d "$VAULT_LOCAL/.git" ]]; then
+  # Verify the existing clone matches the target vault repo
+  CURRENT_REMOTE=$(git -C "$VAULT_LOCAL" remote get-url origin 2>/dev/null || echo "")
+  if [[ "$CURRENT_REMOTE" != *"$VAULT_REPO"* ]]; then
+    echo -e "${YELLOW}Vault remote mismatch (have: $CURRENT_REMOTE, want: $VAULT_REPO). Re-cloning...${NC}"
+    rm -rf "$VAULT_LOCAL"
+    gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
+    git -C "$VAULT_LOCAL" checkout main
+  else
+    echo -e "${YELLOW}Pulling latest vault...${NC}"
+    git -C "$VAULT_LOCAL" checkout main 2>/dev/null || true
+    git -C "$VAULT_LOCAL" pull origin main
+  fi
 else
   echo -e "${YELLOW}Cloning vault repo...${NC}"
   gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"

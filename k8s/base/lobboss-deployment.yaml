@@ -33,7 +33,7 @@ spec:
           args:
             - |
               if [ -d /opt/vault/.git ]; then
-                cd /opt/vault && git checkout -- . && git pull origin main || true
+                cd /opt/vault && git reset --hard HEAD && git pull origin main || true
               else
                 rm -rf /opt/vault/lost+found
                 git clone "https://git:$(cat /run/secrets/gh-token)@github.com/${VAULT_REPO}.git" /opt/vault

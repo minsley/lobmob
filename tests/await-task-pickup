@@ -60,7 +60,15 @@ if ! kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
   exit 1
 fi
 
-if [[ ! -d "$VAULT_LOCAL/.git" ]]; then
+if [[ -d "$VAULT_LOCAL/.git" ]]; then
+  # Verify the existing clone matches the target vault repo
+  CURRENT_REMOTE=$(git -C "$VAULT_LOCAL" remote get-url origin 2>/dev/null || echo "")
+  if [[ "$CURRENT_REMOTE" != *"$VAULT_REPO"* ]]; then
+    echo -e "${YELLOW}Vault remote mismatch. Re-cloning...${NC}"
+    rm -rf "$VAULT_LOCAL"
+    gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
+  fi
+else
   echo -e "${YELLOW}Cloning vault repo...${NC}"
   gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
 fi
