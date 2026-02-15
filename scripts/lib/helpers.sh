@@ -45,7 +45,8 @@ push_k8s_secrets() {
   local broker_args=()
   [[ -n "${GH_APP_ID:-}" ]] && broker_args+=(--from-literal="GH_APP_ID=${GH_APP_ID}")
   [[ -n "${GH_APP_INSTALL_ID:-}" ]] && broker_args+=(--from-literal="GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}")
-  [[ -n "${GH_APP_PEM:-}" ]] && broker_args+=(--from-literal="GH_APP_PEM=${GH_APP_PEM}")
+  # secrets.env stores as GH_APP_PEM_B64, daemon expects GH_APP_PEM (base64-encoded)
+  [[ -n "${GH_APP_PEM_B64:-}" ]] && broker_args+=(--from-literal="GH_APP_PEM=${GH_APP_PEM_B64}")
   if [[ ${#broker_args[@]} -gt 0 ]]; then
     kubectl --context "$KUBE_CONTEXT" -n lobmob create secret generic lobwife-secrets \
       "${broker_args[@]}" --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
