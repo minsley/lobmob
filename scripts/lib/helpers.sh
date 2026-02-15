@@ -28,6 +28,31 @@ load_secrets() {
 }
 
 
+push_k8s_secrets() {
+  # Push lobmob-secrets and lobwife-secrets to k8s (idempotent)
+  # Requires: load_secrets called first, KUBE_CONTEXT set
+  local args=()
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && args+=(--from-literal="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+  [[ -n "${DISCORD_BOT_TOKEN:-}" ]] && args+=(--from-literal="DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}")
+  [[ -n "${GH_TOKEN:-}" ]] && args+=(--from-literal="GH_TOKEN=${GH_TOKEN}")
+  [[ -n "${GEMINI_API_KEY:-}" ]] && args+=(--from-literal="GEMINI_API_KEY=${GEMINI_API_KEY}")
+  if [[ ${#args[@]} -gt 0 ]]; then
+    kubectl --context "$KUBE_CONTEXT" -n lobmob create secret generic lobmob-secrets \
+      "${args[@]}" --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
+    log "lobmob-secrets synced (${#args[@]} keys)"
+  fi
+
+  local broker_args=()
+  [[ -n "${GH_APP_ID:-}" ]] && broker_args+=(--from-literal="GH_APP_ID=${GH_APP_ID}")
+  [[ -n "${GH_APP_INSTALL_ID:-}" ]] && broker_args+=(--from-literal="GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}")
+  [[ -n "${GH_APP_PEM:-}" ]] && broker_args+=(--from-literal="GH_APP_PEM=${GH_APP_PEM}")
+  if [[ ${#broker_args[@]} -gt 0 ]]; then
+    kubectl --context "$KUBE_CONTEXT" -n lobmob create secret generic lobwife-secrets \
+      "${broker_args[@]}" --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
+    log "lobwife-secrets synced (${#broker_args[@]} keys)"
+  fi
+}
+
 _seed_vault() {
   local REPO="$1"
   local TMPDIR

@@ -22,5 +22,8 @@ fi
 kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/$OVERLAY/" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
 
 if [[ "${1:-}" != "--dry-run" ]]; then
+  log "Syncing k8s secrets..."
+  load_secrets
+  push_k8s_secrets
   log "Applied. Check status with: lobmob status"
 fi

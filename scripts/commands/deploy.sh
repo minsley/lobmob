@@ -34,5 +34,8 @@ fi
 log "Applying k8s manifests (overlay=$OVERLAY)..."
 kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/$OVERLAY/"
 
+log "Syncing k8s secrets..."
+push_k8s_secrets
+
 log ""
 log "Deployed. Check status with: lobmob status"

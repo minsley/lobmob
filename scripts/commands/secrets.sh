@@ -22,57 +22,18 @@ case "$SUBCMD" in
       err "Secrets file not found: $SECRETS_FILE"
       exit 1
     fi
-
     load_secrets
-
-    log "Pushing lobmob-secrets to k8s ($LOBMOB_ENV)..."
-
-    # Build --from-literal args from secrets.env
-    # Only push known keys (never push raw file — could contain comments, etc.)
-    ARGS=()
-    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && ARGS+=(--from-literal="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
-    [[ -n "${DISCORD_BOT_TOKEN:-}" ]] && ARGS+=(--from-literal="DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}")
-    [[ -n "${GH_TOKEN:-}" ]] && ARGS+=(--from-literal="GH_TOKEN=${GH_TOKEN}")
-    [[ -n "${GEMINI_API_KEY:-}" ]] && ARGS+=(--from-literal="GEMINI_API_KEY=${GEMINI_API_KEY}")
-
-    if [[ ${#ARGS[@]} -eq 0 ]]; then
-      err "No secrets found in $SECRETS_FILE"
-      exit 1
-    fi
-
-    kubectl --context "$KUBE_CONTEXT" -n lobmob create secret generic lobmob-secrets \
-      "${ARGS[@]}" \
-      --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
-
-    log "lobmob-secrets updated (${#ARGS[@]} keys)"
+    push_k8s_secrets
     ;;
 
   push-broker)
+    warn "Deprecated: 'push-broker' is now included in 'push'. Running 'push' instead."
     if [[ ! -f "$SECRETS_FILE" ]]; then
       err "Secrets file not found: $SECRETS_FILE"
       exit 1
     fi
-
     load_secrets
-
-    log "Pushing lobwife-secrets to k8s ($LOBMOB_ENV)..."
-
-    ARGS=()
-    [[ -n "${GH_APP_ID:-}" ]] && ARGS+=(--from-literal="GH_APP_ID=${GH_APP_ID}")
-    [[ -n "${GH_APP_INSTALL_ID:-}" ]] && ARGS+=(--from-literal="GH_APP_INSTALL_ID=${GH_APP_INSTALL_ID}")
-    [[ -n "${GH_APP_PEM:-}" ]] && ARGS+=(--from-literal="GH_APP_PEM=${GH_APP_PEM}")
-
-    if [[ ${#ARGS[@]} -eq 0 ]]; then
-      err "No GitHub App credentials found in $SECRETS_FILE (need GH_APP_ID, GH_APP_INSTALL_ID, GH_APP_PEM)"
-      exit 1
-    fi
-
-    kubectl --context "$KUBE_CONTEXT" -n lobmob create secret generic lobwife-secrets \
-      "${ARGS[@]}" \
-      --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
-
-    log "lobwife-secrets updated (${#ARGS[@]} keys)"
-    log "Restart lobwife to pick up changes: lobmob restart lobwife"
+    push_k8s_secrets
     ;;
 
   show)
