@@ -22,13 +22,14 @@ build_image() {
   local name="$1"
   local dockerfile="$2"
   local image="${REGISTRY}/lobmob-${name}:latest"
-  local extra_args=("${@:3}")
+  local extra_args=()
+  [[ $# -gt 2 ]] && extra_args=("${@:3}")
 
   log "Building ${name} (${image})..."
   docker buildx build \
     --builder "$BUILDER" \
     --platform "$PLATFORM" \
-    "${extra_args[@]}" \
+    ${extra_args[@]+"${extra_args[@]}"} \
     -t "$image" \
     --push \
     -f "$PROJECT_DIR/$dockerfile" \
