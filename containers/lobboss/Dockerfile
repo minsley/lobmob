@@ -19,13 +19,12 @@ COPY skills/lobboss/ /app/skills/
 # Web dashboard
 COPY scripts/server/lobmob-web.js /app/scripts/lobmob-web.js
 
-# Cron scripts (used by k8s CronJobs)
+# Server scripts (run by lobwife daemon, copied here for reference/fallback)
 COPY scripts/server/container-env.sh \
      scripts/server/lobmob-task-manager.sh \
      scripts/server/lobmob-review-prs.sh \
      scripts/server/lobmob-status-reporter.sh \
      scripts/server/lobmob-flush-logs.sh \
-     scripts/server/lobmob-log.sh \
      /app/scripts/
 RUN chmod +x /app/scripts/*.sh
 
