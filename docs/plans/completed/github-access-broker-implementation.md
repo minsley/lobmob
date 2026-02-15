@@ -1,3 +1,10 @@
+---
+status: completed
+tags: [infrastructure, security, lobwife]
+maturity: implementation
+created: 2026-02-14
+updated: 2026-02-14
+---
 # GitHub Access Broker — Implementation Plan
 
 > Step-by-step execution plan for Claude Code.

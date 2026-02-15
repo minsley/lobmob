@@ -1,3 +1,10 @@
+---
+status: completed
+tags: [lobster, reliability]
+maturity: implementation
+created: 2026-02-14
+updated: 2026-02-14
+---
 # Lobster Agent Reliability — Verify-and-Retry Loop
 
 **Status**: Implemented (2026-02-14)
