@@ -11,7 +11,16 @@ VAULT_DIR="${VAULT_PATH:-/opt/vault}"
 LOG="${LOG_DIR:-/var/log}/lobmob-task-manager.log"
 NOW=$(date +%s)
 
+LOBWIFE_URL="${LOBWIFE_URL:-http://lobwife.lobmob.svc.cluster.local:8081}"
+VAULT_REPO="${VAULT_REPO:-}"
+
 cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
+
+# Helper: deregister task from token broker (best-effort)
+broker_deregister() {
+  local task_id="$1"
+  curl -sf -X DELETE "${LOBWIFE_URL}/api/tasks/${task_id}" 2>/dev/null || true
+}
 
 # Helper: post to Discord thread via Discord bot API directly
 discord_post() {
@@ -26,6 +35,112 @@ discord_post() {
 
 # Helper: extract frontmatter field
 fm() { grep "^$1:" "$2" 2>/dev/null | head -1 | sed "s/^$1: *//" ; }
+
+# Helper: attempt to create a fallback PR from an existing branch (Layer 2)
+# Returns 0 if PR was created, 1 otherwise
+try_fallback_pr() {
+  local task_id="$1"
+  [[ -n "$VAULT_REPO" ]] || return 1
+
+  # Look for a branch matching this task (paginate to catch all)
+  local branch
+  branch=$(gh api "repos/${VAULT_REPO}/branches" --paginate --jq '.[].name' 2>/dev/null \
+    | grep -F "$task_id" | head -1 || true)
+  [[ -n "$branch" ]] || return 1
+
+  # Check if PR already exists for this branch
+  local existing_pr
+  existing_pr=$(gh pr list --repo "$VAULT_REPO" --head "$branch" --state all --json number --jq 'length' 2>/dev/null || echo 0)
+  if [[ "$existing_pr" -gt 0 ]]; then
+    echo "$(date -Iseconds) FALLBACK: PR already exists for branch $branch ($task_id)" >> "$LOG"
+    return 0
+  fi
+
+  # URL-encode the branch name for the compare API (handles slashes)
+  local encoded_branch
+  encoded_branch=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$branch', safe=''))" 2>/dev/null || echo "$branch")
+
+  # Check if branch has commits ahead of main
+  local ahead
+  ahead=$(gh api "repos/${VAULT_REPO}/compare/main...${encoded_branch}" --jq '.ahead_by' 2>/dev/null || echo 0)
+  [[ "$ahead" -gt 0 ]] || return 1
+
+  # Create the fallback PR
+  gh pr create --repo "$VAULT_REPO" --head "$branch" --base main \
+    --title "Task ${task_id} (auto-submitted by task-manager)" \
+    --body "[task-manager] Lobster completed work on branch but didn't create a PR. ${ahead} commit(s) ahead of main." \
+    2>/dev/null || return 1
+
+  echo "$(date -Iseconds) FALLBACK PR created for $task_id from branch $branch ($ahead commits)" >> "$LOG"
+  return 0
+}
+
+# Helper: create investigation task for lobsigliere (Layer 3)
+create_investigation_task() {
+  local task_id="$1" task_type="$2" assigned_to="$3" failure_reason="$4"
+
+  # Rate limit: use state file to track whether investigation was already created
+  TASK_STATE_DIR="${TASK_STATE_DIR:-/tmp/task-state}"
+  mkdir -p "$TASK_STATE_DIR" 2>/dev/null || true
+  local inv_state="${TASK_STATE_DIR}/${task_id}.investigation"
+  if [[ -f "$inv_state" ]]; then
+    echo "$(date -Iseconds) SKIP investigation: already created for $task_id" >> "$LOG"
+    return
+  fi
+
+  local inv_id="task-$(date +%Y-%m-%d)-inv-$(openssl rand -hex 4)"
+  local inv_file="$VAULT_DIR/010-tasks/active/${inv_id}.md"
+  local now_iso
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  cat > "$inv_file" <<INVEOF
+---
+id: ${inv_id}
+type: system
+status: queued
+created: ${now_iso}
+priority: high
+tags: [investigation, reliability]
+---
+
+# Investigate failed task: ${task_id}
+
+## Objective
+
+Task **${task_id}** (type: ${task_type}) was assigned to **${assigned_to}** and failed.
+Failure reason: ${failure_reason}
+
+Investigate why the lobster failed to complete all workflow steps and submit a PR
+to the lobmob repo that fixes the root cause.
+
+## Investigation Steps
+
+1. Read the failed task file at 010-tasks/active/${task_id}.md (or failed/)
+2. Check if the lobster's vault branch exists and has commits
+3. Read the lobster's work log at 020-logs/lobsters/${assigned_to}/
+4. Examine the relevant lobster prompt (src/lobster/prompts/${task_type}.md)
+5. Check verify.py criteria — which checks failed?
+6. Identify the root cause and implement a fix
+
+## Scope
+
+- Fix prompts, verify.py, hooks.py, or run_task.py as needed
+- Do NOT fix the original task — fix why the lobster couldn't complete it
+- Target: lobsters should reliably complete all workflow steps autonomously
+INVEOF
+
+  if cd "$VAULT_DIR" && git add "$inv_file" && \
+    git commit -m "[task-manager] Create investigation task $inv_id for failed $task_id" --quiet 2>/dev/null; then
+    git push origin main --quiet 2>/dev/null || {
+      echo "$(date -Iseconds) WARN: Failed to push investigation task $inv_id" >> "$LOG"
+    }
+    echo "$inv_id" > "$inv_state"
+    echo "$(date -Iseconds) INVESTIGATION TASK created: $inv_id for failed $task_id" >> "$LOG"
+  else
+    echo "$(date -Iseconds) WARN: Failed to commit investigation task $inv_id" >> "$LOG"
+    rm -f "$inv_file"
+  fi
+}
 
 # ── 1. Timeout Detection ────────────────────────────────────────────
 for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
@@ -116,9 +231,20 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
     continue
   fi
 
+  # Layer 2: Try to create a fallback PR from the lobster's branch
+  if try_fallback_pr "$task_id"; then
+    echo "$(date -Iseconds) ORPHAN (fallback PR): $task_id — created PR from $assigned_to branch" >> "$LOG"
+    [[ -n "$thread_id" ]] && discord_post "$thread_id" \
+      "**[task-manager]** **$assigned_to** is offline, but found work for **$task_id**. Created fallback PR."
+    continue
+  fi
+
+  task_type=$(fm type "$task_file")
+
   if [[ "$elapsed_min" -lt 30 ]]; then
     # Re-queue
     echo "$(date -Iseconds) ORPHAN RE-QUEUE: $task_id — $assigned_to gone after ${elapsed_min}m" >> "$LOG"
+    broker_deregister "$task_id"
     sed -i "s/^status: active/status: queued/" "$task_file"
     sed -i "s/^assigned_to: .*/assigned_to:/" "$task_file"
     sed -i "s/^assigned_at: .*/assigned_at:/" "$task_file"
@@ -129,39 +255,16 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   else
     # Mark failed
     echo "$(date -Iseconds) ORPHAN FAILED: $task_id — $assigned_to gone after ${elapsed_min}m, no PR" >> "$LOG"
+    broker_deregister "$task_id"
     sed -i "s/^status: active/status: failed/" "$task_file"
     cd "$VAULT_DIR" && git add -A && git commit -m "[task-manager] Fail $task_id ($assigned_to offline, no PR)" --quiet 2>/dev/null
     git push origin main --quiet 2>/dev/null || true
     [[ -n "$thread_id" ]] && discord_post "$thread_id" \
       "**[task-manager]** Failed **$task_id** — **$assigned_to** offline for ${elapsed_min}m with no PR."
+
+    # Layer 3: Create investigation task for lobsigliere
+    create_investigation_task "$task_id" "${task_type:-unknown}" "$assigned_to" "Orphan: lobster offline ${elapsed_min}m, no PR, no fallback branch"
   fi
 done
 
-# ── 3. Auto-Assign Queued Tasks ─────────────────────────────────────
-for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
-  [[ -f "$task_file" ]] || continue
-  status=$(fm status "$task_file")
-  [[ "$status" == "queued" ]] || continue
-
-  task_id=$(basename "$task_file" .md)
-  task_type=$(fm type "$task_file")
-  task_type="${task_type:-research}"
-  thread_id=$(fm discord_thread_id "$task_file" | tr -d '"')
-
-  # In k8s, lobboss spawns Jobs on demand via the Agent SDK.
-  # Task-manager marks it assigned; lobboss picks it up and spawns.
-  ASSIGN_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  echo "$(date -Iseconds) AUTO-ASSIGN: $task_id (type=$task_type) -> k8s-spawn" >> "$LOG"
-
-  sed -i "s/^status: queued/status: active/" "$task_file"
-  sed -i "s/^assigned_to:.*/assigned_to: k8s-spawn/" "$task_file"
-  sed -i "s/^assigned_at:.*/assigned_at: $ASSIGN_TIME/" "$task_file"
-
-  cd "$VAULT_DIR" && git add -A && git commit -m "[task-manager] Assign $task_id (k8s-spawn)" --quiet 2>/dev/null
-  git push origin main --quiet 2>/dev/null || true
-
-  echo "$(date -Iseconds) Task $task_id queued for k8s Job spawn by lobboss" >> "$LOG"
-
-  [[ -n "$thread_id" ]] && discord_post "$thread_id" \
-    "**[task-manager]** Assigned **$task_id** — lobboss will spawn a **$task_type** lobster."
-done
+# ── 3. (Removed) Auto-assign now handled by lobboss task poller ────

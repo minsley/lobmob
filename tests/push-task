@@ -1,6 +1,6 @@
 #!/bin/bash
 # push-task — create and push a task file to the vault repo
-# Usage: push-task [--title "..."] [--objective "..."]
+# Usage: push-task [--title "..."] [--objective "..."] [--type research|swe|qa]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,29 +18,47 @@ NC='\033[0m'
 
 TITLE="Smoke test — write a haiku"
 OBJECTIVE="Write a haiku about the ocean and save it to \`030-knowledge/topics/haiku-test.md\`"
+LOBSTER_TYPE="research"
 
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
   case "$1" in
-    --title)   TITLE="$2"; shift 2 ;;
+    --title)     TITLE="$2"; shift 2 ;;
     --objective) OBJECTIVE="$2"; shift 2 ;;
-    *) echo "Unknown option: $1"; echo "Usage: push-task [--title \"...\"] [--objective \"...\"]"; exit 1 ;;
+    --type)      LOBSTER_TYPE="$2"; shift 2 ;;
+    *) echo "Unknown option: $1"; echo "Usage: push-task [--title \"...\"] [--objective \"...\"] [--type research|swe|qa]"; exit 1 ;;
   esac
 done
 
 # --- Resolve vault repo ---
 
-VAULT_REPO=$(grep vault_repo "$INFRA_DIR/terraform.tfvars" 2>/dev/null | cut -d'"' -f2)
-if [ -z "$VAULT_REPO" ]; then
-  echo -e "${RED}vault_repo not found in infra/terraform.tfvars${NC}"
+LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+if [[ "$LOBMOB_ENV" == "dev" ]]; then
+  TFVARS_FILE="$INFRA_DIR/dev.tfvars"
+else
+  TFVARS_FILE="$INFRA_DIR/prod.tfvars"
+fi
+
+VAULT_REPO=$(grep vault_repo "$TFVARS_FILE" 2>/dev/null | cut -d'"' -f2)
+if [[ -z "$VAULT_REPO" ]]; then
+  echo -e "${RED}vault_repo not found in ${TFVARS_FILE}${NC}"
   exit 1
 fi
 
 # --- Clone or pull vault ---
 
-if [ -d "$VAULT_LOCAL/.git" ]; then
-  echo -e "${YELLOW}Pulling latest vault...${NC}"
-  git -C "$VAULT_LOCAL" checkout main 2>/dev/null || true
-  git -C "$VAULT_LOCAL" pull origin main
+if [[ -d "$VAULT_LOCAL/.git" ]]; then
+  # Verify the existing clone matches the target vault repo
+  CURRENT_REMOTE=$(git -C "$VAULT_LOCAL" remote get-url origin 2>/dev/null || echo "")
+  if [[ "$CURRENT_REMOTE" != *"$VAULT_REPO"* ]]; then
+    echo -e "${YELLOW}Vault remote mismatch (have: $CURRENT_REMOTE, want: $VAULT_REPO). Re-cloning...${NC}"
+    rm -rf "$VAULT_LOCAL"
+    gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
+    git -C "$VAULT_LOCAL" checkout main
+  else
+    echo -e "${YELLOW}Pulling latest vault...${NC}"
+    git -C "$VAULT_LOCAL" checkout main 2>/dev/null || true
+    git -C "$VAULT_LOCAL" pull origin main
+  fi
 else
   echo -e "${YELLOW}Cloning vault repo...${NC}"
   gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
@@ -58,6 +76,7 @@ mkdir -p "$VAULT_LOCAL/010-tasks/active"
 cat > "$VAULT_LOCAL/$TASK_FILE" <<EOF
 ---
 id: ${TASK_ID}
+type: ${LOBSTER_TYPE}
 status: queued
 created: ${TIMESTAMP}
 assigned_to:
@@ -91,3 +110,5 @@ git -C "$VAULT_LOCAL" push origin main
 echo ""
 echo -e "${GREEN}Task pushed:${NC}  ${TASK_ID}"
 echo -e "${GREEN}Vault file:${NC}  ${TASK_FILE}"
+echo -e "${GREEN}Type:${NC}        ${LOBSTER_TYPE}"
+echo -e "${GREEN}Vault:${NC}       ${VAULT_REPO} (${LOBMOB_ENV})"

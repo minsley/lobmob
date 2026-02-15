@@ -28,14 +28,23 @@ spec:
       nodeSelector:
         lobmob.io/role: lobster
       serviceAccountName: lobster
-      # Init containers: vault clone + web sidecar
+      # Init containers: vault clone (via broker) + web sidecar
       initContainers:
         - name: vault-clone
-          image: alpine/git:latest
+          image: "${lobster_image}"
           command: ["/bin/sh", "-c"]
           args:
             - |
-              git clone "https://x-access-token:${gh_token}@github.com/${vault_repo}.git" /opt/vault
+              TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token" \
+                -H "Content-Type: application/json" \
+                -d "{\"task_id\": \"${TASK_ID}\"}" \
+                | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+              git clone "https://x-access-token:${TOKEN}@github.com/${vault_repo}.git" /opt/vault
+          env:
+            - name: LOBWIFE_URL
+              value: "${lobwife_url}"
+            - name: TASK_ID
+              value: "${task_id}"
           volumeMounts:
             - name: vault
               mountPath: /opt/vault
@@ -81,11 +90,8 @@ spec:
                 secretKeyRef:
                   name: lobmob-secrets
                   key: ANTHROPIC_API_KEY
-            - name: GH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: lobmob-secrets
-                  key: GH_APP_PRIVATE_KEY
+            - name: LOBWIFE_URL
+              value: "${lobwife_url}"
             - name: LOBMOB_ENV
               valueFrom:
                 configMapKeyRef:
@@ -115,7 +121,9 @@ spec:
 ---
 # ServiceAccount and RBAC are in lobster-rbac.yaml (applied via Kustomize).
 ---
-# Network policy: lobsters can only reach Anthropic API, GitHub, and DNS
+# Network policy: lobsters can reach external APIs, GitHub, and lobwife broker
+# NOTE: This is a reference template — NOT applied via Kustomize.
+# To enforce, copy to a separate file and add to kustomization.yaml.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -145,3 +153,19 @@ spec:
       ports:
         - protocol: TCP
           port: 22
+    # lobwife token broker (ClusterIP service, port 8081)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lobwife
+      ports:
+        - protocol: TCP
+          port: 8081
+    # lobwife web proxy (for health checks, port 8080)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: lobwife
+      ports:
+        - protocol: TCP
+          port: 8080

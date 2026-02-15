@@ -61,7 +61,7 @@ cd infra && terraform validate
 - Dockerfile FROM arg: Use `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}` so buildx resolves GHCR base
 - PVC lost+found: New PVCs have `lost+found` dir. Clean before git clone
 - GHCR pull secrets: `imagePullSecrets` needed in deployment AND cronjob pod specs
-- GitHub App tokens expire hourly — `gh-token-refresh` CronJob handles this
+- GitHub App tokens: lobwife token broker generates on-demand (no more CronJob)
 - Vault clone MUST use HTTPS remote (not SSH) — App tokens only work over HTTPS
 - ConfigMap keys are case-sensitive — match exactly
 - Don't manually fix lobster mistakes — fix root causes so they behave correctly autonomously

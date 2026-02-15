@@ -31,12 +31,17 @@ spec:
               name: ssh
             - containerPort: 8080
               name: http
+            - containerPort: 8081
+              name: api
           env:
             - name: GIT_USER_NAME
               value: "lobwife"
             - name: GIT_USER_EMAIL
               value: "lobwife@lobmob.local"
           envFrom:
+            - secretRef:
+                name: lobwife-secrets
+                optional: true
             - secretRef:
                 name: lobmob-secrets
             - configMapRef:

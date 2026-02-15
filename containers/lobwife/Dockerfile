@@ -18,9 +18,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# lobmob source + CLI
+# lobmob source + CLI + git credential helper
 COPY . /opt/lobmob
-RUN ln -s /opt/lobmob/scripts/lobmob /usr/local/bin/lobmob
+RUN ln -s /opt/lobmob/scripts/lobmob /usr/local/bin/lobmob \
+    && ln -s /opt/lobmob/scripts/git-credential-lobwife /usr/local/bin/git-credential-lobwife
 
 # SSH setup
 RUN mkdir -p /run/sshd
@@ -37,7 +38,7 @@ RUN useradd -m -s /bin/bash -G sudo lobwife \
 COPY containers/lobwife/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 22 8080
+EXPOSE 22 8080 8081
 
 ENTRYPOINT ["/entrypoint.sh"]
 

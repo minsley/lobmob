@@ -41,9 +41,12 @@ Environment:
 
 Infrastructure:
   deploy              Deploy via Terraform + kubectl
+  apply [--dry-run]   Apply k8s manifests only (no Terraform)
   destroy             Tear down infrastructure
   build <target>      Build and push container image to GHCR
                       Targets: base, lobboss, lobwife, lobsigliere, lobster, all
+  restart <target>    Rollout restart a deployment and wait
+  rollout <target>    Build, restart, and verify in one step
 
 Connection:
   connect [target]    Port-forward to web dashboard + open browser
@@ -54,10 +57,20 @@ Vault:
   vault-init          Initialize the Obsidian vault GitHub repo
   vault-sync          Pull latest vault to local machine
 
+Secrets:
+  secrets push        Push secrets.env to k8s lobmob-secrets
+  secrets push-broker Push GitHub App creds to k8s lobwife-secrets
+  secrets show        Show which secrets are configured
+
+Setup:
+  setup               Interactive bootstrap wizard
+  setup github        Create GitHub App via manifest flow
+  setup rotate-pem    Rotate the GitHub App PEM key
+
 Utilities:
   status              Show fleet status
   verify [target]     Post-deploy verification (lobwife, lobboss, all)
-  logs [target]       Tail pod logs (lobboss default, or job name)
+  logs [target]       Tail pod logs (lobboss, lobwife, lobsigliere, or job name)
   flush-logs          Flush event logs to the vault
   prs                 List open PRs on the vault repo
 EOF
@@ -68,8 +81,12 @@ shift || true
 
 case "$COMMAND" in
   deploy)              source "$SCRIPT_DIR/commands/deploy.sh" ;;
+  apply)               source "$SCRIPT_DIR/commands/apply.sh" ;;
   destroy)             source "$SCRIPT_DIR/commands/destroy.sh" ;;
   build)               source "$SCRIPT_DIR/commands/build.sh" ;;
+  restart)             source "$SCRIPT_DIR/commands/restart.sh" ;;
+  rollout)             source "$SCRIPT_DIR/commands/rollout.sh" ;;
+  secrets)             source "$SCRIPT_DIR/commands/secrets.sh" ;;
   status)              source "$SCRIPT_DIR/commands/status.sh" ;;
   verify)              source "$SCRIPT_DIR/commands/verify.sh" ;;
   vault-init)          source "$SCRIPT_DIR/commands/vault-init.sh" ;;
@@ -78,6 +95,16 @@ case "$COMMAND" in
   flush-logs)          source "$SCRIPT_DIR/commands/flush-logs.sh" ;;
   prs)                 source "$SCRIPT_DIR/commands/prs.sh" ;;
   connect)             source "$SCRIPT_DIR/commands/connect.sh" ;;
+  setup)
+    SETUP_CMD="${1:-}"
+    shift || true
+    case "$SETUP_CMD" in
+      ""|wizard)    source "$SCRIPT_DIR/commands/setup.sh" ;;
+      github)       source "$SCRIPT_DIR/commands/setup-github.sh" ;;
+      rotate-pem)   source "$SCRIPT_DIR/commands/setup-rotate-pem.sh" ;;
+      *)            err "Unknown setup command: $SETUP_CMD"; exit 1 ;;
+    esac
+    ;;
   help|--help|-h)      usage ;;
   *)                   err "Unknown command: $COMMAND"; usage; exit 1 ;;
 esac
