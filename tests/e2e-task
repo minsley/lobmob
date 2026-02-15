@@ -126,7 +126,8 @@ echo ""
 
 if [[ -d "$VAULT_LOCAL/.git" ]]; then
   CURRENT_REMOTE=$(git -C "$VAULT_LOCAL" remote get-url origin 2>/dev/null || echo "")
-  if [[ "$CURRENT_REMOTE" != *"$VAULT_REPO"* ]]; then
+  EXPECTED_SUFFIX="${VAULT_REPO}.git"
+  if [[ "$CURRENT_REMOTE" != *"$EXPECTED_SUFFIX" ]] && [[ "$CURRENT_REMOTE" != *"$VAULT_REPO" ]]; then
     echo -e "${YELLOW}Vault remote mismatch. Re-cloning...${NC}"
     rm -rf "$VAULT_LOCAL"
     gh repo clone "$VAULT_REPO" "$VAULT_LOCAL"
