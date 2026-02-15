@@ -71,6 +71,8 @@ cd infra && terraform validate
 - Commit at logical checkpoints, not one big commit at the end
 - After approval, merge to main AND sync develop: `git checkout develop && git merge main && git push origin develop`
 - Lobster code PRs target `develop`, not `main`
+- **Merges from develop to main** must include a release tag (`vX.Y.Z`) and release notes with a summary of changes, links to PRs, and links to build artifacts (GHCR images) if any
+- **Before creating a PR**, update any relevant READMEs and documentation (e.g. `docs/operations/`, CLAUDE.md) to reflect the changes
 
 ## Testing
 - Tests are bash scripts in `tests/`
@@ -96,8 +98,14 @@ These are instructions for Claude to follow to keep sessions productive.
   3. Update `memory/claude-code-version.md` with the new version, date, and any notable changes
   4. If new features are relevant (new hook types, memory changes, agent capabilities), suggest updates to CLAUDE.md or hooks
 
+### Plans and Documentation
+- **Every implementation plan** must be saved to a markdown file in the local Obsidian vault (`vault-local/040-sessions/plans/` if available) or `docs/plans/`. If no designated location exists, ask.
+- **Prefer reusable scripts over one-off commands.** If you're about to run a multi-step bash/python sequence manually, first consider whether it should be a parameterized script in `scripts/commands/` or `tests/`. Create or update the script instead.
+- If an execution plan requires **clearing context to continue fresh**, note this explicitly in the plan document with: what was completed, what remains, key file paths, and any gotchas the next session needs.
+
 ### Before Context Gets Large
 - If you've made 5+ commits, suggest a checkpoint: commit, push, and offer to start a fresh session
+- **Write a session summary** to the Obsidian vault (`vault-local/040-sessions/logs/`) or a designated document store. Include: what was accomplished, commits made, decisions taken, and any open items. This preserves context across session boundaries.
 - When approaching complex multi-file changes, use plan mode first
 - Use subagents for research to keep the main context focused on implementation
 
