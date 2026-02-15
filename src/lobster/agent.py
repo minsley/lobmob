@@ -71,6 +71,86 @@ def _load_system_prompt(config: LobsterConfig) -> str:
     return prompt
 
 
+def _load_retry_prompt(missing: list[str]) -> str:
+    """Load the retry prompt template and fill in the missing steps."""
+    path = _resolve_prompt_path("retry.md")
+    if path:
+        template = path.read_text()
+    else:
+        template = (
+            "Your previous session did not complete all steps.\n"
+            "Missing steps:\n{missing_steps}\n"
+            "Complete them now."
+        )
+    formatted = "\n".join(f"- **{step}**" for step in missing)
+    return template.replace("{missing_steps}", formatted)
+
+
+async def run_retry(config: LobsterConfig, missing: list[str]) -> dict:
+    """Run a focused retry query to complete missing workflow steps.
+
+    Uses a smaller budget and the retry-specific prompt.
+    """
+    system_prompt = _load_retry_prompt(missing)
+    model = MODEL_MAP.get(config.model, config.model)
+
+    prompt = (
+        f"## Retry for task: {config.task_id}\n\n"
+        f"Complete the missing steps listed in your system prompt.\n"
+        f"Vault path: {config.vault_path}\n"
+    )
+
+    allowed_tools = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
+
+    options = ClaudeAgentOptions(
+        system_prompt=system_prompt,
+        model=model,
+        allowed_tools=allowed_tools,
+        permission_mode="acceptEdits",
+        max_turns=15,
+        max_budget_usd=2.0,
+        cwd=os.environ.get("WORKSPACE", "/workspace"),
+        can_use_tool=create_tool_checker(config.lobster_type),
+        stderr=lambda line: logger.debug("CLI (retry): %s", line.rstrip()),
+    )
+
+    result = {
+        "task_id": config.task_id,
+        "model": model,
+        "responses": [],
+        "cost_usd": None,
+        "num_turns": 0,
+        "is_error": False,
+        "session_id": None,
+    }
+
+    try:
+        async for message in query(prompt=_as_stream(prompt), options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        result["responses"].append(block.text)
+            elif isinstance(message, ResultMessage):
+                result["cost_usd"] = message.total_cost_usd
+                result["num_turns"] = message.num_turns
+                result["is_error"] = message.is_error
+                result["session_id"] = message.session_id
+                if message.is_error:
+                    logger.error("Retry agent error: %s", message.result)
+                else:
+                    logger.info(
+                        "Retry for %s complete: %d turns, $%.4f",
+                        config.task_id,
+                        message.num_turns,
+                        message.total_cost_usd or 0,
+                    )
+    except Exception:
+        logger.exception("Retry query failed for task %s", config.task_id)
+        result["is_error"] = True
+
+    return result
+
+
 async def run_task(config: LobsterConfig, task_body: str) -> dict:
     """Execute a task via Agent SDK query(). Returns result summary.
 

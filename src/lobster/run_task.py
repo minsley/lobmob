@@ -7,10 +7,13 @@ import sys
 
 from common.logging import setup_logging, log_structured
 from common.vault import pull_vault, read_task
-from lobster.agent import run_task
+from lobster.agent import run_retry, run_task
 from lobster.config import LobsterConfig
+from lobster.verify import verify_completion
 
 logger = logging.getLogger("lobster.run_task")
+
+MAX_RETRIES = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +66,8 @@ async def main_async() -> int:
     result = await run_task(config, body)
 
     # Log summary
+    total_turns = result["num_turns"]
+    total_cost = result["cost_usd"] or 0
     log_structured(
         logger, "Task complete",
         task_id=config.task_id,
@@ -72,6 +77,41 @@ async def main_async() -> int:
         cost_usd=result["cost_usd"],
         is_error=result["is_error"],
     )
+
+    # Verify-retry loop: check completion and retry missing steps
+    if not result["is_error"]:
+        for attempt in range(1, MAX_RETRIES + 1):
+            missing = await verify_completion(config.task_id, config.lobster_type, config.vault_path)
+            if not missing:
+                logger.info("Verification passed — all steps complete")
+                break
+
+            logger.warning(
+                "Verification attempt %d/%d: missing steps: %s",
+                attempt, MAX_RETRIES, ", ".join(missing),
+            )
+            retry_result = await run_retry(config, missing)
+            total_turns += retry_result["num_turns"]
+            total_cost += retry_result["cost_usd"] or 0
+
+            if retry_result["is_error"]:
+                logger.error("Retry %d failed with agent error, stopping", attempt)
+                break
+        else:
+            # Ran all retries — do one final check
+            final_missing = await verify_completion(config.task_id, config.lobster_type, config.vault_path)
+            if final_missing:
+                logger.error(
+                    "Still missing after %d retries: %s",
+                    MAX_RETRIES, ", ".join(final_missing),
+                )
+
+        log_structured(
+            logger, "Final totals (including retries)",
+            task_id=config.task_id,
+            total_turns=total_turns,
+            total_cost_usd=total_cost,
+        )
 
     return 1 if result["is_error"] else 0
 

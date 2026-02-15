@@ -12,6 +12,7 @@ LOG="${LOG_DIR:-/var/log}/lobmob-task-manager.log"
 NOW=$(date +%s)
 
 LOBWIFE_URL="${LOBWIFE_URL:-http://lobwife.lobmob.svc.cluster.local:8081}"
+VAULT_REPO="${VAULT_REPO:-}"
 
 cd "$VAULT_DIR" && git pull origin main --quiet 2>/dev/null || true
 
@@ -34,6 +35,89 @@ discord_post() {
 
 # Helper: extract frontmatter field
 fm() { grep "^$1:" "$2" 2>/dev/null | head -1 | sed "s/^$1: *//" ; }
+
+# Helper: attempt to create a fallback PR from an existing branch (Layer 2)
+# Returns 0 if PR was created, 1 otherwise
+try_fallback_pr() {
+  local task_id="$1"
+  [[ -n "$VAULT_REPO" ]] || return 1
+
+  # Look for a branch matching this task
+  local branch
+  branch=$(gh api "repos/${VAULT_REPO}/branches" --jq '.[].name' 2>/dev/null | grep "$task_id" | head -1 || true)
+  [[ -n "$branch" ]] || return 1
+
+  # Check if branch has commits ahead of main
+  local ahead
+  ahead=$(gh api "repos/${VAULT_REPO}/compare/main...${branch}" --jq '.ahead_by' 2>/dev/null || echo 0)
+  [[ "$ahead" -gt 0 ]] || return 1
+
+  # Create the fallback PR
+  gh pr create --repo "$VAULT_REPO" --head "$branch" --base main \
+    --title "Task ${task_id} (auto-submitted by task-manager)" \
+    --body "[task-manager] Lobster completed work on branch but didn't create a PR. ${ahead} commit(s) ahead of main." \
+    2>/dev/null || return 1
+
+  echo "$(date -Iseconds) FALLBACK PR created for $task_id from branch $branch ($ahead commits)" >> "$LOG"
+  return 0
+}
+
+# Helper: create investigation task for lobsigliere (Layer 3)
+create_investigation_task() {
+  local task_id="$1" task_type="$2" assigned_to="$3" failure_reason="$4"
+
+  # Rate limit: skip if investigation task already exists for this task
+  if ls "$VAULT_DIR"/010-tasks/active/*inv* 2>/dev/null | xargs grep -l "$task_id" 2>/dev/null | head -1 | grep -q .; then
+    echo "$(date -Iseconds) SKIP investigation: already exists for $task_id" >> "$LOG"
+    return
+  fi
+
+  local inv_id="task-$(date +%Y-%m-%d)-inv-$(openssl rand -hex 2)"
+  local inv_file="$VAULT_DIR/010-tasks/active/${inv_id}.md"
+  local now_iso
+  now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  cat > "$inv_file" <<INVEOF
+---
+id: ${inv_id}
+type: system
+status: queued
+created: ${now_iso}
+priority: high
+tags: [investigation, reliability]
+---
+
+# Investigate failed task: ${task_id}
+
+## Objective
+
+Task **${task_id}** (type: ${task_type}) was assigned to **${assigned_to}** and failed.
+Failure reason: ${failure_reason}
+
+Investigate why the lobster failed to complete all workflow steps and submit a PR
+to the lobmob repo that fixes the root cause.
+
+## Investigation Steps
+
+1. Read the failed task file at 010-tasks/active/${task_id}.md (or failed/)
+2. Check if the lobster's vault branch exists and has commits
+3. Read the lobster's work log at 020-logs/lobsters/${assigned_to}/
+4. Examine the relevant lobster prompt (src/lobster/prompts/${task_type}.md)
+5. Check verify.py criteria — which checks failed?
+6. Identify the root cause and implement a fix
+
+## Scope
+
+- Fix prompts, verify.py, hooks.py, or run_task.py as needed
+- Do NOT fix the original task — fix why the lobster couldn't complete it
+- Target: lobsters should reliably complete all workflow steps autonomously
+INVEOF
+
+  cd "$VAULT_DIR" && git add "$inv_file" && \
+    git commit -m "[task-manager] Create investigation task $inv_id for failed $task_id" --quiet 2>/dev/null
+  git push origin main --quiet 2>/dev/null || true
+  echo "$(date -Iseconds) INVESTIGATION TASK created: $inv_id for failed $task_id" >> "$LOG"
+}
 
 # ── 1. Timeout Detection ────────────────────────────────────────────
 for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
@@ -124,6 +208,15 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
     continue
   fi
 
+  # Layer 2: Try to create a fallback PR from the lobster's branch
+  if try_fallback_pr "$task_id"; then
+    [[ -n "$thread_id" ]] && discord_post "$thread_id" \
+      "**[task-manager]** **$assigned_to** is offline, but found unpushed work for **$task_id**. Created fallback PR."
+    continue
+  fi
+
+  task_type=$(fm type "$task_file")
+
   if [[ "$elapsed_min" -lt 30 ]]; then
     # Re-queue
     echo "$(date -Iseconds) ORPHAN RE-QUEUE: $task_id — $assigned_to gone after ${elapsed_min}m" >> "$LOG"
@@ -144,6 +237,9 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
     git push origin main --quiet 2>/dev/null || true
     [[ -n "$thread_id" ]] && discord_post "$thread_id" \
       "**[task-manager]** Failed **$task_id** — **$assigned_to** offline for ${elapsed_min}m with no PR."
+
+    # Layer 3: Create investigation task for lobsigliere
+    create_investigation_task "$task_id" "${task_type:-unknown}" "$assigned_to" "Orphan: lobster offline ${elapsed_min}m, no PR, no fallback branch"
   fi
 done
 
