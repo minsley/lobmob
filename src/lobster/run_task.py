@@ -81,6 +81,12 @@ async def main_async() -> int:
     # Verify-retry loop: check completion and retry missing steps
     if not result["is_error"]:
         for attempt in range(1, MAX_RETRIES + 1):
+            # Pull vault to get fresh state before checking
+            try:
+                await pull_vault(config.vault_path)
+            except Exception:
+                pass
+
             missing = await verify_completion(config.task_id, config.lobster_type, config.vault_path)
             if not missing:
                 logger.info("Verification passed — all steps complete")
@@ -98,7 +104,11 @@ async def main_async() -> int:
                 logger.error("Retry %d failed with agent error, stopping", attempt)
                 break
         else:
-            # Ran all retries — do one final check
+            # Ran all retries without breaking — do one final check
+            try:
+                await pull_vault(config.vault_path)
+            except Exception:
+                pass
             final_missing = await verify_completion(config.task_id, config.lobster_type, config.vault_path)
             if final_missing:
                 logger.error(
@@ -106,6 +116,8 @@ async def main_async() -> int:
                     MAX_RETRIES, ", ".join(final_missing),
                 )
 
+    # Always log totals if retries were attempted
+    if total_turns != result["num_turns"] or total_cost != (result["cost_usd"] or 0):
         log_structured(
             logger, "Final totals (including retries)",
             task_id=config.task_id,

@@ -42,14 +42,27 @@ try_fallback_pr() {
   local task_id="$1"
   [[ -n "$VAULT_REPO" ]] || return 1
 
-  # Look for a branch matching this task
+  # Look for a branch matching this task (paginate to catch all)
   local branch
-  branch=$(gh api "repos/${VAULT_REPO}/branches" --jq '.[].name' 2>/dev/null | grep "$task_id" | head -1 || true)
+  branch=$(gh api "repos/${VAULT_REPO}/branches" --paginate --jq '.[].name' 2>/dev/null \
+    | grep -F "$task_id" | head -1 || true)
   [[ -n "$branch" ]] || return 1
+
+  # Check if PR already exists for this branch
+  local existing_pr
+  existing_pr=$(gh pr list --repo "$VAULT_REPO" --head "$branch" --state all --json number --jq 'length' 2>/dev/null || echo 0)
+  if [[ "$existing_pr" -gt 0 ]]; then
+    echo "$(date -Iseconds) FALLBACK: PR already exists for branch $branch ($task_id)" >> "$LOG"
+    return 0
+  fi
+
+  # URL-encode the branch name for the compare API (handles slashes)
+  local encoded_branch
+  encoded_branch=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$branch', safe=''))" 2>/dev/null || echo "$branch")
 
   # Check if branch has commits ahead of main
   local ahead
-  ahead=$(gh api "repos/${VAULT_REPO}/compare/main...${branch}" --jq '.ahead_by' 2>/dev/null || echo 0)
+  ahead=$(gh api "repos/${VAULT_REPO}/compare/main...${encoded_branch}" --jq '.ahead_by' 2>/dev/null || echo 0)
   [[ "$ahead" -gt 0 ]] || return 1
 
   # Create the fallback PR
@@ -66,13 +79,16 @@ try_fallback_pr() {
 create_investigation_task() {
   local task_id="$1" task_type="$2" assigned_to="$3" failure_reason="$4"
 
-  # Rate limit: skip if investigation task already exists for this task
-  if ls "$VAULT_DIR"/010-tasks/active/*inv* 2>/dev/null | xargs grep -l "$task_id" 2>/dev/null | head -1 | grep -q .; then
-    echo "$(date -Iseconds) SKIP investigation: already exists for $task_id" >> "$LOG"
+  # Rate limit: use state file to track whether investigation was already created
+  TASK_STATE_DIR="${TASK_STATE_DIR:-/tmp/task-state}"
+  mkdir -p "$TASK_STATE_DIR" 2>/dev/null || true
+  local inv_state="${TASK_STATE_DIR}/${task_id}.investigation"
+  if [[ -f "$inv_state" ]]; then
+    echo "$(date -Iseconds) SKIP investigation: already created for $task_id" >> "$LOG"
     return
   fi
 
-  local inv_id="task-$(date +%Y-%m-%d)-inv-$(openssl rand -hex 2)"
+  local inv_id="task-$(date +%Y-%m-%d)-inv-$(openssl rand -hex 4)"
   local inv_file="$VAULT_DIR/010-tasks/active/${inv_id}.md"
   local now_iso
   now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -113,10 +129,17 @@ to the lobmob repo that fixes the root cause.
 - Target: lobsters should reliably complete all workflow steps autonomously
 INVEOF
 
-  cd "$VAULT_DIR" && git add "$inv_file" && \
-    git commit -m "[task-manager] Create investigation task $inv_id for failed $task_id" --quiet 2>/dev/null
-  git push origin main --quiet 2>/dev/null || true
-  echo "$(date -Iseconds) INVESTIGATION TASK created: $inv_id for failed $task_id" >> "$LOG"
+  if cd "$VAULT_DIR" && git add "$inv_file" && \
+    git commit -m "[task-manager] Create investigation task $inv_id for failed $task_id" --quiet 2>/dev/null; then
+    git push origin main --quiet 2>/dev/null || {
+      echo "$(date -Iseconds) WARN: Failed to push investigation task $inv_id" >> "$LOG"
+    }
+    echo "$inv_id" > "$inv_state"
+    echo "$(date -Iseconds) INVESTIGATION TASK created: $inv_id for failed $task_id" >> "$LOG"
+  else
+    echo "$(date -Iseconds) WARN: Failed to commit investigation task $inv_id" >> "$LOG"
+    rm -f "$inv_file"
+  fi
 }
 
 # ── 1. Timeout Detection ────────────────────────────────────────────
@@ -210,8 +233,9 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
 
   # Layer 2: Try to create a fallback PR from the lobster's branch
   if try_fallback_pr "$task_id"; then
+    echo "$(date -Iseconds) ORPHAN (fallback PR): $task_id — created PR from $assigned_to branch" >> "$LOG"
     [[ -n "$thread_id" ]] && discord_post "$thread_id" \
-      "**[task-manager]** **$assigned_to** is offline, but found unpushed work for **$task_id**. Created fallback PR."
+      "**[task-manager]** **$assigned_to** is offline, but found work for **$task_id**. Created fallback PR."
     continue
   fi
 

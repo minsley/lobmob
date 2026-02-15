@@ -100,7 +100,14 @@ async def run_retry(config: LobsterConfig, missing: list[str]) -> dict:
         f"Vault path: {config.vault_path}\n"
     )
 
-    allowed_tools = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
+    # Match allowed tools to lobster type (same logic as run_task)
+    allowed_tools = ["Read", "Glob", "Grep"]
+    if config.lobster_type in ("swe", "research", "system"):
+        allowed_tools.extend(["Edit", "Write", "Bash"])
+    elif config.lobster_type == "qa":
+        allowed_tools.append("Bash")
+    elif config.lobster_type == "image-gen":
+        allowed_tools.extend(["Write", "Bash"])
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
