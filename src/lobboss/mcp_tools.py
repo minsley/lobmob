@@ -178,6 +178,7 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
                     restart_policy="Never",
                     node_selector={"lobmob.io/role": "lobster"},
                     service_account_name="lobster",
+                    image_pull_secrets=[client.V1LocalObjectReference(name="ghcr-pull-secret")],
                     init_containers=[
                         client.V1Container(
                             name="vault-clone",
