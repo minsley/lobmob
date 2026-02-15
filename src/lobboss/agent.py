@@ -17,6 +17,7 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 
+from common.models import resolve_model
 from lobboss.config import AgentConfig
 from lobboss.hooks import check_bash_command, check_spawn_lobster
 from lobboss.mcp_tools import lobmob_mcp
@@ -92,12 +93,7 @@ class LobbossAgent:
 
     @staticmethod
     def _resolve_model(short: str) -> str:
-        models = {
-            "opus": "claude-opus-4-6",
-            "sonnet": "claude-sonnet-4-5",
-            "haiku": "claude-haiku-4-5",
-        }
-        return models.get(short, short)
+        return resolve_model(short)
 
     def _needs_rotation(self, session: SessionInfo) -> bool:
         """Check if a session needs rotation due to age or context usage."""

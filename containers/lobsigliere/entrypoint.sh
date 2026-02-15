@@ -127,6 +127,7 @@ chown -R engineer:engineer /home/engineer/.claude
 echo "Starting lobsigliere task daemon..."
 su - engineer -c "VAULT_PATH=/home/engineer/vault \
     SYSTEM_WORKSPACE=/home/engineer/lobmob \
+    PYTHONPATH=/opt/lobmob/src \
     ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' \
     GH_TOKEN='${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}' \
     LOBWIFE_URL='${LOBWIFE_URL:-}' \

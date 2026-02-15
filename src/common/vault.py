@@ -14,6 +14,14 @@ logger = logging.getLogger("common.vault")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
+def parse_frontmatter(content: str) -> dict[str, Any]:
+    """Extract YAML frontmatter from markdown content as a dict."""
+    match = FRONTMATTER_RE.match(content)
+    if match:
+        return yaml.safe_load(match.group(1)) or {}
+    return {}
+
+
 class VaultError(Exception):
     """Raised when a vault git operation fails."""
 
@@ -82,13 +90,9 @@ def read_task(vault_path: str, task_id: str) -> dict[str, Any]:
 def _parse_task_file(path: Path) -> dict[str, Any]:
     """Parse a task markdown file with YAML frontmatter."""
     content = path.read_text()
+    metadata = parse_frontmatter(content)
     match = FRONTMATTER_RE.match(content)
-    if match:
-        metadata = yaml.safe_load(match.group(1)) or {}
-        body = content[match.end():]
-    else:
-        metadata = {}
-        body = content
+    body = content[match.end():] if match else content
     return {"metadata": metadata, "body": body.strip(), "path": str(path)}
 
 

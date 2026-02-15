@@ -14,6 +14,7 @@ from claude_agent_sdk import (
     query,
 )
 
+from common.models import resolve_model
 from lobster.config import LobsterConfig
 from lobster.hooks import create_tool_checker
 
@@ -29,12 +30,6 @@ async def _as_stream(prompt: str) -> AsyncIterator[dict[str, Any]]:
         "type": "user",
         "message": {"role": "user", "content": prompt},
     }
-
-MODEL_MAP = {
-    "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-5",
-    "haiku": "claude-haiku-4-5",
-}
 
 
 def _resolve_prompt_path(filename: str) -> Path | None:
@@ -92,7 +87,7 @@ async def run_retry(config: LobsterConfig, missing: list[str]) -> dict:
     Uses a smaller budget and the retry-specific prompt.
     """
     system_prompt = _load_retry_prompt(missing)
-    model = MODEL_MAP.get(config.model, config.model)
+    model = resolve_model(config.model)
 
     prompt = (
         f"## Retry for task: {config.task_id}\n\n"
@@ -164,7 +159,7 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
     Uses one-shot query() since lobsters are ephemeral.
     """
     system_prompt = _load_system_prompt(config)
-    model = MODEL_MAP.get(config.model, config.model)
+    model = resolve_model(config.model)
 
     # Build the full prompt with task context
     prompt = f"## Task: {config.task_id}\n\n{task_body}"
