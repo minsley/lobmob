@@ -22,6 +22,7 @@ TASK_PATCH_FIELDS = {
     "name", "type", "status", "priority", "model", "assigned_to",
     "repos", "discord_thread_id", "estimate_minutes", "requires_qa",
     "workflow", "assigned_at", "completed_at",
+    "broker_repos", "broker_status", "token_count", "broker_registered_at",
 }
 
 VALID_TASK_STATUSES = {
@@ -266,7 +267,7 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
         updates = {}
         for key, val in data.items():
             if key in TASK_PATCH_FIELDS:
-                if key == "repos" and isinstance(val, list):
+                if key in ("repos", "broker_repos") and isinstance(val, list):
                     updates[key] = json.dumps(val)
                 elif key == "requires_qa":
                     updates[key] = 1 if val else 0
@@ -358,6 +359,125 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
 
         return web.json_response({"status": "logged", "task_id": f"T{task_id}"}, status=201)
 
+    # === Broker registration via tasks table (new) ===
+
+    async def handle_register_task_v1(request):
+        """POST /api/v1/tasks/{id}/register — set broker fields on a task."""
+        task_id = int(request.match_info["id"])
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        repos = data.get("repos", [])
+        lobster_type = data.get("lobster_type", "unknown")
+        if not repos:
+            return web.json_response({"error": "repos required"}, status=400)
+
+        db = await get_db()
+        async with db.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)) as cur:
+            if not await cur.fetchone():
+                return web.json_response({"error": f"Task T{task_id} not found"}, status=404)
+
+        now_iso = __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc
+        ).isoformat()
+        await db.execute(
+            """UPDATE tasks SET broker_repos = ?, broker_status = 'active',
+               broker_registered_at = ?, updated_at = datetime('now')
+               WHERE id = ?""",
+            (json.dumps(repos), now_iso, task_id),
+        )
+        await db.execute(
+            "INSERT INTO task_events (task_id, event_type, detail, actor) VALUES (?, ?, ?, ?)",
+            (task_id, "broker_registered", f"repos={repos}", lobster_type),
+        )
+        await db.commit()
+        return web.json_response({"status": "registered", "task_id": f"T{task_id}"})
+
+    # === Broker compat shims (old routes → tasks table lookup) ===
+
+    async def handle_register_task_compat(request):
+        """POST /api/tasks/{task_id}/register — compat shim.
+
+        Tries to find task in tasks table by slug or name, sets broker fields.
+        Falls back to broker_tasks for unrecognized task IDs.
+        """
+        slug = request.match_info["task_id"]
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        repos = data.get("repos", [])
+        lobster_type = data.get("lobster_type", "unknown")
+        if not repos:
+            return web.json_response({"error": "repos required"}, status=400)
+
+        db = await get_db()
+
+        # Try to find by slug or name in tasks table
+        db_task_id = None
+        for field in ("slug", "name"):
+            async with db.execute(
+                f"SELECT id FROM tasks WHERE {field} = ?", (slug,)
+            ) as cur:
+                row = await cur.fetchone()
+                if row:
+                    db_task_id = row["id"]
+                    break
+
+        # Also try T-format: "T42" → id=42
+        if db_task_id is None and slug.startswith("T") and slug[1:].isdigit():
+            tid = int(slug[1:])
+            async with db.execute("SELECT id FROM tasks WHERE id = ?", (tid,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    db_task_id = row["id"]
+
+        if db_task_id is not None:
+            now_iso = __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc
+            ).isoformat()
+            await db.execute(
+                """UPDATE tasks SET broker_repos = ?, broker_status = 'active',
+                   broker_registered_at = ?, updated_at = datetime('now')
+                   WHERE id = ?""",
+                (json.dumps(repos), now_iso, db_task_id),
+            )
+            await db.execute(
+                "INSERT INTO task_events (task_id, event_type, detail, actor) VALUES (?, ?, ?, ?)",
+                (db_task_id, "broker_registered", f"repos={repos} (compat)", lobster_type),
+            )
+            await db.commit()
+            return web.json_response({"status": "registered", "task_id": slug})
+
+        # Fall back to broker_tasks for legacy entries
+        await broker.register_task(slug, repos, lobster_type)
+        return web.json_response({"status": "registered", "task_id": slug})
+
+    async def handle_get_token_compat(request):
+        """POST /api/token — compat shim.
+
+        Looks up task in tasks table first, falls back to broker_tasks.
+        """
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        task_id = data.get("task_id", "")
+        if not task_id:
+            return web.json_response({"error": "task_id required"}, status=400)
+
+        try:
+            token_data = await broker.get_token_for_task(task_id)
+            return web.json_response(token_data)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=403)
+        except RuntimeError as e:
+            return web.json_response({"error": str(e)}, status=503)
+
     # === Routes ===
 
     # Health & status
@@ -371,11 +491,11 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
     app.router.add_post("/api/jobs/{name}/enable", handle_enable)
     app.router.add_post("/api/jobs/{name}/disable", handle_disable)
 
-    # Token broker (existing routes, unchanged)
-    app.router.add_post("/api/tasks/{task_id}/register", handle_register_task)
+    # Token broker (compat shims — route through tasks table when possible)
+    app.router.add_post("/api/tasks/{task_id}/register", handle_register_task_compat)
     app.router.add_delete("/api/tasks/{task_id}", handle_deregister_task)
     app.router.add_get("/api/tasks", handle_list_broker_tasks)
-    app.router.add_post("/api/token", handle_get_token)
+    app.router.add_post("/api/token", handle_get_token_compat)
     app.router.add_get("/api/token/audit", handle_token_audit)
 
     # Task CRUD (new, versioned)
@@ -386,5 +506,6 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
     app.router.add_delete("/api/v1/tasks/{id}", handle_cancel_task)
     app.router.add_get("/api/v1/tasks/{id}/events", handle_get_task_events)
     app.router.add_post("/api/v1/tasks/{id}/events", handle_create_task_event)
+    app.router.add_post("/api/v1/tasks/{id}/register", handle_register_task_v1)
 
     return app
