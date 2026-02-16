@@ -4,23 +4,29 @@ Manages the aiosqlite connection, schema initialization, and one-time
 migration from JSON state files to SQLite.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 import aiosqlite
 
 log = logging.getLogger("lobwife")
 
-STATE_DIR = Path(os.environ.get("HOME", "/home/lobwife")) / "state"
+STATE_DIR = Path(
+    os.environ.get("LOBWIFE_STATE_DIR")
+    or os.path.join(os.environ.get("HOME", "/home/lobwife"), "state")
+)
 DB_PATH = STATE_DIR / "lobmob.db"
 SCHEMA_PATH = Path(__file__).parent / "lobwife-schema.sql"
 
 CURRENT_SCHEMA_VERSION = 1
 
 # Module-level connection
-_db: aiosqlite.Connection | None = None
+_db: Optional[aiosqlite.Connection] = None
 
 
 async def get_db() -> aiosqlite.Connection:

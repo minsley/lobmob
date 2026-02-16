@@ -3,6 +3,7 @@
 Extracted from lobwife-daemon.py. Replaces in-memory dicts and JSON
 persistence with broker_tasks and token_audit tables.
 """
+from __future__ import annotations
 
 import base64
 import json

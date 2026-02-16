@@ -9,7 +9,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR=$(mktemp -d)
 DAEMON_PID=""
-DAEMON_PORT=18081
 PASS=0
 FAIL=0
 
@@ -79,30 +78,18 @@ cat > "$STATE_DIR/token-audit.json" <<'AUDITJSON'
 AUDITJSON
 
 # --- Start daemon ---
+# Use LOBWIFE_STATE_DIR to point at test dir without changing HOME
+# (changing HOME breaks Python user site-packages)
 echo ""
 echo "Starting daemon..."
-HOME="$TEST_DIR" \
-    VAULT_PATH="$TEST_DIR/vault" \
-    DAEMON_PORT="$DAEMON_PORT" \
-    python3 "$SCRIPT_DIR/scripts/server/lobwife-daemon.py" &
-DAEMON_PID=$!
 
-# Override DAEMON_PORT in the daemon (it reads from global, so we patch env)
-# Actually the daemon uses a hardcoded 8081. We need to handle this.
-# For local testing, just use 8081 or kill any existing process.
-# The daemon hardcodes DAEMON_PORT=8081, so we use that.
-kill "$DAEMON_PID" 2>/dev/null || true
-wait "$DAEMON_PID" 2>/dev/null || true
-DAEMON_PID=""
-
-# Re-export so daemon reads the right port — but daemon hardcodes it.
-# We'll test against 8081. If something is already on 8081, fail early.
+# Fail early if port 8081 is in use
 if curl -s "http://127.0.0.1:8081/health" >/dev/null 2>&1; then
     echo "ERROR: port 8081 already in use"
     exit 1
 fi
 
-HOME="$TEST_DIR" \
+LOBWIFE_STATE_DIR="$STATE_DIR" \
     VAULT_PATH="$TEST_DIR/vault" \
     python3 "$SCRIPT_DIR/scripts/server/lobwife-daemon.py" &
 DAEMON_PID=$!
@@ -111,6 +98,11 @@ DAEMON_PID=$!
 for i in $(seq 1 30); do
     if curl -sf "http://127.0.0.1:8081/health" >/dev/null 2>&1; then
         break
+    fi
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+        echo "ERROR: daemon exited early"
+        DAEMON_PID=""
+        exit 1
     fi
     sleep 0.5
 done

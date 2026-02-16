@@ -3,6 +3,7 @@
 Extracted from lobwife-daemon.py. Replaces JSON load_state/save_state
 with async DB queries on the job_state table.
 """
+from __future__ import annotations
 
 import asyncio
 import logging
