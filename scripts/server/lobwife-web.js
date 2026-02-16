@@ -462,18 +462,18 @@ const handler = async (req, res) => {
       return;
     }
 
-    // API proxy — pass through to daemon (GET, POST, DELETE)
+    // API proxy — pass through to daemon (GET, POST, PATCH, DELETE)
     if (url.pathname.startsWith('/api/')) {
       try {
         let data;
-        if (req.method === 'POST') {
+        if (req.method === 'POST' || req.method === 'PATCH') {
           // Read request body and forward
           const body = await new Promise((resolve) => {
             let b = '';
             req.on('data', (c) => b += c);
             req.on('end', () => { try { resolve(JSON.parse(b)); } catch { resolve(b || undefined); } });
           });
-          data = await daemonPost(url.pathname, body);
+          data = await daemonRequest(req.method, url.pathname, body);
         } else if (req.method === 'DELETE') {
           data = await daemonRequest('DELETE', url.pathname);
         } else {
