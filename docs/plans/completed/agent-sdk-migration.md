@@ -1,7 +1,14 @@
+---
+status: completed
+tags: [infrastructure, migration]
+maturity: implementation
+created: 2026-02-12
+updated: 2026-02-14
+---
 # Agent SDK Migration Plan
 
 > Migrate lobmob from OpenClaw to Claude Agent SDK + discord.py + DOKS.
-> Reference: [agent-sdk-deep-dive.md](../research/agent-sdk-deep-dive.md)
+> Reference: [agent-sdk-deep-dive.md](../../research/agent-sdk-deep-dive.md)
 
 ## Status: MIGRATION COMPLETE (2026-02-12)
 
