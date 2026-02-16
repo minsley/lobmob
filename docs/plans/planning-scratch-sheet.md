@@ -39,7 +39,7 @@ When an item graduates to a plan doc, replace it with a link.
 
 ## Vault updates
 
-See [Vault Scaling & Sync](./draft/vault-scaling.md)
+See [Vault Scaling & Sync](./active/vault-scaling.md)
 
 ## lobmob general updates
 

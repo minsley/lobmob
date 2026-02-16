@@ -3,7 +3,7 @@ status: draft
 tags: [discord, ui, lobboss]
 maturity: design
 created: 2026-02-15
-updated: 2026-02-15
+updated: 2026-02-16
 ---
 # Discord UX Overhaul
 
@@ -51,7 +51,7 @@ Consolidate Discord to a single `#lobmob` channel with slash commands for struct
 ```
 /task create <description>     — Create a task (lobboss creates thread, proposes, waits for approval)
 /task status                   — Status of all active, recent completed, recent failed
-/task status <task-id>         — Specific task details
+/task status <task-id>         — Specific task details (e.g. /task status T42)
 /task cancel <task-id>         — Cancel a task
 /task cost <task-id>           — Cost info for this task
 
@@ -59,6 +59,8 @@ Consolidate Discord to a single `#lobmob` channel with slash commands for struct
 /fleet spawn <type>            — Manual lobster reserve spawn
 /fleet kill <job-name>         — Kill a running lobster job
 ```
+
+Task IDs use the sequential format from [vault scaling](../active/vault-scaling.md): `T1`, `T42`, etc. Slash command handlers query lobwife API (`GET /api/v1/tasks`) for fast state lookups — no vault file parsing needed.
 
 Cost commands (`/costs`, `/task cost`) are deferred to the [cost tracking plan](./cost-tracking.md).
 
@@ -70,7 +72,7 @@ Currently all messages come from a single "lobmob app" bot. To distinguish lobbo
 
 - **lobboss** posts as itself with its avatar (normal bot messages)
 - **Lobster messages** are posted by lobboss but visually attributed via Discord embeds:
-  - Embed author = lobster job name (e.g. `lobster-swe-2026-02-15-unity-ui`)
+  - Embed author = lobster job name (e.g. `lobster-swe-t42`)
   - Colored sidebar by type: blue for swe, green for research, orange for qa
   - Messages go to the task's thread
 - **User replies in a task thread** are routed to that task's lobster
@@ -90,6 +92,8 @@ Future: research direct agent-to-Discord communication (each lobster posts indep
 - Update cron scripts (status-reporter, task-manager) to post to new channel/threads
 - Archive old channels (don't delete)
 - Thread creation moves from "bare message in task-queue" to `/task create`
+- `/task create` calls lobwife API to create task (returns sequential ID), then writes vault file for body
+- `/task status` queries lobwife API (`GET /api/v1/tasks`) — requires [vault scaling](../active/vault-scaling.md) Phase 2
 - Conversational queries: any non-command message in `#lobmob` gets routed to Agent SDK
 
 ### Phase 2: Noise reduction
@@ -146,11 +150,13 @@ Future: research direct agent-to-Discord communication (each lobster posts indep
 - Multi-user awareness: if multiple users interact, should lobboss track who requested what? Currently single-user assumption. Becomes important if the Discord is shared
 - Consider a "do not disturb" mode where lobboss holds all non-critical messages until user returns
 - For direct lobster-to-Discord: options include giving lobsters a Discord webhook URL, having them post via lobwife relay, or running a lightweight Discord client in the lobster sidecar
-- Slash command discoverability: discord.py supports autocomplete for slash command arguments — could suggest task IDs, job names, etc.
+- Slash command discoverability: discord.py supports autocomplete for slash command arguments — could suggest task IDs, job names, etc. With sequential IDs (T1, T42), autocomplete from lobwife API becomes natural
+- Thread naming: "T42 — Unity UI Overhaul" is cleaner than "task-2026-02-15-a1b2 — Unity UI Overhaul"
 
 ## Related
 
 - [Roadmap](../roadmap.md)
 - [Scratch Sheet](../planning-scratch-sheet.md)
 - [Task Flow Improvements](./task-flow-improvements.md) — Task naming, web entry, cancel/re-open actions
+- [Vault Scaling](../active/vault-scaling.md) — Slash commands depend on fast API queries from lobwife DB. Task IDs, task creation flow
 - [System Maintenance Automation](./system-maintenance-automation.md) — Audit findings need Discord notification strategy

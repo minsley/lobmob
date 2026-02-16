@@ -3,7 +3,7 @@ status: draft
 tags: [infrastructure, lobsigliere, security]
 maturity: design
 created: 2026-02-15
-updated: 2026-02-15
+updated: 2026-02-16
 ---
 # System Maintenance Automation
 
@@ -16,7 +16,7 @@ Establish regular automated audit and review cycles for security, code quality, 
 - [x] Scheduling: cron or event-triggered? **Resolved: cron-only for v1**
 - [x] Who runs them? **Resolved: CronJobs with purpose-built images (not lobsigliere)**
 - [x] Budget? **Resolved: $5/audit cap for LLM-driven audits. Deterministic checks have no API cost**
-- [x] Findings format? **Resolved: vault markdown with structured frontmatter + Dataview overview**
+- [x] Findings format? **Resolved: vault markdown with structured frontmatter + Dataview overview. Once [vault scaling](../active/vault-scaling.md) Phase 4 lands, findings also stored in `audit_findings` DB table for fast queries**
 - [x] Escalation? **Resolved: severity-tiered (info/warning/critical)**
 - [x] Scope? **Resolved: codebase + vault + infrastructure**
 - [x] Trivy deployment? **Resolved: `aquasec/trivy` image directly, CronJob, scans GHCR images + k8s manifests + Terraform. Unprivileged, no docker socket needed**
@@ -83,7 +83,7 @@ $5/audit budget cap. Task hygiene daily, code/docs/security weekly.
 |----------|-------|---------|-------------|
 | **Info** | Report only | None | None |
 | **Warning** | Report | Notification in `#lobmob` (no mention) | None — human decides |
-| **Critical** | Report | Notification with @user mention | Auto-create vault fix task for lobsigliere |
+| **Critical** | Report | Notification with @user mention | Auto-create fix task via lobwife API for lobsigliere |
 
 No GitHub issues from audits at this time.
 
@@ -119,15 +119,16 @@ No GitHub issues from audits at this time.
 - Create audit skill templates for: security review, code maintenance, task hygiene, doc review
 - K8s CronJobs: task hygiene daily, security/code/docs weekly
 - $5/audit budget cap via token budget in agent config
-- Output: vault reports with structured findings
-- Auto-create vault fix tasks for critical findings
+- Output: vault reports with structured findings. Push findings to lobwife API (`POST /api/v1/audits`) once [vault scaling](../active/vault-scaling.md) Phase 4 lands
+- Auto-create fix tasks for critical findings via lobwife API (`POST /api/v1/tasks`)
 
 ### Phase 4: Reporting and overview
 
 - **Status**: pending
-- Dataview overview page in vault: audit history, severity trends, recent findings by type
-- Aggregate dashboard on lobboss web UI (stretch)
-- Track finding resolution over time (was the fix task completed?)
+- **Depends on**: [vault scaling](../active/vault-scaling.md) Phase 4 (audit_findings table) and Phase 6 (Obsidian views)
+- Dataview overview page in vault: audit history, severity trends, recent findings by type (powered by DB-synced markdown)
+- Aggregate dashboard on lobboss web UI — queries lobwife API (`GET /api/v1/audits`) (stretch)
+- Track finding resolution over time via `audit_findings.resolved_at` and linked fix task status
 
 ## Decisions Log
 
@@ -142,14 +143,14 @@ No GitHub issues from audits at this time.
 | 2026-02-15 | Severity-tiered escalation, no GitHub issues | Vault tasks + Discord notifications. Keep it internal |
 | 2026-02-15 | Cron-only scheduling for v1 | Event triggers (post-deploy hooks) can come later |
 | 2026-02-15 | $5/audit budget cap | Sensible default for LLM audits. Deterministic checks have no API cost |
-| 2026-02-15 | Vault markdown reports with Dataview | Consistent with architecture. Revisit if database introduced via vault scaling |
+| 2026-02-15 | Vault markdown reports with Dataview | Consistent with architecture. **Update**: once vault scaling Phase 4 lands, findings also go to `audit_findings` DB table for fast queries. Vault reports remain for Obsidian browsing |
 
 ## Scratch
 
 - Could track audit findings over time to detect trends (accumulating tech debt? increasing CVEs?)
 - Audit frequency should scale with activity — if no commits this week, skip code maintenance audit
 - As the project grows, consider GitHub Advanced Security or Dependabot alongside or replacing LLM security audits
-- The task hygiene audit overlaps with task-manager.sh stale task detection — consolidate or clearly delineate
+- The task hygiene audit overlaps with task-manager stale task detection — consolidate or clearly delineate. Note: task-manager is being rewritten in Python as part of [vault scaling](../active/vault-scaling.md) Phase 2.6
 - `lobmob-auditor` could also run pre-deploy validation (dry-run manifests, validate Terraform) as an event-triggered check later
 - trivy can output SARIF format for integration with GitHub Security tab if we ever want that
 - Consider running trivy on PR branches in CI (GitHub Actions) in addition to nightly cluster scans
@@ -160,6 +161,6 @@ No GitHub issues from audits at this time.
 - [Roadmap](../roadmap.md)
 - [Scratch Sheet](../planning-scratch-sheet.md)
 - [Discord UX](./discord-ux.md) — Audit findings use the notification tier system
-- [Vault Scaling](./vault-scaling.md) — Report storage strategy may change with database introduction
-- [Cost Tracking](./cost-tracking.md) — Audit spend should be tracked alongside task spend
+- [Vault Scaling](../active/vault-scaling.md) — Phase 4 adds `audit_findings` DB table and API. Fix tasks created via `POST /api/v1/tasks`
+- [Cost Tracking](./cost-tracking.md) — Audit spend should be tracked alongside task spend via cost_events
 - [Lobster Reliability](../completed/lobster-reliability.md) — Layer 3 (lobsigliere investigations) is the foundation

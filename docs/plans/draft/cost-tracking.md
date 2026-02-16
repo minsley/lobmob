@@ -3,7 +3,7 @@ status: draft
 tags: [infrastructure, ui, discord]
 maturity: research
 created: 2026-02-15
-updated: 2026-02-15
+updated: 2026-02-16
 ---
 # Cost Tracking & Reporting
 
@@ -13,8 +13,8 @@ Build a cost tracking system that captures token usage, API spend, and infrastru
 
 ## Open Questions
 
-- [ ] Data pipeline: how do lobboss and lobsters report token usage? Push to a central accumulator (lobwife?) on each API call, or parse structured logs after the fact?
-- [ ] Storage: accumulate in-memory on lobwife (fast but volatile), persist to vault files (git-native but awkward for time-series), or use a database (cleanest but new infrastructure)?
+- [x] Data pipeline: how do lobboss and lobsters report token usage? **Resolved: HTTP push to lobwife API (`POST /api/v1/costs`) after each Agent SDK `query()` call. Uses shared `lobwife_client.py`**
+- [x] Storage: accumulate in-memory on lobwife (fast but volatile), persist to vault files (git-native but awkward for time-series), or use a database? **Resolved: Option C — SQLite `cost_events` table on lobwife. See [vault scaling](../active/vault-scaling.md) Phase 4**
 - [ ] Granularity: per-task totals are essential. Per-model breakdowns? Per-tool-call? Hourly/daily rollups?
 - [ ] Infrastructure costs: include DO resource spend (node hours, storage)? This would need DO API integration. Or keep it API-token-only for v1?
 - [ ] Retention: how far back should cost data be queryable? 30 days? 90 days? Indefinite?
@@ -31,47 +31,40 @@ Build a cost tracking system that captures token usage, API spend, and infrastru
 /task cost <task-id>    — Cost info for a specific task
 ```
 
-## Storage Options
+## Storage — Decided
 
-### Option A: lobwife accumulator
-- lobboss and lobsters push cost events to lobwife HTTP API
-- lobwife maintains running totals in memory, persists to PVC (JSON or SQLite)
-- Slash commands query lobwife's API
-- Pros: lobwife is already persistent with state management, already has per-task tracking via token broker
-- Cons: another responsibility on lobwife, single point of failure for cost data
+**Option C: SQLite database on lobwife** (decided via [vault scaling](../active/vault-scaling.md)).
 
-### Option B: Vault reports
-- Cost data written to vault markdown files (e.g. `030-reports/costs/2026-02-15.md`)
-- Slash commands parse vault files
-- Pros: git-native, human-readable, version-controlled
-- Cons: awkward for time-series queries, slow to aggregate across date range
-
-### Option C: Database
-- If vault scaling introduces a database (SQLite, PostgreSQL), cost data goes there
-- Cleanest for time-series queries, aggregation, retention policies
-- Pros: proper data model, fast queries
-- Cons: depends on vault scaling decisions, new infrastructure
+- `cost_events` table: task_id (FK to tasks), model, input_tokens, output_tokens, cost_usd, created_at
+- Indexes on `cost_events(task_id)` and `cost_events(created_at)` for fast queries
+- API endpoints: `POST /api/v1/costs`, `GET /api/v1/costs`, `GET /api/v1/costs/summary`
+- lobboss and lobsters push events via shared `lobwife_client.py` after each `query()` call
+- Vault sync daemon (vault scaling Phase 3) can write periodic cost summary files for Obsidian browsing
+- Depends on vault scaling Phase 4 for table creation and API endpoints
 
 ## Phases
 
 ### Phase 1: Cost event capture
 
 - **Status**: pending
-- Define cost event schema: task_id, model, input_tokens, output_tokens, cost_usd, timestamp
-- Instrument lobboss and lobster Agent SDK calls to emit cost events
-- Decide on transport: HTTP push to lobwife, or structured log lines parsed later
+- **Depends on**: [vault scaling](../active/vault-scaling.md) Phase 4 (cost_events table + API endpoints)
+- Schema: task_id (FK), model, input_tokens, output_tokens, cost_usd, created_at
+- Instrument lobboss and lobster Agent SDK `query()` calls to push cost events via `lobwife_client.py`
+- Transport: HTTP POST to lobwife `/api/v1/costs`
 
 ### Phase 2: Storage and aggregation
 
 - **Status**: pending
-- Implement chosen storage backend (depends on vault scaling decisions)
-- Per-task totals, daily rollups, model breakdowns
-- Retention policy
+- SQLite `cost_events` table (created in vault scaling Phase 4)
+- Per-task totals, daily rollups, model breakdowns via SQL aggregation
+- Retention policy (DELETE where created_at < cutoff, or archive to vault)
 
 ### Phase 3: Discord and web UI
 
 - **Status**: pending
-- Implement `/costs`, `/costs day|week|month`, `/task cost <id>` slash commands
+- **Depends on**: [discord UX](./discord-ux.md) Phase 1 (slash command infrastructure)
+- Implement `/costs`, `/costs day|week|month`, `/task cost T42` slash commands
+- Slash command handlers query lobwife API (`GET /api/v1/costs/summary`, `GET /api/v1/costs?task_id=42`)
 - Add cost summary to lobboss web dashboard
 - Optional: daily digest message
 
@@ -86,6 +79,8 @@ Build a cost tracking system that captures token usage, API spend, and infrastru
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-16 | SQLite cost_events table on lobwife (Option C) | Vault scaling introduces SQLite. Cleanest for time-series queries and aggregation. No new infrastructure |
+| 2026-02-16 | HTTP push via lobwife_client.py | Shared client handles retries. Push after each query() call. Simpler than log parsing |
 
 ## Scratch
 
@@ -100,5 +95,5 @@ Build a cost tracking system that captures token usage, API spend, and infrastru
 - [Roadmap](../roadmap.md)
 - [Scratch Sheet](../planning-scratch-sheet.md)
 - [Discord UX](./discord-ux.md) — Cost slash commands originate here
-- [Vault Scaling](./vault-scaling.md) — Storage strategy depends on database decisions
+- [Vault Scaling](../active/vault-scaling.md) — Storage strategy depends on database decisions
 - [System Maintenance Automation](./system-maintenance-automation.md) — Cost anomalies could trigger maintenance alerts
