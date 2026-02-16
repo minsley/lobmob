@@ -85,11 +85,22 @@ async def verify_completion(task_id: str, lobster_type: str, vault_path: str) ->
 
 
 def _find_task_file(vault_path: str, task_id: str) -> Path | None:
-    """Find the task file in active/, completed/, or failed/."""
+    """Find the task file in active/, completed/, or failed/.
+
+    Searches for exact match first (handles both T-format like T42
+    and old slug format like task-2026-02-15-a1b2).
+    """
     for subdir in ("active", "completed", "failed"):
         p = Path(vault_path) / "010-tasks" / subdir / f"{task_id}.md"
         if p.exists():
             return p
+    # Try case-insensitive match for T-format (e.g. searching for "t42" finds "T42.md")
+    if task_id and task_id[0].lower() == "t" and task_id[1:].isdigit():
+        upper_id = f"T{task_id[1:]}"
+        for subdir in ("active", "completed", "failed"):
+            p = Path(vault_path) / "010-tasks" / subdir / f"{upper_id}.md"
+            if p.exists():
+                return p
     return None
 
 
