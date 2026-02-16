@@ -25,7 +25,7 @@ MAX_OUTPUT_LINES = 200
 
 JOB_DEFS = {
     "task-manager": {
-        "script": "lobmob-task-manager.sh",
+        "script": "lobmob-task-manager.py",
         "schedule": "*/5 * * * *",
         "description": "Task assignment, timeout detection, orphan recovery",
         "concurrency": "forbid",
@@ -145,9 +145,12 @@ class JobRunner:
         task = asyncio.current_task()
         self.running[name] = task
 
+        # Detect interpreter by extension
+        interpreter = "python3" if script.suffix == ".py" else "bash"
+
         try:
             proc = await asyncio.create_subprocess_exec(
-                "bash", str(script),
+                interpreter, str(script),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=env,
