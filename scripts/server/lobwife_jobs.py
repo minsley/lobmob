@@ -37,7 +37,7 @@ JOB_DEFS = {
         "concurrency": "forbid",
     },
     "status-reporter": {
-        "script": "lobmob-status-reporter.sh",
+        "script": "lobmob-status-reporter.py",
         "schedule": "*/30 * * * *",
         "description": "Fleet summary posted to Discord",
         "concurrency": "forbid",
