@@ -149,7 +149,7 @@ GET    /health, /api/status, /api/jobs, /api/jobs/{name}, etc.
 
 ### Phase 1: SQLite foundation on lobwife
 
-- **Status**: implemented (pending deploy)
+- **Status**: complete (PR #11, merged 2026-02-16, E2E 10/10)
 - **Goal**: Replace JSON state files with SQLite. Add task CRUD API. No consumer changes — existing vault-based flows continue working.
 
 **1.1 — Add aiosqlite dependency**
