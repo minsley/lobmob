@@ -81,7 +81,7 @@ Improve the task creation and tracking experience with web-based task entry and 
 | 2026-02-15 | Skip task short-codes for now | Low task volume doesn't justify the counter coordination complexity |
 | 2026-02-15 | Web UI lives on lobboss dashboard | lobboss is the task creator and coordinator — natural home |
 | 2026-02-15 | Authentication out of scope | WAN access, login, and cluster ingress are a separate concern |
-| 2026-02-15 | Shorten poll cycle instead of direct trigger | Simpler, avoids coupling web UI to lobboss internals. Revisit as part of vault scaling |
+| 2026-02-15 | Shorten poll cycle instead of direct trigger | Simpler, avoids coupling web UI to lobboss internals. Superseded once task creation goes through lobwife DB API |
 | 2026-02-15 | No editing in Phases 1-2, cancel/re-open in Phase 3 | Keep early phases simple. Editing only makes sense after cancel/re-open gives you a safe state to edit in |
 | 2026-02-15 | Job naming: pool = `lobster-pool-{type}-{n}`, reserve = `lobster-reserve-{type}-{name}` | Visually distinct from task jobs, consistent prefix pattern for kubectl filtering |
 
@@ -102,3 +102,4 @@ Improve the task creation and tracking experience with web-based task entry and 
 - [Roadmap](../roadmap.md)
 - [Scratch Sheet](../planning-scratch-sheet.md)
 - [Discord UX](./discord-ux.md) — Task notifications and thread naming
+- [Vault Scaling](./vault-scaling.md) — Sequential task IDs (T1, T2...), task CRUD API, DB-backed state

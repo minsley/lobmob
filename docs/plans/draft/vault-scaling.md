@@ -1,149 +1,220 @@
 ---
 status: draft
-tags: [vault, infrastructure]
-maturity: research
+tags: [vault, infrastructure, lobwife]
+maturity: design
 created: 2026-02-15
 updated: 2026-02-15
 ---
-# Vault Scaling & Sync
+# Vault Scaling & State Store
 
 ## Summary
 
-The Obsidian vault (git repo) is the central nervous system for task state, logs, reports, and agent coordination. As the system scales (more concurrent lobsters, more task types, faster iteration), the git-based approach faces real-time sync challenges, merge conflicts, and a growing tension between "human-friendly Obsidian notebook" and "machine state store." This plan explores how to evolve the vault architecture to handle increased load while preserving the Obsidian UX.
+Introduce SQLite (via lobwife API) as the source of truth for real-time machine state — task status, assignment, cost events, audit findings, job state. The Obsidian vault remains the human interface for task definitions, results, reports, and planning docs. A sync daemon on lobwife writes periodic snapshots to vault so Obsidian stays browseable. This unblocks fast queries for web UI, Discord slash commands, cost tracking, and sequential task ID generation.
 
 ## Open Questions
 
-- [ ] **Core question**: Should the vault remain the single source of truth for everything, or should machine state (task status, logs, metrics) move to a purpose-built store while the vault stays as the human interface?
-- [ ] If splitting: what's the boundary? Task definitions and results stay in vault, but real-time status and logs go to a database?
-- [ ] If keeping unified: how do we solve the concurrent-writes problem? Multiple lobsters pushing to the same repo simultaneously causes conflicts
-- [ ] Git conflict resolution: who resolves? lobboss? A dedicated merge bot? File-level locking? Or restructure to avoid conflicts entirely (one file per writer)?
-- [ ] Obsidian kanban: is the Kanban plugin (single-file board) good enough, or do we need Dataview-driven status views? Research showed git sync issues with Kanban boards
-- [ ] Real-time sync: is "pull before every read, push after every write" fast enough? Current vault operations add seconds of latency per git cycle
-- [ ] Scale target: how many concurrent vault writers do we need to support? Currently 1 (lobboss) + cron scripts. Future: 5-10 lobsters + lobboss + lobsigliere?
+- [x] **Core question**: unified vault or split state store? **Resolved: split. SQLite for real-time machine state, vault for human-readable content**
+- [x] Database choice? **Resolved: SQLite on lobwife PVC, accessed via lobwife HTTP API. Migrate to PostgreSQL if/when SQLite limits are hit**
+- [x] Concurrent writes? **Resolved: all writes go through lobwife API, serialized to SQLite. No concurrent-write problem**
+- [x] Git conflict resolution? **Resolved: vault becomes mostly-read for machines. Sync daemon writes, no concurrent pushes to shared files**
+- [x] Obsidian kanban? **Resolved: skip Kanban plugin. Use Dataview tables querying vault frontmatter (synced from DB)**
+- [x] Real-time sync? **Resolved: real-time state lives in DB, queried via API. Vault gets periodic snapshots for Obsidian browsing**
+- [x] Scale target? **Resolved: lobwife API serializes all writes. No limit on concurrent readers. Scales well past 10 lobsters**
+- [x] Task ID generation? **Resolved: SQLite autoincrement gives sequential IDs (T1, T2, ...). Date and slug become metadata fields**
+- [ ] Vault sync frequency: how often does lobwife write DB state to vault? Every 5 minutes? On significant state changes? Configurable?
+- [ ] Vault sync format: full task list as a single file, or one file per task (current pattern)?
+- [ ] Migration path: how do we migrate existing vault task files to the database? One-time import script?
+- [ ] API authentication: should lobwife's API require auth tokens, or is cluster-internal networking sufficient for now?
+- [ ] Schema versioning: how do we handle DB schema migrations as the system evolves?
 
-## Current State
+## Architecture
 
-### What the vault holds
-- `010-tasks/` — Task definitions (frontmatter + markdown), active/completed/failed subdirs
-- `020-logs/` — Session logs, Discord message logs
-- `030-reports/` — Status reports, fleet reports
-- `040-fleet/` — Agent configuration, AGENTS.md files
-- `AGENTS.md` — Root coordinator prompt
+```
+                         ┌─────────────────┐
+                         │   Obsidian       │
+                         │   (human reads)  │
+                         └────────▲─────────┘
+                                  │ git pull
+                         ┌────────┴─────────┐
+                         │   Vault (git)    │
+                         │   Human content  │
+                         │   + DB snapshots │
+                         └────────▲─────────┘
+                                  │ periodic sync
+┌──────────┐  HTTP   ┌───────────┴──────────┐   HTTP   ┌──────────┐
+│ lobboss  │────────▶│      lobwife          │◀────────│ lobsters │
+│          │         │                       │         │          │
+│          │         │  SQLite DB (PVC)      │         │          │
+│          │         │  ├─ tasks             │         │          │
+│          │         │  ├─ task_events       │         │          │
+│          │         │  ├─ cost_events       │         │          │
+│          │         │  ├─ audit_findings    │         │          │
+│          │         │  ├─ job_state         │         │          │
+│          │         │  └─ broker_tasks      │         │          │
+│          │         │                       │         │          │
+│          │         │  Token broker (existing)        │          │
+│          │         │  Cron scheduler (existing)      │          │
+│          │         └───────────────────────┘         └──────────┘
+                              ▲
+                              │ HTTP
+                     ┌────────┴────────┐
+                     │  audit CronJobs │
+                     │  Discord cmds   │
+                     │  web dashboard  │
+                     └─────────────────┘
+```
 
-### How it's accessed
-- **lobboss**: Reads task queue, writes task files, updates status. Has a PVC mount, does git pull/push
-- **lobsters**: Clone vault into container at start, read task, write results, push. Each lobster gets its own clone (no shared PVC)
-- **lobwife cron scripts**: Read/write vault on PVC (task-manager, status-reporter)
-- **lobsigliere**: Own PVC clone, reads investigation tasks, writes results
-- **Human (Obsidian)**: Reads vault locally or via GitHub, edits task files, reviews results
+## What Lives Where
 
-### Current pain points
-- Concurrent pushes occasionally fail — lobsters retry, but it adds latency
-- Vault git history is noisy (many small status-update commits from cron scripts)
-- No real-time sync — Obsidian sees changes only after git pull
-- Vault structure is a hybrid of "things humans read" and "machine state tracking"
-- `HEAD.lock` stale files from interrupted git operations (noted in MEMORY.md as a TODO)
+### Database (SQLite via lobwife API) — source of truth for real-time state
 
-## Approaches
+| Table | Replaces | Purpose |
+|-------|----------|---------|
+| `tasks` | vault task frontmatter | id (autoincrement), name, type, status, assignee, repos, description, created_at, updated_at, completed_at |
+| `task_events` | (new) | Status changes, assignment, completion — full audit trail |
+| `cost_events` | (new) | Per-API-call token usage and cost. Feeds `/costs` commands |
+| `audit_findings` | (new) | Audit results with severity, resolution tracking |
+| `job_state` | jobs.json | k8s job tracking. Replaces lobwife's current JSON file |
+| `broker_tasks` | tasks.json | Token broker registrations. Replaces lobwife's current JSON file |
 
-### Approach A: Optimize the git workflow (incremental)
+### Vault (git) — human interface, Obsidian-browseable
 
-Keep vault as-is but reduce conflict surface and improve sync speed.
+| Content | Access pattern |
+|---------|---------------|
+| Task definitions (full markdown with context, instructions) | Written once at creation, read by lobsters |
+| Task results and reports (PR links, output, notes) | Written by lobsters at completion |
+| Audit report summaries (synced from DB) | Written by sync daemon |
+| Agent prompts, skills, config | Read on startup |
+| Planning docs, roadmap, scratch sheets | Human read/write |
+| DB snapshots (task status overviews, cost summaries) | Written by sync daemon, read by Obsidian/Dataview |
 
-- **One file per writer**: Restructure so each agent writes to its own file/directory. Conflicts only happen when two writers modify the same file
-- **Atomic operations**: Wrap vault git ops in a retry loop with rebase (not merge). `git pull --rebase && git push`, retry on conflict
-- **Reduce commit noise**: Batch status updates (commit every N minutes, not every change). Or use a staging area that flushes periodically
-- **HEAD.lock cleanup**: Auto-remove stale lock files in `pull_vault()` (MEMORY.md TODO)
-- **Pros**: Minimal architecture change, preserves Obsidian UX
-- **Cons**: Doesn't fundamentally solve concurrent-writes, still limited by git push/pull latency
+### Task ID Migration
 
-### Approach B: Split state store (hybrid)
+Current: `2026-02-15-unity-ui` (date-slug, used as filename and k8s label)
+New: `T42` (sequential autoincrement from SQLite)
 
-Move machine-to-machine state to a lightweight database. Vault stays as the human interface.
+- Date and slug become metadata fields in the DB (`created_at`, `name`)
+- Vault task files named by new ID: `010-tasks/active/T42.md`
+- K8s job names: `lobster-swe-t42` (shorter, cleaner)
+- Discord threads: "T42 — Unity UI Overhaul"
+- Backwards-compatible: old-format task files can coexist during migration
 
-- **Vault keeps**: Task definitions, results, reports, agent prompts — things humans read/edit
-- **Database gets**: Real-time task status, assignment state, log streams, metrics, token audit
-- **Options**: SQLite on PVC (simplest), PostgreSQL on DO Managed DB (more capable), Redis for ephemeral state
-- **Sync**: Database is authoritative for real-time state. Cron or daemon writes periodic snapshots to vault (human-readable summaries)
-- **Pros**: Clean separation of concerns, real-time state queries, no git conflicts for status updates
-- **Cons**: New infrastructure to manage, two sources of truth during transition, Obsidian can't query the database natively
+## lobwife API Extensions
 
-### Approach C: Message queue / pub-sub (event-driven)
+New endpoints alongside existing token broker and cron API:
 
-Replace direct git writes with an event system.
+```
+# Task CRUD
+POST   /api/tasks                    — Create task (returns new ID)
+GET    /api/tasks                    — List tasks (filterable by status, type, date range)
+GET    /api/tasks/{id}               — Get task details
+PATCH  /api/tasks/{id}               — Update task (status, name, assignee, etc.)
+DELETE /api/tasks/{id}               — Cancel/delete task
 
-- **Agents publish events**: "task started", "task completed", "PR created"
-- **Consumers**: Vault writer (batches events into git commits), dashboard (real-time display), Discord (notifications)
-- **Options**: Redis pub/sub (already useful if adopting Approach B), NATS (lightweight), or just lobwife HTTP API as a simple event sink
-- **Pros**: Decouples writers from vault, enables real-time dashboard, events are replayable
-- **Cons**: Significant architecture change, new infrastructure, more complex failure modes
+# Task events
+GET    /api/tasks/{id}/events        — Task history (status changes, assignment)
+POST   /api/tasks/{id}/events        — Log an event
 
-### Approach D: Obsidian-native improvements
+# Cost tracking
+POST   /api/costs                    — Log cost event
+GET    /api/costs                    — Query costs (by task, date range, model)
+GET    /api/costs/summary            — Aggregated cost summary
 
-Leverage Obsidian plugins to improve the vault experience without backend changes.
+# Audit findings
+POST   /api/audits                   — Submit audit findings
+GET    /api/audits                   — Query findings (by type, severity, date)
 
-- **Dataview dashboards**: Task status tables, kanban-style views, audit reports — already planned in roadmap
-- **Obsidian git plugin**: Auto-pull on interval, auto-push on change. Reduces manual sync friction for the human user
-- **Kanban board**: Single-file board for task triage (acknowledging git sync limitations)
-- **Pros**: No backend changes, improves human UX immediately
-- **Cons**: Doesn't solve machine-side concurrency or scale
+# Existing (unchanged)
+POST   /api/tasks/{id}/register      — Token broker registration
+POST   /api/token                    — Token issuance
+DELETE /api/tasks/{id}               — Token broker deregistration
+GET    /api/token/audit              — Token audit log
+```
+
+Note: the token broker `POST/DELETE /api/tasks/{id}` endpoints overlap with the new task CRUD. These should be unified — broker registration becomes a field/event on the task, not a separate resource.
 
 ## Phases
 
-### Phase 1: Quick wins (Approach A + D)
+### Phase 1: SQLite foundation on lobwife
 
 - **Status**: pending
-- Add `HEAD.lock` auto-cleanup to `vault.py pull_vault()`
-- Implement retry-with-rebase in vault git operations
-- Add Dataview dashboards to vault (task status, recent activity)
-- Restructure vault writes to reduce conflict surface (one status file per task, not a shared status doc)
+- Add SQLite to lobwife daemon (replace jobs.json and tasks.json with DB tables)
+- Define schema: tasks, task_events, job_state, broker_tasks
+- Migrate token broker and job runner state from JSON files to SQLite
+- Add basic task CRUD API endpoints
+- Sequential task ID generation via autoincrement
+- No vault changes yet — just the DB layer
 
-### Phase 2: Evaluate split architecture (Approach B research)
-
-- **Status**: pending
-- Prototype SQLite-on-PVC for real-time state: task status, assignment map, metrics
-- Benchmark: how much latency does removing git from the hot path save?
-- Define the boundary: what stays in vault, what moves to DB
-- Evaluate whether lobwife can host the DB (already persistent, already has API)
-
-### Phase 3: Implement chosen approach
+### Phase 2: Migrate task lifecycle to DB
 
 - **Status**: pending
-- Depends on Phase 2 findings
-- If split: migrate real-time state to DB, add sync daemon to write vault summaries
-- If optimized git: implement batched commits, structured per-writer directories
-- Either way: update all vault consumers (lobboss, lobsters, cron scripts, lobsigliere)
+- Update lobboss to create tasks via lobwife API instead of writing vault files directly
+- Update lobsters to report status via lobwife API
+- Update task-manager cron to read/write task state via API
+- Vault task files become the "human-readable copy" synced from DB
+- Write migration script for existing vault tasks → DB import
 
-### Phase 4: Obsidian kanban and advanced views
+### Phase 3: Vault sync daemon
 
 - **Status**: pending
-- After sync is reliable, add Kanban board for task triage
-- Add Dataview-driven views for: task pipeline, lobster activity, cost tracking
-- Evaluate Obsidian Projects plugin as an alternative to Kanban plugin
+- Periodic sync from DB to vault: task status overviews, active task list, recent completions
+- Configurable frequency (default: every 5 minutes, or on significant state change)
+- Sync writes Dataview-queryable markdown files to vault
+- Obsidian sees current state without manual git pull of machine-generated commits
+- Reduce vault git noise — one sync commit per cycle instead of per-status-change
+
+### Phase 4: Cost and audit data
+
+- **Status**: pending
+- Add cost_events and audit_findings tables
+- Instrument lobboss/lobster Agent SDK calls to push cost events to lobwife
+- Audit CronJobs push findings to lobwife
+- Enables `/costs` Discord commands and web dashboard cost views
+- Ties into [cost tracking plan](./cost-tracking.md)
+
+### Phase 5: Git workflow cleanup
+
+- **Status**: pending
+- HEAD.lock auto-cleanup in vault.py (long-standing TODO)
+- Retry-with-rebase for remaining vault git operations
+- Reduce vault writes to: task definitions (at creation), results (at completion), sync snapshots
+- Evaluate whether lobsters still need full vault clones or can work with API + targeted file access
+
+### Phase 6: Obsidian views
+
+- **Status**: pending
+- Dataview dashboards in vault: task pipeline, cost trends, audit history
+- Powered by DB-synced markdown files with structured frontmatter
+- Skip Kanban plugin — Dataview tables are more sustainable and git-friendly
 
 ## Decisions Log
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-02-15 | Start with Approach A (optimize git) before considering split | Minimize architecture churn; current scale doesn't demand a database yet |
-| 2026-02-15 | Maturity: research | Core question (split vs. unified) needs data from real usage patterns before committing |
+| 2026-02-15 | Split state store: SQLite for machine state, vault for human content | Git is a poor fit for high-frequency machine state. DB unblocks web UI, Discord commands, cost tracking, and sequential IDs |
+| 2026-02-15 | SQLite on lobwife PVC, not managed PostgreSQL | Simplest path. No new infrastructure. lobwife already has PVC and API. Migrate to PostgreSQL later if needed |
+| 2026-02-15 | All writes through lobwife API | Serializes writes, eliminates concurrent-write conflicts, provides a clean API for all consumers |
+| 2026-02-15 | Sequential task IDs (T1, T2, ...) via autoincrement | Solves distributed counter problem. Shorter, cleaner than date-slug format |
+| 2026-02-15 | Skip Kanban plugin | Git sync issues, uncertain maintenance. Dataview tables are more sustainable |
+| 2026-02-15 | Vault becomes human interface, not machine coordination layer | Clean separation of concerns. Machines talk to API, humans browse Obsidian |
 
 ## Scratch
 
-- The vault git history could be cleaned up with squash commits for status-update batches (but this rewrites history — risky with multiple clones)
-- Could lobwife act as a vault proxy? All writes go through lobwife API, it batches and commits. Serializes all writes, eliminates conflicts. Adds a single point of failure though
-- File-level locking via git LFS lock or a custom lock file convention? Probably overkill
-- If we go database route, the Obsidian Dataview plugin can't query external DBs — would need a sync layer or a custom plugin
-- Consider git worktrees instead of full clones for lobsters — lighter weight, share .git objects
-- The "noisy git history" problem could be solved by having a separate branch for machine state commits, periodically squashed and merged
-- Redis on lobwife could serve double duty: pub/sub for events + cache for real-time state. But adds a dependency
-- For Obsidian kanban: research showed the plugin is looking for new maintainers — maintenance risk. Dataview-based views might be more sustainable
-- Vault-as-filesystem has one big advantage: every state change is version-controlled and auditable. A database loses that unless we add explicit audit logging
-- Consider: does the vault need to be a git repo at all? Could it be a local filesystem synced via rsync/Syncthing? Git gives us versioning and remote access, but at the cost of merge complexity
+- lobwife becomes increasingly central — token broker, cron scheduler, state DB, sync daemon. Monitor for single-point-of-failure risk. Consider: what happens if lobwife is down? lobboss and lobsters should degrade gracefully (queue writes, retry)
+- Schema versioning: could use a simple `schema_version` table and migration scripts. Or use a lightweight migration tool (alembic for Python, but may be overkill)
+- The vault sync daemon could also sync planning docs and roadmap state, not just task state
+- Consider a read-only API on lobboss (proxying to lobwife) for the web dashboard, so the dashboard doesn't need direct lobwife access
+- SQLite WAL mode enables concurrent reads with a single writer — good fit for lobwife's serialized-write pattern
+- If lobsters only need API access for status reporting (not full vault clones), that significantly reduces git pressure and container startup time
+- The token broker `tasks` and the new task CRUD `tasks` should be unified into one table. Broker registration becomes "this task has repo access" rather than a separate resource
+- Could add WebSocket support to lobwife for real-time updates to web dashboard and Discord (push instead of poll). Stretch goal
+- Task ID format `T42` is clean but may collide if we ever need multiple environments sharing a DB. Prefix with env? `T42` for prod, `D42` for dev? Or just separate DBs per environment (already the case with separate lobwife instances)
 
 ## Related
 
 - [Roadmap](../roadmap.md)
 - [Scratch Sheet](../planning-scratch-sheet.md)
-- [System Maintenance Automation](./system-maintenance-automation.md) — Audit results stored in vault, affected by sync strategy
-- [Task Flow Improvements](./task-flow-improvements.md) — Task naming and structure affects vault file layout
+- [Task Flow Improvements](./task-flow-improvements.md) — Web UI task creation, sequential IDs, faster polling all depend on the DB
+- [Discord UX](./discord-ux.md) — Slash commands need fast state queries
+- [Cost Tracking](./cost-tracking.md) — Cost events table in the DB, `/costs` commands query it
+- [System Maintenance Automation](./system-maintenance-automation.md) — Audit findings stored in DB
