@@ -21,11 +21,11 @@ Introduce SQLite (via lobwife API) as the source of truth for real-time machine 
 - [x] Real-time sync? **Resolved: real-time state lives in DB, queried via API. Vault gets periodic snapshots for Obsidian browsing**
 - [x] Scale target? **Resolved: lobwife API serializes all writes. No limit on concurrent readers. Scales well past 10 lobsters**
 - [x] Task ID generation? **Resolved: SQLite autoincrement gives sequential IDs (T1, T2, ...). Date and slug become metadata fields**
-- [ ] Vault sync frequency: how often does lobwife write DB state to vault? Every 5 minutes? On significant state changes? Configurable?
-- [ ] Vault sync format: full task list as a single file, or one file per task (current pattern)?
-- [ ] Migration path: how do we migrate existing vault task files to the database? One-time import script?
-- [ ] API authentication: should lobwife's API require auth tokens, or is cluster-internal networking sufficient for now?
-- [ ] Schema versioning: how do we handle DB schema migrations as the system evolves?
+- [x] Vault sync frequency: **Resolved: every 5 minutes + on significant state changes (completion, failure). Configurable**
+- [x] Vault sync format: **Resolved: one file per task (current pattern) plus an overview file with Dataview frontmatter**
+- [x] Migration path: **Resolved: one-time Python script to parse existing vault task frontmatter and insert into DB. Old files stay as human-readable copies**
+- [x] API authentication: **Resolved: cluster-internal networking sufficient for now. Add token auth when WAN access is introduced**
+- [x] Schema versioning: **Resolved: simple `schema_version` table + Python migration scripts. No alembic needed at this scale**
 
 ## Architecture
 
@@ -197,6 +197,11 @@ Note: the token broker `POST/DELETE /api/tasks/{id}` endpoints overlap with the 
 | 2026-02-15 | Sequential task IDs (T1, T2, ...) via autoincrement | Solves distributed counter problem. Shorter, cleaner than date-slug format |
 | 2026-02-15 | Skip Kanban plugin | Git sync issues, uncertain maintenance. Dataview tables are more sustainable |
 | 2026-02-15 | Vault becomes human interface, not machine coordination layer | Clean separation of concerns. Machines talk to API, humans browse Obsidian |
+| 2026-02-15 | Vault sync every 5min + on significant events | Keeps Obsidian current without noisy commits. Configurable |
+| 2026-02-15 | One file per task in vault (with overview file) | Better git diffs, Obsidian browsing. Overview has Dataview frontmatter |
+| 2026-02-15 | One-time migration script for existing tasks | Parse frontmatter, insert into DB. Old files stay as-is |
+| 2026-02-15 | Cluster-internal networking, no API auth for now | lobwife only reachable via ClusterIP. Add token auth with WAN access |
+| 2026-02-15 | Simple schema_version table + migration scripts | No heavy tooling needed at this scale |
 
 ## Scratch
 
