@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# lobwife-db — local test for SQLite migration and Task CRUD
+#
+# Starts lobwife-daemon locally, exercises JSON migration, Task CRUD,
+# and health check. Requires: python3, aiosqlite, aiohttp, apscheduler
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR=$(mktemp -d)
+DAEMON_PID=""
+PASS=0
+FAIL=0
+
+cleanup() {
+    if [[ -n "$DAEMON_PID" ]]; then
+        kill "$DAEMON_PID" 2>/dev/null || true
+        wait "$DAEMON_PID" 2>/dev/null || true
+    fi
+    rm -rf "$TEST_DIR"
+}
+trap cleanup EXIT
+
+check() {
+    local desc="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        echo "  PASS: $desc"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $desc"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+echo "=== lobwife-db test ==="
+echo "Test dir: $TEST_DIR"
+
+# --- Seed JSON files for migration ---
+STATE_DIR="$TEST_DIR/state"
+mkdir -p "$STATE_DIR"
+
+cat > "$STATE_DIR/jobs.json" <<'JOBSJSON'
+{
+  "task-manager": {
+    "last_run": "2026-02-16T10:00:00+00:00",
+    "last_status": "success",
+    "last_duration": 3.2,
+    "last_output": "ok",
+    "run_count": 42,
+    "fail_count": 1,
+    "enabled": true
+  }
+}
+JOBSJSON
+
+cat > "$STATE_DIR/tasks.json" <<'TASKSJSON'
+{
+  "test-task-1": {
+    "repos": ["minsley/lobmob"],
+    "lobster_type": "swe",
+    "registered_at": "2026-02-16T10:00:00+00:00",
+    "status": "active",
+    "token_count": 3
+  }
+}
+TASKSJSON
+
+cat > "$STATE_DIR/token-audit.json" <<'AUDITJSON'
+[
+  {
+    "timestamp": "2026-02-16T10:00:00+00:00",
+    "task_id": "test-task-1",
+    "repos": ["minsley/lobmob"],
+    "action": "task_registered"
+  }
+]
+AUDITJSON
+
+# --- Start daemon ---
+# Use LOBWIFE_STATE_DIR to point at test dir without changing HOME
+# (changing HOME breaks Python user site-packages)
+echo ""
+echo "Starting daemon..."
+
+# Fail early if port 8081 is in use
+if curl -s "http://127.0.0.1:8081/health" >/dev/null 2>&1; then
+    echo "ERROR: port 8081 already in use"
+    exit 1
+fi
+
+LOBWIFE_STATE_DIR="$STATE_DIR" \
+    VAULT_PATH="$TEST_DIR/vault" \
+    python3 "$SCRIPT_DIR/scripts/server/lobwife-daemon.py" &
+DAEMON_PID=$!
+
+# Wait for daemon to start
+for i in $(seq 1 30); do
+    if curl -sf "http://127.0.0.1:8081/health" >/dev/null 2>&1; then
+        break
+    fi
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+        echo "ERROR: daemon exited early"
+        DAEMON_PID=""
+        exit 1
+    fi
+    sleep 0.5
+done
+
+API="http://127.0.0.1:8081"
+
+echo ""
+echo "--- Migration checks ---"
+check "jobs.json renamed to .migrated" test -f "$STATE_DIR/jobs.json.migrated"
+check "jobs.json removed" test ! -f "$STATE_DIR/jobs.json"
+check "tasks.json renamed to .migrated" test -f "$STATE_DIR/tasks.json.migrated"
+check "token-audit.json renamed to .migrated" test -f "$STATE_DIR/token-audit.json.migrated"
+check "lobmob.db created" test -f "$STATE_DIR/lobmob.db"
+
+echo ""
+echo "--- Health check ---"
+HEALTH=$(curl -sf "$API/health")
+check "health returns ok" bash -c "echo '$HEALTH' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='ok'\""
+check "health includes db.ok" bash -c "echo '$HEALTH' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['db']['ok']==True\""
+
+echo ""
+echo "--- Job state migration ---"
+JOBS=$(curl -sf "$API/api/jobs")
+check "job state has task-manager" bash -c "echo '$JOBS' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert 'task-manager' in d\""
+check "task-manager run_count preserved" bash -c "echo '$JOBS' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['task-manager']['run_count']==42\""
+
+echo ""
+echo "--- Broker state migration ---"
+BTASKS=$(curl -sf "$API/api/tasks")
+check "broker task migrated" bash -c "echo '$BTASKS' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert 'test-task-1' in d\""
+
+echo ""
+echo "--- Task CRUD ---"
+
+# Create
+CREATE=$(curl -sf -X POST "$API/api/v1/tasks" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Test task", "type": "swe", "priority": "high"}')
+TASK_ID=$(echo "$CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+check "create returns id" bash -c "echo '$CREATE' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['id']>0\""
+check "create returns task_id format" bash -c "echo '$CREATE' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['task_id'].startswith('T')\""
+
+# Get
+GET=$(curl -sf "$API/api/v1/tasks/$TASK_ID")
+check "get returns task" bash -c "echo '$GET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['name']=='Test task'\""
+check "get has queued status" bash -c "echo '$GET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='queued'\""
+
+# List
+LIST=$(curl -sf "$API/api/v1/tasks")
+check "list returns array" bash -c "echo '$LIST' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert isinstance(d, list) and len(d)>0\""
+
+# List with filter
+LIST_F=$(curl -sf "$API/api/v1/tasks?status=queued&type=swe")
+check "list with filters works" bash -c "echo '$LIST_F' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert len(d)>0\""
+
+# Patch
+PATCH=$(curl -sf -X PATCH "$API/api/v1/tasks/$TASK_ID" \
+    -H "Content-Type: application/json" \
+    -d '{"status": "active", "assigned_to": "lobster-swe-1"}')
+check "patch returns updated fields" bash -c "echo '$PATCH' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert 'status' in d['updated']\""
+
+# Verify patch
+GET2=$(curl -sf "$API/api/v1/tasks/$TASK_ID")
+check "patched status is active" bash -c "echo '$GET2' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='active'\""
+
+# Events
+EVENTS=$(curl -sf "$API/api/v1/tasks/$TASK_ID/events")
+check "events include created" bash -c "echo '$EVENTS' | python3 -c \"import sys,json; d=json.load(sys.stdin); types=[e['event_type'] for e in d]; assert 'created' in types\""
+
+# Post event
+curl -sf -X POST "$API/api/v1/tasks/$TASK_ID/events" \
+    -H "Content-Type: application/json" \
+    -d '{"event_type": "note", "detail": "test event"}' >/dev/null
+EVENTS2=$(curl -sf "$API/api/v1/tasks/$TASK_ID/events")
+check "posted event appears" bash -c "echo '$EVENTS2' | python3 -c \"import sys,json; d=json.load(sys.stdin); types=[e['event_type'] for e in d]; assert 'note' in types\""
+
+# Cancel (DELETE)
+CANCEL=$(curl -sf -X DELETE "$API/api/v1/tasks/$TASK_ID")
+check "cancel returns cancelled status" bash -c "echo '$CANCEL' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='cancelled'\""
+
+# Verify cancel
+GET3=$(curl -sf "$API/api/v1/tasks/$TASK_ID")
+check "cancelled task has correct status" bash -c "echo '$GET3' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='cancelled'\""
+
+# Double cancel should fail
+CANCEL2=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API/api/v1/tasks/$TASK_ID")
+check "double cancel returns 409" bash -c "[[ '$CANCEL2' == '409' ]]"
+
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed ==="
+[[ "$FAIL" -eq 0 ]]
