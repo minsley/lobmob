@@ -33,7 +33,7 @@ Introduce SQLite (via lobwife API) as the source of truth for real-time machine 
 - [x] Broker table strategy? **Resolved: separate `broker_tasks` table in Phase 1 (tasks don't exist in DB yet). Unified into tasks table columns in Phase 2**
 - [x] Dual-write during Phase 2? **Resolved: yes. Keeps Obsidian current before sync daemon. Removed in Phase 3**
 - [x] task-manager.sh migration? **Resolved: rewrite in Python for Phase 2. Gets lobwife_client, proper error handling, testability**
-- [ ] Split lobwife-daemon.py into modules? Phase 1 will roughly double the file size. May want to extract `db.py`, `broker.py`, `jobs.py`, `api.py`
+- [x] Split lobwife-daemon.py into modules? **Resolved: yes. Extracted lobwife_db.py, lobwife_jobs.py, lobwife_broker.py, lobwife_api.py. Daemon is slim orchestrator (~100 lines)**
 - [ ] status-reporter.sh: migrate to API queries in Phase 2, or defer? Lower priority (56 lines, runs every 30 min)
 
 ## Architecture
@@ -149,7 +149,7 @@ GET    /health, /api/status, /api/jobs, /api/jobs/{name}, etc.
 
 ### Phase 1: SQLite foundation on lobwife
 
-- **Status**: pending
+- **Status**: implemented (pending deploy)
 - **Goal**: Replace JSON state files with SQLite. Add task CRUD API. No consumer changes — existing vault-based flows continue working.
 
 **1.1 — Add aiosqlite dependency**
