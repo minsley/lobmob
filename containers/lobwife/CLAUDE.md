@@ -2,7 +2,7 @@
 
 ## What This Is
 
-You're inside **lobwife**, the persistent cron scheduler for lobmob. This pod replaces all k8s CronJobs with a single Python daemon that runs bash scripts on schedule and exposes an HTTP API for status, manual triggers, and schedule changes. State is persisted to SQLite (WAL mode) on the PVC.
+You're inside **lobwife**, the persistent cron scheduler for lobmob. This pod replaces all k8s CronJobs with a single Python daemon that runs scripts on schedule and exposes an HTTP API for status, manual triggers, and schedule changes. State is persisted to SQLite (WAL mode) on the PVC.
 
 ## Environment
 
@@ -19,35 +19,40 @@ You're inside **lobwife**, the persistent cron scheduler for lobmob. This pod re
 | Module | Purpose |
 |--------|---------|
 | `lobwife-daemon.py` | Main entry point, init + orchestration |
-| `lobwife_db.py` | DB init, schema, migration, connection |
-| `lobwife_jobs.py` | JobRunner (cron scheduling, DB-backed state) |
-| `lobwife_broker.py` | TokenBroker (GitHub credential broker, DB-backed) |
-| `lobwife_api.py` | HTTP routes (jobs, broker, Task CRUD) |
-| `lobwife-schema.sql` | SQLite DDL (6 tables) |
+| `lobwife_db.py` | DB init, schema (v2), migration, connection |
+| `lobwife_jobs.py` | JobRunner (cron scheduling, DB-backed state, .py + .sh support) |
+| `lobwife_broker.py` | TokenBroker (unified: checks tasks table first, falls back to broker_tasks) |
+| `lobwife_api.py` | HTTP routes (jobs, broker compat shims, Task CRUD, broker registration) |
+| `lobwife-schema.sql` | SQLite DDL (6 tables, schema v2 with broker columns on tasks) |
 
 ## Scheduled Jobs
 
 | Job | Schedule | Script |
 |-----|----------|--------|
-| task-manager | Every 5 min | lobmob-task-manager.sh |
+| task-manager | Every 5 min | lobmob-task-manager.py |
 | review-prs | Every 2 min | lobmob-review-prs.sh |
-| status-reporter | Every 30 min | lobmob-status-reporter.sh |
+| status-reporter | Every 30 min | lobmob-status-reporter.py |
 | flush-logs | Every 30 min | lobmob-flush-logs.sh |
 
-## Token Broker API (port 8081)
+## Token Broker
 
-- `POST /api/tasks/{task_id}/register` — Register a task for token access
-- `POST /api/token` — Get a GitHub App installation token for a registered task
-- `DELETE /api/tasks/{task_id}` — Deregister a task (revokes access)
-- `GET /api/tasks` — List broker task registrations
+Broker registration is now unified into the `tasks` table (Phase 2). The old broker routes are compat shims that look up tasks by slug, name, or T-format ID, falling back to the `broker_tasks` table for legacy entries.
+
+### Broker API (port 8081)
+
+- `POST /api/v1/tasks/{id}/register` — Register broker on tasks table (new, preferred)
+- `POST /api/tasks/{task_id}/register` — Compat shim (looks up task, sets broker fields)
+- `POST /api/token` — Get token (checks tasks table first, falls back to broker_tasks)
+- `DELETE /api/tasks/{task_id}` — Deregister (still uses broker_tasks)
+- `GET /api/tasks` — List broker_tasks entries (legacy)
 - `GET /api/token/audit` — Token audit log
 
 ## Task CRUD API (port 8081)
 
 - `POST /api/v1/tasks` — Create task (returns `{id, task_id: "T{id}"}`)
 - `GET /api/v1/tasks` — List tasks (`?status=`, `?type=`, `?limit=`)
-- `GET /api/v1/tasks/{id}` — Get task detail
-- `PATCH /api/v1/tasks/{id}` — Update fields (status, assigned_to, etc.)
+- `GET /api/v1/tasks/{id}` — Get task detail (includes broker fields)
+- `PATCH /api/v1/tasks/{id}` — Update fields (status, assigned_to, broker_repos, etc.)
 - `DELETE /api/v1/tasks/{id}` — Cancel task (soft delete)
 - `GET /api/v1/tasks/{id}/events` — Event history
 - `POST /api/v1/tasks/{id}/events` — Log event
@@ -62,9 +67,14 @@ You're inside **lobwife**, the persistent cron scheduler for lobmob. This pod re
 - `POST /api/jobs/{name}/disable` — Disable job
 - `GET /health` — Health check (includes DB status)
 
+## Schema (v2)
+
+The `tasks` table now includes broker fields: `broker_repos`, `broker_status`, `token_count`, `broker_registered_at`. This allows broker registration to work directly through the tasks table instead of requiring a separate `broker_tasks` entry.
+
 ## Troubleshooting
 
 - Check daemon: `ps aux | grep lobwife-daemon`
 - Daemon logs: `tail -f ~/state/daemon.log`
 - DB state: `sqlite3 ~/state/lobmob.db ".tables"` / `.schema` / `SELECT * FROM tasks;`
+- Check schema version: `sqlite3 ~/state/lobmob.db "SELECT * FROM schema_version;"`
 - Restart daemon: `sudo kill $(pgrep -f lobwife-daemon) && python3 /opt/lobmob/scripts/server/lobwife-daemon.py &`

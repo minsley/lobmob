@@ -34,7 +34,7 @@ Introduce SQLite (via lobwife API) as the source of truth for real-time machine 
 - [x] Dual-write during Phase 2? **Resolved: yes. Keeps Obsidian current before sync daemon. Removed in Phase 3**
 - [x] task-manager.sh migration? **Resolved: rewrite in Python for Phase 2. Gets lobwife_client, proper error handling, testability**
 - [x] Split lobwife-daemon.py into modules? **Resolved: yes. Extracted lobwife_db.py, lobwife_jobs.py, lobwife_broker.py, lobwife_api.py. Daemon is slim orchestrator (~100 lines)**
-- [ ] status-reporter.sh: migrate to API queries in Phase 2, or defer? Lower priority (56 lines, runs every 30 min)
+- [x] status-reporter.sh: migrate to API queries in Phase 2, or defer? **Resolved: rewritten in Python for Phase 2, queries API with vault fallback**
 
 ## Architecture
 
@@ -219,7 +219,7 @@ GET    /health, /api/status, /api/jobs, /api/jobs/{name}, etc.
 
 ### Phase 2: Migrate task lifecycle to DB
 
-- **Status**: pending
+- **Status**: implemented (PR pending)
 - **Goal**: Consumers create and update task state via API. Vault still used for task content (body, results). Dual-write to vault frontmatter during this phase so Obsidian stays current until the sync daemon (Phase 3) takes over.
 
 **2.1 — Shared lobwife API client**

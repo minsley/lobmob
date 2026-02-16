@@ -192,5 +192,54 @@ CANCEL2=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API/api/v1/tasks/$T
 check "double cancel returns 409" bash -c "[[ '$CANCEL2' == '409' ]]"
 
 echo ""
+echo "--- Schema migration v2 (broker columns) ---"
+
+# Check schema version is 2
+SCHEMA_V=$(sqlite3 "$STATE_DIR/lobmob.db" "SELECT MAX(version) FROM schema_version")
+check "schema version is 2" bash -c "[[ '$SCHEMA_V' == '2' ]]"
+
+# Check broker columns exist on tasks table
+COLS=$(sqlite3 "$STATE_DIR/lobmob.db" "PRAGMA table_info(tasks)" | grep -c "broker_")
+check "tasks table has broker columns" bash -c "[[ '$COLS' -ge 3 ]]"
+
+echo ""
+echo "--- Broker unification ---"
+
+# Create a task for broker testing
+BCREATE=$(curl -sf -X POST "$API/api/v1/tasks" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Broker test", "type": "swe", "slug": "broker-test-slug"}')
+BTASK_ID=$(echo "$BCREATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# Register broker via v1 route
+BREG=$(curl -sf -X POST "$API/api/v1/tasks/$BTASK_ID/register" \
+    -H "Content-Type: application/json" \
+    -d '{"repos": ["minsley/lobmob"], "lobster_type": "swe"}')
+check "v1 register returns registered" bash -c "echo '$BREG' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='registered'\""
+
+# Verify broker fields are on the task
+BGET=$(curl -sf "$API/api/v1/tasks/$BTASK_ID")
+check "broker_repos set on task" bash -c "echo '$BGET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d.get('broker_repos') is not None\""
+check "broker_status is active" bash -c "echo '$BGET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d.get('broker_status')=='active'\""
+
+# Register via compat route (using slug)
+CREG=$(curl -sf -X POST "$API/api/tasks/broker-test-slug/register" \
+    -H "Content-Type: application/json" \
+    -d '{"repos": ["minsley/lobmob-vault"], "lobster_type": "swe"}')
+check "compat register by slug works" bash -c "echo '$CREG' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='registered'\""
+
+# Register via compat route (using T-format)
+TREG=$(curl -sf -X POST "$API/api/tasks/T${BTASK_ID}/register" \
+    -H "Content-Type: application/json" \
+    -d '{"repos": ["minsley/lobmob"], "lobster_type": "swe"}')
+check "compat register by T-format works" bash -c "echo '$TREG' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='registered'\""
+
+# Patch broker fields via PATCH
+BPATCH=$(curl -sf -X PATCH "$API/api/v1/tasks/$BTASK_ID" \
+    -H "Content-Type: application/json" \
+    -d '{"broker_repos": ["minsley/lobmob", "minsley/lobmob-vault"], "token_count": 5}')
+check "patch broker_repos via PATCH" bash -c "echo '$BPATCH' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert 'broker_repos' in d['updated']\""
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 [[ "$FAIL" -eq 0 ]]
