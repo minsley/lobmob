@@ -23,7 +23,7 @@ STATE_DIR = Path(
 DB_PATH = STATE_DIR / "lobmob.db"
 SCHEMA_PATH = Path(__file__).parent / "lobwife-schema.sql"
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # Module-level connection
 _db: Optional[aiosqlite.Connection] = None
@@ -60,6 +60,9 @@ async def init_db() -> aiosqlite.Connection:
             )
             await _db.commit()
 
+    # Run schema migrations
+    await migrate_schema(_db)
+
     # Run one-time migration from JSON files
     await migrate_json_to_db(_db)
 
@@ -73,6 +76,33 @@ async def close_db():
         await _db.close()
         _db = None
         log.info("Database connection closed")
+
+
+async def migrate_schema(db: aiosqlite.Connection):
+    """Run incremental schema migrations based on schema_version."""
+    async with db.execute(
+        "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+        current = row[0] if row else 1
+
+    if current < 2:
+        log.info("Migrating schema v1 → v2: adding broker columns to tasks")
+        for col_sql in [
+            "ALTER TABLE tasks ADD COLUMN broker_repos TEXT",
+            "ALTER TABLE tasks ADD COLUMN broker_status TEXT",
+            "ALTER TABLE tasks ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN broker_registered_at TEXT",
+        ]:
+            try:
+                await db.execute(col_sql)
+            except Exception:
+                pass  # Column already exists (idempotent)
+        await db.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (2,)
+        )
+        await db.commit()
+        log.info("Schema migrated to v2")
 
 
 async def migrate_json_to_db(db: aiosqlite.Connection):
