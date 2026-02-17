@@ -182,8 +182,13 @@ async def main_async() -> int:
     # Dual-write: update vault frontmatter with final status
     # May need to retry if a PR merge overwrites the status change
     try:
-        from common.vault import commit_and_push, write_task
+        from common.vault import commit_and_push, write_task, _run_git
         vault_tid = await _resolve_vault_tid(config.task_id, db_id)
+        # Ensure we're on main before dual-writing (agent may have switched branches)
+        try:
+            await _run_git(config.vault_path, "checkout", "main")
+        except Exception:
+            pass
         for attempt in range(2):
             await pull_vault(config.vault_path)
             try:
