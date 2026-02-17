@@ -150,10 +150,14 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
     }
 
     vault_clone_script = (
-        'TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token"'
-        ' -H "Content-Type: application/json"'
-        ' -d "{\\"task_id\\": \\"${TASK_ID}\\"}"'
-        " | python3 -c \"import sys,json; print(json.load(sys.stdin)['token'])\" 2>/dev/null)"
+        'for i in 1 2 3 4 5; do'
+        '  TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token"'
+        '  -H "Content-Type: application/json"'
+        '  -d "{\\"task_id\\": \\"${TASK_ID}\\"}"'
+        " | python3 -c \"import sys,json; print(json.load(sys.stdin)['token'])\" 2>/dev/null);"
+        '  if [ -n "$TOKEN" ]; then break; fi;'
+        '  echo "Token not ready (attempt $i/5), waiting 3s..."; sleep 3;'
+        " done"
         " && git clone \"https://x-access-token:${TOKEN}@github.com/"
         + VAULT_REPO
         + '.git" /opt/vault'

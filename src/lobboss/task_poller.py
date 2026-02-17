@@ -113,13 +113,15 @@ async def poll_and_spawn(vault_path: str, max_concurrent: int, bot=None) -> int:
         except (LobwifeAPIError, RuntimeError) as e:
             logger.error("Failed to PATCH API for %s: %s (continuing with vault-only)", task_id, e)
 
-        # Register broker on tasks table
+        # Broker registration is handled by _spawn_lobster_core via compat route.
+        # Also register via API as backup (sets broker fields on tasks table).
         try:
             task_repos = [VAULT_REPO]
             if task.get("repos"):
                 repos = task["repos"] if isinstance(task["repos"], list) else []
                 task_repos.extend(repos)
             await api_register_broker(db_id, task_repos, lobster_type)
+            logger.info("Broker registered via API for %s (db_id=%d)", task_id, db_id)
         except (LobwifeAPIError, RuntimeError) as e:
             logger.warning("Failed to register broker via API for %s: %s", task_id, e)
 
