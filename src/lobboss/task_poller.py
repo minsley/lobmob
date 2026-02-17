@@ -92,6 +92,18 @@ async def poll_and_spawn(vault_path: str, max_concurrent: int, bot=None) -> int:
             logger.warning("Job already exists for task %s, skipping", task_id)
             continue
 
+        # Register broker BEFORE spawning (vault-clone needs the token immediately)
+        try:
+            task_repos = [VAULT_REPO]
+            if task.get("repos"):
+                repos = task["repos"] if isinstance(task["repos"], list) else []
+                task_repos.extend(repos)
+            await api_register_broker(db_id, task_repos, lobster_type)
+            logger.info("Broker registered via API for %s (db_id=%d)", task_id, db_id)
+        except (LobwifeAPIError, RuntimeError) as e:
+            logger.error("Failed to register broker for %s: %s (skipping spawn)", task_id, e)
+            continue
+
         try:
             job_name = await _spawn_lobster_core(task_id, lobster_type, workflow)
         except (ValueError, RuntimeError) as e:
@@ -112,18 +124,6 @@ async def poll_and_spawn(vault_path: str, max_concurrent: int, bot=None) -> int:
             await api_log_event(db_id, "spawned", f"Job {job_name} ({lobster_type})", "task_poller")
         except (LobwifeAPIError, RuntimeError) as e:
             logger.error("Failed to PATCH API for %s: %s (continuing with vault-only)", task_id, e)
-
-        # Broker registration is handled by _spawn_lobster_core via compat route.
-        # Also register via API as backup (sets broker fields on tasks table).
-        try:
-            task_repos = [VAULT_REPO]
-            if task.get("repos"):
-                repos = task["repos"] if isinstance(task["repos"], list) else []
-                task_repos.extend(repos)
-            await api_register_broker(db_id, task_repos, lobster_type)
-            logger.info("Broker registered via API for %s (db_id=%d)", task_id, db_id)
-        except (LobwifeAPIError, RuntimeError) as e:
-            logger.warning("Failed to register broker via API for %s: %s", task_id, e)
 
         # Dual-write: update vault frontmatter for Obsidian visibility
         # Try T-format first, then fall back to slug (for migrated tasks)
