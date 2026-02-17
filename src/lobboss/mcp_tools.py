@@ -158,7 +158,9 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
         '  if [ -n "$TOKEN" ]; then break; fi;'
         '  echo "Token not ready (attempt $i/5), waiting 3s..."; sleep 3;'
         " done"
-        " && git clone \"https://x-access-token:${TOKEN}@github.com/"
+        " && sleep 2"
+        " && GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone"
+        " \"https://x-access-token:${TOKEN}@github.com/"
         + VAULT_REPO
         + '.git" /opt/vault'
         " || { echo 'Broker token failed, vault clone aborted'; exit 1; }"
