@@ -169,14 +169,48 @@ async def main_async() -> int:
                 )
 
     # PATCH API with final status
+    now = _now_iso()
+    final_status = "failed" if result["is_error"] else "completed"
     if db_id:
-        now = _now_iso()
         if result["is_error"]:
             await _api_update_status(db_id, "failed", completed_at=now)
             await _api_log_event(db_id, "failed", f"turns={total_turns} cost=${total_cost:.2f}", "lobster")
         else:
             await _api_update_status(db_id, "completed", completed_at=now)
             await _api_log_event(db_id, "completed", f"turns={total_turns} cost=${total_cost:.2f}", "lobster")
+
+    # Dual-write: update vault frontmatter with final status
+    try:
+        from common.vault import commit_and_push, write_task
+        await pull_vault(config.vault_path)
+        task_data = read_task(config.vault_path, config.task_id)
+        meta = task_data["metadata"]
+        meta["status"] = final_status
+        meta["completed_at"] = now
+        # Determine vault task_id (may be slug for migrated tasks)
+        vault_tid = config.task_id
+        if db_id:
+            try:
+                from common.lobwife_client import get_task as api_get_task
+                api_t = await api_get_task(db_id)
+                slug = api_t.get("slug", "")
+                if slug and slug != config.task_id:
+                    vault_tid = slug
+            except Exception:
+                pass
+        try:
+            read_task(config.vault_path, vault_tid)
+        except FileNotFoundError:
+            vault_tid = config.task_id
+        rel_path = write_task(config.vault_path, vault_tid, meta, task_data["body"])
+        await commit_and_push(
+            config.vault_path,
+            f"[lobster] Mark {config.task_id} as {final_status}",
+            [rel_path],
+        )
+        logger.info("Vault dual-write: %s -> %s", config.task_id, final_status)
+    except Exception as e:
+        logger.warning("Failed to dual-write vault status: %s", e)
 
     # Always log totals if retries were attempted
     if total_turns != result["num_turns"] or total_cost != (result["cost_usd"] or 0):
