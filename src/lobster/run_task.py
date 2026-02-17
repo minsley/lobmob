@@ -180,35 +180,39 @@ async def main_async() -> int:
             await _api_log_event(db_id, "completed", f"turns={total_turns} cost=${total_cost:.2f}", "lobster")
 
     # Dual-write: update vault frontmatter with final status
+    # May need to retry if a PR merge overwrites the status change
     try:
         from common.vault import commit_and_push, write_task
-        await pull_vault(config.vault_path)
-        task_data = read_task(config.vault_path, config.task_id)
-        meta = task_data["metadata"]
-        meta["status"] = final_status
-        meta["completed_at"] = now
-        # Determine vault task_id (may be slug for migrated tasks)
-        vault_tid = config.task_id
-        if db_id:
+        vault_tid = await _resolve_vault_tid(config.task_id, db_id)
+        for attempt in range(2):
+            await pull_vault(config.vault_path)
             try:
-                from common.lobwife_client import get_task as api_get_task
-                api_t = await api_get_task(db_id)
-                slug = api_t.get("slug", "")
-                if slug and slug != config.task_id:
-                    vault_tid = slug
-            except Exception:
-                pass
-        try:
-            read_task(config.vault_path, vault_tid)
-        except FileNotFoundError:
-            vault_tid = config.task_id
-        rel_path = write_task(config.vault_path, vault_tid, meta, task_data["body"])
-        await commit_and_push(
-            config.vault_path,
-            f"[lobster] Mark {config.task_id} as {final_status}",
-            [rel_path],
-        )
-        logger.info("Vault dual-write: %s -> %s", config.task_id, final_status)
+                task_data = read_task(config.vault_path, vault_tid)
+            except FileNotFoundError:
+                task_data = read_task(config.vault_path, config.task_id)
+                vault_tid = config.task_id
+            meta = task_data["metadata"]
+            if meta.get("status") == final_status:
+                logger.info("Vault already shows %s for %s", final_status, config.task_id)
+                break
+            meta["status"] = final_status
+            meta["completed_at"] = now
+            rel_path = write_task(config.vault_path, vault_tid, meta, task_data["body"])
+            await commit_and_push(
+                config.vault_path,
+                f"[lobster] Mark {config.task_id} as {final_status}",
+                [rel_path],
+            )
+            # Verify it stuck (PR merges can overwrite)
+            await pull_vault(config.vault_path)
+            check = read_task(config.vault_path, vault_tid)
+            if check["metadata"].get("status") == final_status:
+                logger.info("Vault dual-write: %s -> %s", config.task_id, final_status)
+                break
+            logger.warning("Vault status overwritten (PR merge race), retrying...")
+            await asyncio.sleep(3)
+        else:
+            logger.warning("Vault dual-write didn't stick after retries")
     except Exception as e:
         logger.warning("Failed to dual-write vault status: %s", e)
 
@@ -222,6 +226,20 @@ async def main_async() -> int:
         )
 
     return 1 if result["is_error"] else 0
+
+
+async def _resolve_vault_tid(task_id: str, db_id: int | None) -> str:
+    """Resolve the vault task ID (may be slug for migrated tasks)."""
+    if db_id:
+        try:
+            from common.lobwife_client import get_task as api_get_task
+            api_t = await api_get_task(db_id)
+            slug = api_t.get("slug", "")
+            if slug and slug != task_id:
+                return slug
+        except Exception:
+            pass
+    return task_id
 
 
 def _now_iso() -> str:
