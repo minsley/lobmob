@@ -124,22 +124,37 @@ async def poll_and_spawn(vault_path: str, max_concurrent: int, bot=None) -> int:
             logger.warning("Failed to register broker via API for %s: %s", task_id, e)
 
         # Dual-write: update vault frontmatter for Obsidian visibility
+        # Try T-format first, then fall back to slug (for migrated tasks)
+        vault_task_id = task_id
         try:
             task_data = read_task(vault_path, task_id)
-            meta = task_data["metadata"]
-            meta["status"] = "active"
-            meta["assigned_to"] = job_name
-            meta["assigned_at"] = now
-            rel_path = write_task(vault_path, task_id, meta, task_data["body"])
-            await commit_and_push(
-                vault_path,
-                f"[poller] Spawn {lobster_type} for {task_id}",
-                [rel_path],
-            )
         except FileNotFoundError:
+            slug = task.get("slug")
+            if slug and slug != task_id:
+                try:
+                    task_data = read_task(vault_path, slug)
+                    vault_task_id = slug
+                except FileNotFoundError:
+                    task_data = None
+            else:
+                task_data = None
+
+        if task_data:
+            try:
+                meta = task_data["metadata"]
+                meta["status"] = "active"
+                meta["assigned_to"] = job_name
+                meta["assigned_at"] = now
+                rel_path = write_task(vault_path, vault_task_id, meta, task_data["body"])
+                await commit_and_push(
+                    vault_path,
+                    f"[poller] Spawn {lobster_type} for {task_id}",
+                    [rel_path],
+                )
+            except Exception as e:
+                logger.error("Failed to dual-write vault for %s: %s", task_id, e)
+        else:
             logger.warning("Vault file not found for %s (task may be API-only)", task_id)
-        except Exception as e:
-            logger.error("Failed to dual-write vault for %s: %s", task_id, e)
 
         # Post to Discord thread if configured
         thread_id = task.get("discord_thread_id")
