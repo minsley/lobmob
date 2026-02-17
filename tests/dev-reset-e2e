@@ -141,11 +141,7 @@ echo ""
 echo -e "${CYAN}[1/6] Teardown${NC}"
 stage_start
 
-# Delete all lobster jobs
-echo -e "  Deleting lobster jobs..."
-$KC delete jobs -l app.kubernetes.io/name=lobster --all --wait=false 2>/dev/null || true
-
-# Scale lobboss to 0
+# Scale lobboss to 0 FIRST (stop poller from spawning new jobs)
 echo -e "  Scaling lobboss to 0..."
 $KC scale deployment lobboss --replicas=0 2>/dev/null || true
 
@@ -157,7 +153,7 @@ $KC scale deployment lobsigliere --replicas=0 2>/dev/null || true
 echo -e "  Deleting lobwife deployment..."
 $KC delete deployment lobwife --wait=false 2>/dev/null || true
 
-# Wait for pods to terminate
+# Wait for deployments to scale down before deleting jobs
 echo -e "  Waiting for pods to terminate..."
 for i in $(seq 1 30); do
   ACTIVE_PODS=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pods --no-headers 2>/dev/null \
@@ -167,6 +163,10 @@ for i in $(seq 1 30); do
   fi
   sleep 5
 done
+
+# Delete all lobster jobs (after lobboss is down, so no re-spawns)
+echo -e "  Deleting lobster jobs..."
+$KC delete jobs -l app.kubernetes.io/name=lobster --all --wait=false 2>/dev/null || true
 
 # Delete PVCs
 echo -e "  Deleting PVCs..."
