@@ -126,13 +126,20 @@ def _find_task_file(vault_path: str, task_id: str) -> Path | None:
 
 async def _check_vault_pr(search_ids: list[str], vault_path: str, missing: list[str]) -> None:
     """Check if a vault PR exists for this task."""
+    any_succeeded = False
     for sid in search_ids:
         rc, output = await _run(
             f"gh pr list --state all --search '{sid}' --json number --jq 'length'",
             cwd=vault_path,
         )
-        if rc == 0 and output not in ("", "0"):
-            return  # Found a PR
+        if rc == 0:
+            any_succeeded = True
+            if output not in ("", "0"):
+                return  # Found a PR
+    if not any_succeeded:
+        # gh CLI not working (not authenticated or not installed) — skip PR check
+        logger.warning("gh CLI failed for all searches, skipping vault PR check")
+        return
     missing.append("vault_pr: No vault PR found for this task")
 
 
@@ -142,5 +149,8 @@ async def _check_code_pr(task_id: str, vault_path: str, missing: list[str]) -> N
         f"gh pr list --repo {CODE_REPO} --state all --search '{task_id}' --json number --jq 'length'",
         cwd=vault_path,
     )
-    if rc != 0 or output in ("", "0"):
+    if rc != 0:
+        logger.warning("gh CLI failed for code PR check, skipping")
+        return
+    if output in ("", "0"):
         missing.append(f"code_pr: No code PR found in {CODE_REPO} for this task")
