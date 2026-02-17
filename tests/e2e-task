@@ -255,7 +255,12 @@ stage_start
 
 JOB_TIMEOUT=120
 ELAPSED=0
-SANITIZED=$(sanitize_k8s_name "$TASK_ID")
+# Use T-format ID for job label if available (Phase 2: poller labels with T-format)
+if [[ -n "${DB_TASK_ID:-}" ]]; then
+  SANITIZED=$(sanitize_k8s_name "$DB_TASK_ID")
+else
+  SANITIZED=$(sanitize_k8s_name "$TASK_ID")
+fi
 JOB_NAME=""
 POD_PHASE=""
 
@@ -349,11 +354,12 @@ PR_URL=""
 PR_MERGED=false
 
 while [[ "$ELAPSED" -lt "$PR_TIMEOUT" ]]; do
-  # Look for PR
+  # Look for PR (try T-format ID first, then slug)
   if [[ -z "$PR_NUMBER" ]]; then
-    PR_JSON=$(gh pr list --repo "$VAULT_REPO" --state all --search "$TASK_ID" \
+    SEARCH_ID="${DB_TASK_ID:-$TASK_ID}"
+    PR_JSON=$(gh pr list --repo "$VAULT_REPO" --state all --search "$SEARCH_ID" \
       --json number,url,state,headRefName \
-      --jq ".[] | select(.headRefName | contains(\"$TASK_ID\"))" 2>/dev/null || echo "")
+      --jq ".[] | select(.headRefName | test(\"$SEARCH_ID|$TASK_ID\"; \"i\"))" 2>/dev/null || echo "")
     if [[ -n "$PR_JSON" ]]; then
       PR_NUMBER=$(echo "$PR_JSON" | head -1 | jq -r '.number' 2>/dev/null || echo "")
       PR_URL=$(echo "$PR_JSON" | head -1 | jq -r '.url' 2>/dev/null || echo "")
