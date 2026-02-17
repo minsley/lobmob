@@ -166,7 +166,7 @@ done
 
 # Delete all lobster jobs (after lobboss is down, so no re-spawns)
 echo -e "  Deleting lobster jobs..."
-$KC delete jobs -l app.kubernetes.io/name=lobster --all --wait=false 2>/dev/null || true
+$KC delete jobs --all --wait=true 2>/dev/null || true
 
 # Delete PVCs
 echo -e "  Deleting PVCs..."
