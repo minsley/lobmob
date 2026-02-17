@@ -160,10 +160,9 @@ $KC delete deployment lobwife --wait=false 2>/dev/null || true
 # Wait for pods to terminate
 echo -e "  Waiting for pods to terminate..."
 for i in $(seq 1 30); do
-  POD_COUNT=$($KC get pods --no-headers 2>/dev/null | grep -cv "Completed\|Terminating" || echo "0")
-  # Also count terminating pods
-  TERM_COUNT=$($KC get pods --no-headers 2>/dev/null | grep -c "Terminating" || echo "0")
-  if [[ "$POD_COUNT" -eq 0 ]] && [[ "$TERM_COUNT" -eq 0 ]]; then
+  ACTIVE_PODS=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pods --no-headers 2>/dev/null \
+    | grep -v "Completed" || true)
+  if [[ -z "$ACTIVE_PODS" ]]; then
     break
   fi
   sleep 5
@@ -178,15 +177,16 @@ done
 # Wait for PVCs to be deleted
 echo -e "  Waiting for PVC deletion..."
 for i in $(seq 1 24); do
-  PVC_COUNT=$($KC get pvc --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$PVC_COUNT" -eq 0 ]]; then
+  PVC_LIST=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pvc --no-headers 2>/dev/null || true)
+  if [[ -z "$PVC_LIST" ]]; then
     break
   fi
   sleep 5
 done
 
 stage_end
-PVC_REMAINING=$($KC get pvc --no-headers 2>/dev/null | wc -l | tr -d ' ')
+PVC_LIST=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get pvc --no-headers 2>/dev/null || true)
+PVC_REMAINING=$(echo -n "$PVC_LIST" | grep -c . || true)
 if [[ "$PVC_REMAINING" -eq 0 ]]; then
   pass "All k8s resources torn down"
 else
@@ -209,7 +209,10 @@ for branch in $BRANCHES; do
     gh api -X DELETE "repos/$VAULT_REPO/git/refs/heads/$branch" 2>/dev/null || true
   fi
 done
-DELETED_COUNT=$(echo "$BRANCHES" | grep -cv '^main$' || echo "0")
+DELETED_COUNT=0
+for branch in $BRANCHES; do
+  [[ "$branch" != "main" ]] && DELETED_COUNT=$((DELETED_COUNT + 1))
+done
 echo -e "  Deleted $DELETED_COUNT branches"
 
 # Close any open PRs
@@ -325,7 +328,8 @@ else
 fi
 
 # Check no lobster jobs
-JOB_COUNT=$($KC get jobs -l app.kubernetes.io/name=lobster --no-headers 2>/dev/null | wc -l | tr -d ' ')
+JOB_LIST=$(kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" get jobs -l app.kubernetes.io/name=lobster --no-headers 2>/dev/null || true)
+JOB_COUNT=$(echo -n "$JOB_LIST" | grep -c . || true)
 if [[ "$JOB_COUNT" -eq 0 ]]; then
   pass "No lobster jobs"
 else
@@ -350,8 +354,9 @@ fi
 
 # Check vault repo has seed structure (clone fresh)
 TMPCHECK=$(mktemp -d)
-gh repo clone "$VAULT_REPO" "$TMPCHECK" --quiet 2>/dev/null
-ACTIVE_TASKS=$(find "$TMPCHECK/010-tasks/active" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+rm -rf "$TMPCHECK"
+gh repo clone "$VAULT_REPO" "$TMPCHECK" -- --quiet 2>/dev/null || true
+ACTIVE_TASKS=$(find "$TMPCHECK/010-tasks/active" -name "*.md" 2>/dev/null | grep -c . || true)
 rm -rf "$TMPCHECK"
 
 if [[ "$ACTIVE_TASKS" -eq 0 ]]; then
