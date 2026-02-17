@@ -1,0 +1,408 @@
+#!/bin/bash
+# dev-reset-e2e — full dev environment reset + E2E task lifecycle test
+# Usage: LOBMOB_ENV=dev tests/dev-reset-e2e --confirm
+#
+# Stages:
+#   0. Preflight  — validate env, tools, context
+#   1. Teardown   — delete jobs, scale down, delete PVCs
+#   2. Vault wipe — reset vault-dev repo to seed state
+#   3. Redeploy   — apply manifests, push secrets, wait for ready
+#   4. Verify     — clean state checks (0 tasks, no jobs, pods running)
+#   5. E2E task   — run tests/e2e-task
+#   6. Summary    — stage timings + pass/fail
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+INFRA_DIR="$PROJECT_DIR/infra"
+VAULT_LOCAL="$PROJECT_DIR/vault-local"
+
+# Source helpers for load_secrets, push_k8s_secrets, _seed_vault, colors
+source "$PROJECT_DIR/scripts/lib/helpers.sh"
+
+# --- Parse arguments ---
+
+CONFIRM=false
+E2E_TIMEOUT=15
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm)   CONFIRM=true; shift ;;
+    --timeout)   E2E_TIMEOUT="$2"; shift 2 ;;
+    --help|-h)
+      echo "Usage: LOBMOB_ENV=dev tests/dev-reset-e2e --confirm [--timeout <minutes>]"
+      echo ""
+      echo "Tears down the dev environment, wipes vault, redeploys, and runs E2E task."
+      echo "DESTRUCTIVE — requires --confirm flag and LOBMOB_ENV=dev."
+      echo ""
+      echo "Options:"
+      echo "  --confirm    Required. Acknowledges this is a destructive operation."
+      echo "  --timeout    Max minutes for E2E task stage (default: 15)"
+      exit 0 ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+# --- Stage timing + result tracking ---
+
+STAGE_TIMES=()
+stage_start() { STAGE_START_TIME=$(date +%s); }
+stage_end() {
+  local now
+  now=$(date +%s)
+  STAGE_TIMES+=("$(( now - STAGE_START_TIME ))s")
+}
+
+PASS=0
+FAIL=0
+pass() { echo -e "  ${GREEN}PASS${NC}  $1"; PASS=$((PASS + 1)); }
+fail() { echo -e "  ${RED}FAIL${NC}  $1"; FAIL=$((FAIL + 1)); }
+
+check() {
+  local label="$1"; shift
+  if "$@" &>/dev/null; then
+    pass "$label"
+  else
+    fail "$label"
+  fi
+}
+
+# ============================================================
+# Stage 0: Preflight
+# ============================================================
+
+echo ""
+echo -e "${YELLOW}dev-reset-e2e${NC}  Full dev environment reset + E2E"
+echo ""
+
+echo -e "${CYAN}[0/6] Preflight${NC}"
+
+# Dev-only guard
+LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+if [[ "$LOBMOB_ENV" != "dev" ]]; then
+  err "Refuses to run against ${LOBMOB_ENV}. Set LOBMOB_ENV=dev."
+  exit 1
+fi
+
+# --confirm guard
+if [[ "$CONFIRM" != true ]]; then
+  echo ""
+  echo -e "  ${YELLOW}This will:${NC}"
+  echo "    - Delete all lobster jobs in dev"
+  echo "    - Scale lobboss, lobsigliere, lobwife to 0 / delete"
+  echo "    - Delete PVCs (vault-pvc, lobwife-home, lobsigliere-home)"
+  echo "    - Force-push vault-dev repo to seed state"
+  echo "    - Redeploy everything from scratch"
+  echo "    - Run full E2E task test"
+  echo ""
+  echo -e "  ${RED}Pass --confirm to proceed.${NC}"
+  exit 1
+fi
+
+# Required tools
+MISSING=()
+for tool in kubectl gh python3 jq; do
+  command -v "$tool" &>/dev/null || MISSING+=("$tool")
+done
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+  err "Missing tools: ${MISSING[*]}"
+  exit 1
+fi
+
+# Constants
+KUBE_CONTEXT="do-nyc3-lobmob-dev-k8s"
+TFVARS_FILE="$INFRA_DIR/dev.tfvars"
+VAULT_REPO=$(grep vault_repo "$TFVARS_FILE" 2>/dev/null | cut -d'"' -f2)
+SECRETS_FILE="$PROJECT_DIR/secrets-dev.env"
+NAMESPACE="lobmob"
+KC="kubectl --context $KUBE_CONTEXT -n $NAMESPACE"
+
+if [[ -z "$VAULT_REPO" ]]; then
+  err "vault_repo not found in $TFVARS_FILE"
+  exit 1
+fi
+
+if ! kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+  err "Cannot reach k8s cluster (context: $KUBE_CONTEXT)"
+  exit 1
+fi
+
+load_secrets
+
+echo -e "  cluster: ${KUBE_CONTEXT}"
+echo -e "  vault:   ${VAULT_REPO}"
+echo -e "  timeout: ${E2E_TIMEOUT}m"
+echo ""
+
+# ============================================================
+# Stage 1: Teardown
+# ============================================================
+
+echo -e "${CYAN}[1/6] Teardown${NC}"
+stage_start
+
+# Delete all lobster jobs
+echo -e "  Deleting lobster jobs..."
+$KC delete jobs -l app.kubernetes.io/name=lobster --all --wait=false 2>/dev/null || true
+
+# Scale lobboss to 0
+echo -e "  Scaling lobboss to 0..."
+$KC scale deployment lobboss --replicas=0 2>/dev/null || true
+
+# Scale lobsigliere to 0
+echo -e "  Scaling lobsigliere to 0..."
+$KC scale deployment lobsigliere --replicas=0 2>/dev/null || true
+
+# Delete lobwife deployment (will be redeployed in stage 3)
+echo -e "  Deleting lobwife deployment..."
+$KC delete deployment lobwife --wait=false 2>/dev/null || true
+
+# Wait for pods to terminate
+echo -e "  Waiting for pods to terminate..."
+for i in $(seq 1 30); do
+  POD_COUNT=$($KC get pods --no-headers 2>/dev/null | grep -cv "Completed\|Terminating" || echo "0")
+  # Also count terminating pods
+  TERM_COUNT=$($KC get pods --no-headers 2>/dev/null | grep -c "Terminating" || echo "0")
+  if [[ "$POD_COUNT" -eq 0 ]] && [[ "$TERM_COUNT" -eq 0 ]]; then
+    break
+  fi
+  sleep 5
+done
+
+# Delete PVCs
+echo -e "  Deleting PVCs..."
+for pvc in vault-pvc lobwife-home lobsigliere-home; do
+  $KC delete pvc "$pvc" --wait=false 2>/dev/null || true
+done
+
+# Wait for PVCs to be deleted
+echo -e "  Waiting for PVC deletion..."
+for i in $(seq 1 24); do
+  PVC_COUNT=$($KC get pvc --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$PVC_COUNT" -eq 0 ]]; then
+    break
+  fi
+  sleep 5
+done
+
+stage_end
+PVC_REMAINING=$($KC get pvc --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$PVC_REMAINING" -eq 0 ]]; then
+  pass "All k8s resources torn down"
+else
+  fail "PVCs still exist ($PVC_REMAINING remaining)"
+fi
+echo ""
+
+# ============================================================
+# Stage 2: Wipe vault repo
+# ============================================================
+
+echo -e "${CYAN}[2/6] Wipe vault${NC}"
+stage_start
+
+# Delete non-default branches
+echo -e "  Deleting remote branches..."
+BRANCHES=$(gh api "repos/$VAULT_REPO/branches" --jq '.[].name' 2>/dev/null || echo "")
+for branch in $BRANCHES; do
+  if [[ "$branch" != "main" ]]; then
+    gh api -X DELETE "repos/$VAULT_REPO/git/refs/heads/$branch" 2>/dev/null || true
+  fi
+done
+DELETED_COUNT=$(echo "$BRANCHES" | grep -cv '^main$' || echo "0")
+echo -e "  Deleted $DELETED_COUNT branches"
+
+# Close any open PRs
+echo -e "  Closing open PRs..."
+OPEN_PRS=$(gh pr list --repo "$VAULT_REPO" --state open --json number --jq '.[].number' 2>/dev/null || echo "")
+for pr in $OPEN_PRS; do
+  gh pr close "$pr" --repo "$VAULT_REPO" 2>/dev/null || true
+done
+
+# Reset main to seed state
+echo -e "  Resetting vault to seed state..."
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+gh repo clone "$VAULT_REPO" "$TMPDIR" 2>/dev/null
+cd "$TMPDIR"
+
+# Remove everything except .git
+find . -maxdepth 1 ! -name '.git' ! -name '.' -exec rm -rf {} +
+
+# Copy vault-seed contents
+cp -r "$PROJECT_DIR/vault-seed/"* . 2>/dev/null || true
+cp -r "$PROJECT_DIR/vault-seed/.obsidian" . 2>/dev/null || true
+cp "$PROJECT_DIR/vault-seed/.gitattributes" . 2>/dev/null || true
+
+# Add skills
+mkdir -p 040-fleet/lobboss-skills 040-fleet/lobster-skills
+cp -r "$PROJECT_DIR/skills/lobboss/"* 040-fleet/lobboss-skills/ 2>/dev/null || true
+cp -r "$PROJECT_DIR/skills/lobster/"* 040-fleet/lobster-skills/ 2>/dev/null || true
+
+git add -A
+git commit -m "Reset vault to seed state (dev-reset-e2e)" --quiet 2>/dev/null || true
+git push --force origin main --quiet
+
+cd "$PROJECT_DIR"
+rm -rf "$TMPDIR"
+trap - EXIT
+
+# Remove local vault clone (will be re-cloned by e2e-task)
+if [[ -d "$VAULT_LOCAL" ]]; then
+  rm -rf "$VAULT_LOCAL"
+  echo -e "  Removed local vault-local/"
+fi
+
+stage_end
+pass "Vault reset to seed state"
+echo ""
+
+# ============================================================
+# Stage 3: Redeploy
+# ============================================================
+
+echo -e "${CYAN}[3/6] Redeploy${NC}"
+stage_start
+
+# Apply k8s manifests
+echo -e "  Applying k8s manifests..."
+kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/dev/" 2>&1 | while read -r line; do
+  echo -e "    $line"
+done
+
+# Push secrets
+echo -e "  Pushing secrets..."
+push_k8s_secrets
+
+# Wait for deployments to be ready
+echo -e "  Waiting for deployments..."
+for deploy in lobboss lobwife lobsigliere; do
+  echo -n "    $deploy: "
+  if kubectl --context "$KUBE_CONTEXT" -n "$NAMESPACE" rollout status "deployment/$deploy" --timeout=180s 2>/dev/null; then
+    echo ""
+  else
+    echo -e "${RED}timeout${NC}"
+  fi
+done
+
+# Verify lobwife health
+echo -e "  Checking lobwife health..."
+LOBWIFE_HEALTHY=false
+for i in $(seq 1 12); do
+  HEALTH=$($KC exec deployment/lobwife -- curl -sf http://localhost:8081/health 2>/dev/null || echo "")
+  if [[ -n "$HEALTH" ]]; then
+    LOBWIFE_HEALTHY=true
+    break
+  fi
+  sleep 5
+done
+
+stage_end
+if [[ "$LOBWIFE_HEALTHY" == true ]]; then
+  pass "All deployments ready, lobwife healthy"
+else
+  fail "lobwife health check failed"
+fi
+echo ""
+
+# ============================================================
+# Stage 4: Verify clean state
+# ============================================================
+
+echo -e "${CYAN}[4/6] Verify clean state${NC}"
+stage_start
+
+# Check lobwife API returns 0 tasks
+TASK_COUNT=$($KC exec deployment/lobwife -- \
+  curl -sf "http://localhost:8081/api/v1/tasks" 2>/dev/null \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('tasks', d)) if isinstance(d, dict) else len(d))" 2>/dev/null || echo "unknown")
+
+if [[ "$TASK_COUNT" == "0" ]]; then
+  pass "lobwife API: 0 tasks"
+else
+  fail "lobwife API: ${TASK_COUNT} tasks (expected 0)"
+fi
+
+# Check no lobster jobs
+JOB_COUNT=$($KC get jobs -l app.kubernetes.io/name=lobster --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$JOB_COUNT" -eq 0 ]]; then
+  pass "No lobster jobs"
+else
+  fail "${JOB_COUNT} lobster jobs still exist"
+fi
+
+# Check lobboss pod is Running
+LOBBOSS_PHASE=$($KC get pods -l app.kubernetes.io/name=lobboss -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+if [[ "$LOBBOSS_PHASE" == "Running" ]]; then
+  pass "lobboss pod Running"
+else
+  fail "lobboss pod: ${LOBBOSS_PHASE:-not found}"
+fi
+
+# Check lobwife pod is Running
+LOBWIFE_PHASE=$($KC get pods -l app.kubernetes.io/name=lobwife -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+if [[ "$LOBWIFE_PHASE" == "Running" ]]; then
+  pass "lobwife pod Running"
+else
+  fail "lobwife pod: ${LOBWIFE_PHASE:-not found}"
+fi
+
+# Check vault repo has seed structure (clone fresh)
+TMPCHECK=$(mktemp -d)
+gh repo clone "$VAULT_REPO" "$TMPCHECK" --quiet 2>/dev/null
+ACTIVE_TASKS=$(find "$TMPCHECK/010-tasks/active" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+rm -rf "$TMPCHECK"
+
+if [[ "$ACTIVE_TASKS" -eq 0 ]]; then
+  pass "Vault 010-tasks/active/ is empty"
+else
+  fail "Vault has ${ACTIVE_TASKS} active task files"
+fi
+
+stage_end
+echo ""
+
+# ============================================================
+# Stage 5: E2E task
+# ============================================================
+
+echo -e "${CYAN}[5/6] E2E task${NC}"
+stage_start
+
+echo -e "  Running tests/e2e-task --timeout ${E2E_TIMEOUT}..."
+echo ""
+
+E2E_EXIT=0
+LOBMOB_ENV=dev "$SCRIPT_DIR/e2e-task" --timeout "$E2E_TIMEOUT" || E2E_EXIT=$?
+
+stage_end
+echo ""
+if [[ "$E2E_EXIT" -eq 0 ]]; then
+  pass "E2E task passed"
+else
+  fail "E2E task failed (exit $E2E_EXIT)"
+fi
+echo ""
+
+# ============================================================
+# Stage 6: Summary
+# ============================================================
+
+TOTAL=$((PASS + FAIL))
+echo -e "${YELLOW}═══════════════════════════════════════${NC}"
+echo -e "${YELLOW}Summary${NC}  dev-reset-e2e"
+echo ""
+
+STAGE_NAMES=("Teardown" "Vault wipe" "Redeploy" "Verify" "E2E task")
+for i in "${!STAGE_TIMES[@]}"; do
+  printf "  %-12s %s\n" "${STAGE_NAMES[$i]}:" "${STAGE_TIMES[$i]}"
+done
+echo ""
+
+echo -e "  ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC} (${TOTAL} checks)"
+echo ""
+
+if [[ "$FAIL" -gt 0 ]]; then
+  exit 1
+fi
