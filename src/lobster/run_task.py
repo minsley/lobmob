@@ -77,15 +77,30 @@ async def main_async() -> int:
     except Exception:
         logger.warning("Failed to pull vault (continuing with local copy): %s", config.vault_path)
 
-    # Read task file
+    # Read task file (try T-format, then slug from API)
     try:
         task_data = read_task(config.vault_path, config.task_id)
     except FileNotFoundError:
-        logger.error("Task %s not found in vault at %s", config.task_id, config.vault_path)
+        task_data = None
         if db_id:
-            await _api_update_status(db_id, "failed", completed_at=_now_iso())
-            await _api_log_event(db_id, "failed", "Task file not found in vault", "lobster")
-        return 1
+            try:
+                from common.lobwife_client import get_task
+                api_task = await get_task(db_id)
+                slug = api_task.get("slug", "")
+                if slug and slug != config.task_id:
+                    try:
+                        task_data = read_task(config.vault_path, slug)
+                        logger.info("Found task by slug fallback: %s -> %s", config.task_id, slug)
+                    except FileNotFoundError:
+                        pass
+            except Exception as e:
+                logger.warning("Failed to look up slug via API: %s", e)
+        if not task_data:
+            logger.error("Task %s not found in vault at %s", config.task_id, config.vault_path)
+            if db_id:
+                await _api_update_status(db_id, "failed", completed_at=_now_iso())
+                await _api_log_event(db_id, "failed", "Task file not found in vault", "lobster")
+            return 1
 
     metadata = task_data["metadata"]
     body = task_data["body"]
