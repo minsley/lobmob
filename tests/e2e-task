@@ -186,6 +186,21 @@ git -C "$VAULT_LOCAL" add "$TASK_FILE_REL"
 git -C "$VAULT_LOCAL" commit -m "[test] Create ${TASK_ID}" --quiet
 git -C "$VAULT_LOCAL" push origin main --quiet
 
+# Register task in lobwife DB (Phase 2: poller reads from API)
+LOBWIFE_SVC=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get svc lobwife -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+if [[ -n "$LOBWIFE_SVC" ]]; then
+  API_CREATE=$(kubectl --context "$KUBE_CONTEXT" -n lobmob exec deployment/lobwife -- \
+    curl -sf -X POST "http://localhost:8081/api/v1/tasks" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\": \"${TITLE}\", \"type\": \"${LOBSTER_TYPE}\", \"slug\": \"${TASK_ID}\", \"actor\": \"e2e-test\"}" 2>/dev/null || echo "")
+  if [[ -n "$API_CREATE" ]]; then
+    DB_TASK_ID=$(echo "$API_CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
+    echo -e "       db: ${DB_TASK_ID} (registered via API)"
+  else
+    echo -e "       ${YELLOW}WARN: Failed to register in DB — poller may not pick up${NC}"
+  fi
+fi
+
 stage_end
 pass "Task pushed: ${TASK_ID}"
 echo -e "       vault: ${VAULT_REPO}  file: ${TASK_FILE_REL}"
