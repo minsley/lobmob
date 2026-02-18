@@ -374,12 +374,16 @@ while [[ "$ELAPSED" -lt "$PR_TIMEOUT" ]]; do
     fi
   fi
 
-  # Check merge status
+  # Check merge status (if closed without merge, reset and look for retry PR)
   if [[ -n "$PR_NUMBER" ]] && [[ "$PR_MERGED" == false ]]; then
     PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$VAULT_REPO" --json state --jq '.state' 2>/dev/null || echo "")
     if [[ "$PR_STATE" == "MERGED" ]]; then
       PR_MERGED=true
       break
+    elif [[ "$PR_STATE" == "CLOSED" ]]; then
+      echo -e " PR #${PR_NUMBER} closed (retry expected)"
+      PR_NUMBER=""
+      PR_URL=""
     fi
   fi
 
