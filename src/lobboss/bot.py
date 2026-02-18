@@ -49,6 +49,14 @@ class LobbossBot(discord.Client):
     async def _setup_git_auth(self) -> None:
         """Configure git to use gh-lobwife wrapper for credentials."""
         try:
+            # Wipe stale credential helpers (PVC persists .gitconfig across restarts)
+            proc = await asyncio.create_subprocess_exec(
+                "git", "config", "--global", "--unset-all",
+                "credential.https://github.com.helper",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await asyncio.wait_for(proc.communicate(), timeout=5)
             # Use our wrapper (/usr/local/bin/gh) not gh-real, so broker tokens flow through
             proc = await asyncio.create_subprocess_exec(
                 "git", "config", "--global",

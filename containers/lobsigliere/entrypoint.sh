@@ -47,6 +47,8 @@ if [[ -n "${LOBWIFE_URL:-}" ]]; then
     done
     if [[ -n "$_INIT_TOKEN" ]]; then
         # Configure git to use our gh wrapper (not gh-real) so broker tokens flow through
+        # Wipe any stale credential helpers first (PVC persists .gitconfig across restarts)
+        su - engineer -c "git config --global --unset-all credential.https://github.com.helper" 2>/dev/null || true
         su - engineer -c "git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'"
         echo "git credential helper configured (gh-lobwife wrapper)"
     else
