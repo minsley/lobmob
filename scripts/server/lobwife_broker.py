@@ -64,17 +64,9 @@ class TokenBroker:
         payload = {"iat": now - 60, "exp": now + 540, "iss": self.app_id}
         return pyjwt.encode(payload, self.pem_key, algorithm="RS256")
 
-    async def create_scoped_token(self, repos: list[str]) -> dict:
+    async def _create_installation_token(self, body: dict) -> dict:
+        """Create a GitHub App installation token with the given request body."""
         app_jwt = self._generate_jwt()
-        repo_names = [r.split("/")[-1] for r in repos]
-        body = {
-            "repositories": repo_names,
-            "permissions": {
-                "contents": "write",
-                "pull_requests": "write",
-                "metadata": "read",
-            },
-        }
         url = f"https://api.github.com/app/installations/{self.install_id}/access_tokens"
         async with ClientSession() as session:
             async with session.post(
@@ -90,6 +82,35 @@ class TokenBroker:
                     raise RuntimeError(f"GitHub API {resp.status}: {text[:300]}")
                 data = await resp.json()
                 return {"token": data["token"], "expires_at": data["expires_at"]}
+
+    async def create_scoped_token(self, repos: list[str]) -> dict:
+        repo_names = [r.split("/")[-1] for r in repos]
+        return await self._create_installation_token({
+            "repositories": repo_names,
+            "permissions": {
+                "contents": "write",
+                "pull_requests": "write",
+                "metadata": "read",
+            },
+        })
+
+    async def create_all_repo_token(self) -> dict:
+        """Create a token scoped to ALL repos the app can access."""
+        return await self._create_installation_token({
+            "permissions": {
+                "contents": "write",
+                "pull_requests": "write",
+                "metadata": "read",
+            },
+        })
+
+    async def create_service_token(self, service: str) -> dict:
+        """Create an all-repo token for a long-running service."""
+        token_data = await self.create_all_repo_token()
+        db = await get_db()
+        await self._audit(db, "service_token_issued", service, ["*"])
+        await db.commit()
+        return token_data
 
     async def register_task(self, task_id: str, repos: list[str], lobster_type: str):
         db = await get_db()

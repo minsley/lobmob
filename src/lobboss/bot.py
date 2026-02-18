@@ -40,10 +40,27 @@ class LobbossBot(discord.Client):
 
     async def setup_hook(self) -> None:
         """Called after login, before the bot starts receiving events."""
+        await self._setup_git_auth()
         self.loop.create_task(self._process_queue())
         self.loop.create_task(self._write_health_status())
         if self.config.poller.enabled:
             self.loop.create_task(self._run_task_poller())
+
+    async def _setup_git_auth(self) -> None:
+        """Configure git to use gh CLI for credentials (broker-backed)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gh", "auth", "setup-git",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0:
+                logger.info("gh auth setup-git configured")
+            else:
+                logger.warning("gh auth setup-git failed: %s", stderr.decode().strip())
+        except Exception as e:
+            logger.warning("Failed to run gh auth setup-git: %s", e)
 
     async def on_ready(self) -> None:
         logger.info("Connected as %s (id=%s)", self.user, self.user.id)

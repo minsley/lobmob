@@ -36,6 +36,13 @@ spec:
               value: "lobsigliere"
             - name: GIT_USER_EMAIL
               value: "lobsigliere@lobmob.local"
+            - name: SERVICE_NAME
+              value: "lobsigliere"
+            - name: LOBWIFE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: lobboss-config
+                  key: LOBWIFE_URL
           envFrom:
             - secretRef:
                 name: lobmob-secrets

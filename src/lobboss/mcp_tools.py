@@ -254,6 +254,7 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
                                 client.V1EnvVar(name="TASK_ID", value=task_id),
                                 client.V1EnvVar(name="LOBSTER_TYPE", value=lobster_type),
                                 client.V1EnvVar(name="LOBSTER_WORKFLOW", value=workflow),
+                                client.V1EnvVar(name="VAULT_REPO", value=VAULT_REPO),
                             ] + (
                                 [client.V1EnvVar(
                                     name="GEMINI_API_KEY",

@@ -18,10 +18,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# lobmob source + CLI + git credential helper
+# lobmob source + CLI
 COPY . /opt/lobmob
-RUN ln -s /opt/lobmob/scripts/lobmob /usr/local/bin/lobmob \
-    && ln -s /opt/lobmob/scripts/git-credential-lobwife /usr/local/bin/git-credential-lobwife
+RUN ln -s /opt/lobmob/scripts/lobmob /usr/local/bin/lobmob
 
 # SSH setup
 RUN mkdir -p /run/sshd

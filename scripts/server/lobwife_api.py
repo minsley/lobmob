@@ -359,6 +359,22 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
 
         return web.json_response({"status": "logged", "task_id": f"T{task_id}"}, status=201)
 
+    # === Service tokens (long-running services like lobboss, lobsigliere) ===
+
+    async def handle_service_token(request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        service = data.get("service", "").strip()
+        if not service:
+            return web.json_response({"error": "service required"}, status=400)
+        try:
+            token_data = await broker.create_service_token(service)
+            return web.json_response(token_data)
+        except RuntimeError as e:
+            return web.json_response({"error": str(e)}, status=503)
+
     # === Broker registration via tasks table (new) ===
 
     async def handle_register_task_v1(request):
@@ -497,6 +513,9 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
     app.router.add_get("/api/tasks", handle_list_broker_tasks)
     app.router.add_post("/api/token", handle_get_token_compat)
     app.router.add_get("/api/token/audit", handle_token_audit)
+
+    # Service tokens (lobboss, lobsigliere)
+    app.router.add_post("/api/v1/service-token", handle_service_token)
 
     # Task CRUD (new, versioned)
     app.router.add_post("/api/v1/tasks", handle_create_task)
