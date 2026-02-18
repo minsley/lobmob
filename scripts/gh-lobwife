@@ -1,0 +1,36 @@
+#!/bin/bash
+# gh-lobwife — gh CLI wrapper that fetches a fresh token from lobwife broker.
+# Installed as /usr/local/bin/gh in containers, shadowing the real gh.
+# The real gh is moved to /usr/bin/gh-real during image build.
+#
+# Two token paths:
+#   - TASK_ID set: fetch task-scoped token (lobsters)
+#   - SERVICE_NAME set: fetch all-repo service token (lobboss, lobsigliere)
+set -euo pipefail
+
+_FALLBACK="${GH_TOKEN:-}"
+unset GH_TOKEN 2>/dev/null || true
+
+LOBWIFE_URL="${LOBWIFE_URL:-}"
+TASK_ID="${TASK_ID:-}"
+SERVICE_NAME="${SERVICE_NAME:-}"
+TOKEN=""
+
+if [[ -n "$LOBWIFE_URL" ]]; then
+  if [[ -n "$TASK_ID" ]]; then
+    TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token" \
+      -H "Content-Type: application/json" \
+      -d "{\"task_id\": \"${TASK_ID}\"}" 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" \
+        2>/dev/null) || true
+  elif [[ -n "$SERVICE_NAME" ]]; then
+    TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/v1/service-token" \
+      -H "Content-Type: application/json" \
+      -d "{\"service\": \"${SERVICE_NAME}\"}" 2>/dev/null \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" \
+        2>/dev/null) || true
+  fi
+fi
+
+export GH_TOKEN="${TOKEN:-${_FALLBACK:-}}"
+exec /usr/bin/gh-real "$@"

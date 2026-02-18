@@ -34,7 +34,7 @@ TABLE
   maturity AS "Maturity",
   tags AS "Tags",
   file.mtime AS "Updated"
-FROM "docs/plans/active"
+FROM "plans/active"
 SORT file.mtime DESC
 ```
 
@@ -45,7 +45,7 @@ TABLE
   maturity AS "Maturity",
   tags AS "Tags",
   file.mtime AS "Updated"
-FROM "docs/plans/draft"
+FROM "plans/draft"
 SORT file.mtime DESC
 ```
 
@@ -56,7 +56,7 @@ TABLE
   maturity AS "Maturity",
   tags AS "Tags",
   file.mtime AS "Updated"
-FROM "docs/plans/backlog"
+FROM "plans/backlog"
 SORT file.mtime DESC
 ```
 
@@ -67,7 +67,7 @@ TABLE
   maturity AS "Maturity",
   tags AS "Tags",
   updated AS "Completed"
-FROM "docs/plans/completed"
+FROM "plans/completed"
 SORT updated DESC
 ```
 
@@ -78,7 +78,7 @@ TABLE
   maturity AS "Maturity",
   tags AS "Tags",
   file.mtime AS "Updated"
-FROM "docs/plans/archive"
+FROM "plans/archive"
 SORT file.mtime DESC
 ```
 
@@ -115,3 +115,4 @@ Quick reference of all roadmap themes and where they stand. See [planning-scratc
 | Web UI & WAN access | `ui`, `infrastructure` | Scratch — needs design |
 | Tool dependency management | `lobster` | Scratch — needs research |
 | Usage analytics (catsyphon) | `infrastructure` | Scratch — needs research |
+| CI/CD pipeline | `infrastructure`, `deployment` | [Draft](draft/ci-cd.md) — image builds + deploy automation |

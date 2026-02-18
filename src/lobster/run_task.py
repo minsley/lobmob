@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 from common.logging import setup_logging, log_structured
@@ -67,6 +68,11 @@ async def main_async() -> int:
 
     logger.info("Starting lobster: task=%s type=%s model=%s", config.task_id, config.lobster_type, config.model)
 
+    # Set GH_TOKEN for gh CLI (agent subprocess inherits env).
+    # The gh-lobwife wrapper also refreshes tokens per-invocation for long tasks,
+    # but setting env here ensures auth works even if the wrapper isn't in PATH.
+    await _setup_gh_token(config.task_id)
+
     # Log started event via API
     if db_id:
         await _api_log_event(db_id, "started", f"type={config.lobster_type} model={config.model}", "lobster")
@@ -126,6 +132,14 @@ async def main_async() -> int:
         cost_usd=result["cost_usd"],
         is_error=result["is_error"],
     )
+
+    # Safety net: ensure vault PR exists (agent may have forgotten)
+    vault_repo = os.environ.get("VAULT_REPO", "")
+    if vault_repo and not result["is_error"]:
+        try:
+            await _ensure_vault_pr(config, vault_repo)
+        except Exception as e:
+            logger.warning("Vault PR safety net failed: %s", e)
 
     # Verify-retry loop: check completion and retry missing steps
     if not result["is_error"]:
@@ -231,6 +245,108 @@ async def main_async() -> int:
         )
 
     return 1 if result["is_error"] else 0
+
+
+async def _setup_gh_token(task_id: str) -> None:
+    """Fetch a GitHub token from lobwife broker, set GH_TOKEN, configure git to use gh."""
+    lobwife_url = os.environ.get("LOBWIFE_URL", "")
+    if not lobwife_url:
+        return
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{lobwife_url}/api/token",
+                json={"task_id": task_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    os.environ["GH_TOKEN"] = data["token"]
+                    logger.info("GH_TOKEN set from broker")
+                else:
+                    logger.warning("Broker token request failed: HTTP %d", resp.status)
+    except Exception as e:
+        logger.warning("Failed to fetch broker token for gh CLI: %s", e)
+        return
+
+    # Wire git credentials through gh CLI (gh-lobwife wrapper refreshes tokens)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh", "auth", "setup-git",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if proc.returncode == 0:
+            logger.info("gh auth setup-git configured")
+        else:
+            logger.warning("gh auth setup-git failed: %s", stderr.decode().strip())
+    except Exception as e:
+        logger.warning("Failed to run gh auth setup-git: %s", e)
+
+
+async def _ensure_vault_pr(config, vault_repo: str) -> None:
+    """Safety net: create vault PR if the agent forgot to.
+
+    Checks if a PR exists for this task's branch. If not, creates one
+    using a lightweight agent query for the PR description.
+    """
+    import subprocess
+
+    task_id = config.task_id
+    branch_prefix = f"lobster-swe-{task_id.lower()}"
+
+    # Check if there's a remote branch for this task
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{vault_repo}/pulls",
+             "--jq", f'[.[] | select(.head.ref | startswith("{branch_prefix}"))][0].html_url'],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info("Vault PR already exists: %s", result.stdout.strip())
+            return
+    except Exception as e:
+        logger.warning("Failed to check for existing PR: %s", e)
+        return
+
+    # List remote branches matching this task
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{vault_repo}/branches",
+             "--jq", f'[.[] | select(.name | startswith("{branch_prefix}"))][0].name'],
+            capture_output=True, text=True, timeout=15,
+        )
+        branch_name = result.stdout.strip()
+        if not branch_name:
+            logger.info("No remote branch found for %s — no PR to create", task_id)
+            return
+    except Exception as e:
+        logger.warning("Failed to list branches: %s", e)
+        return
+
+    # Create PR with template description
+    logger.info("Creating safety-net vault PR for %s (branch: %s)", task_id, branch_name)
+    try:
+        title = f"[lobster] {task_id} — vault changes"
+        body = f"Automated PR created by lobster safety net.\n\nTask: {task_id}\nBranch: {branch_name}"
+        result = subprocess.run(
+            ["gh", "api", f"repos/{vault_repo}/pulls",
+             "-f", f"title={title}",
+             "-f", f"body={body}",
+             "-f", f"head={branch_name}",
+             "-f", "base=main"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            import json as _json
+            pr_data = _json.loads(result.stdout)
+            logger.info("Created safety-net PR: %s", pr_data.get("html_url", ""))
+        else:
+            logger.warning("Failed to create safety-net PR: %s", result.stderr.strip())
+    except Exception as e:
+        logger.warning("Failed to create safety-net PR: %s", e)
 
 
 async def _resolve_vault_tid(task_id: str, db_id: int | None) -> str:

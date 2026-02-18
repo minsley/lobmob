@@ -18,18 +18,20 @@ RUN wget -qO- https://apt.releases.hashicorp.com/gpg | gpg --dearmor > /usr/shar
 RUN curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl" \
     && chmod +x /usr/local/bin/kubectl
 
-# GitHub CLI
+# GitHub CLI (gh-real + broker wrapper)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
     > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y gh \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mv /usr/bin/gh /usr/bin/gh-real
 
-# lobmob source + CLI + git credential helper
+# lobmob source + CLI + gh wrapper
 COPY . /opt/lobmob
-RUN ln -s /opt/lobmob/scripts/lobmob /usr/local/bin/lobmob \
-    && ln -s /opt/lobmob/scripts/git-credential-lobwife /usr/local/bin/git-credential-lobwife
+RUN ln -s /opt/lobmob/scripts/lobmob /usr/local/bin/lobmob
+COPY scripts/gh-lobwife /usr/local/bin/gh
+RUN chmod +x /usr/local/bin/gh
 
 # SSH setup
 RUN mkdir -p /run/sshd

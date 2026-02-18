@@ -24,19 +24,32 @@ spec:
       serviceAccountName: lobboss
       imagePullSecrets:
         - name: ghcr-pull-secret
-      # Init container: clone or pull the vault repo
-      # Uses GH_TOKEN (PAT) not the broker — lobboss must not depend on lobwife for startup
+      # Init container: clone or pull the vault repo using broker service token
       initContainers:
         - name: vault-init
           image: alpine/git:latest
           command: ["/bin/sh", "-c"]
           args:
             - |
+              # Wait for lobwife broker to be ready (up to 60s)
+              for i in $(seq 1 12); do
+                TOKEN=$(wget -qO- --post-data='{"service":"lobboss-init"}' \
+                  --header='Content-Type: application/json' \
+                  "${LOBWIFE_URL}/api/v1/service-token" 2>/dev/null \
+                  | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p') || true
+                if [ -n "$TOKEN" ]; then break; fi
+                echo "Waiting for lobwife broker (attempt $i/12)..."
+                sleep 5
+              done
+              if [ -z "$TOKEN" ]; then
+                echo "ERROR: Could not get broker token after 60s"
+                exit 1
+              fi
               if [ -d /opt/vault/.git ]; then
                 cd /opt/vault && git reset --hard HEAD && git pull origin main || true
               else
                 rm -rf /opt/vault/lost+found
-                git clone "https://git:$(cat /run/secrets/gh-token)@github.com/${VAULT_REPO}.git" /opt/vault
+                git clone "https://x-access-token:${TOKEN}@github.com/${VAULT_REPO}.git" /opt/vault
               fi
               cd /opt/vault
               git config user.name "lobboss"
@@ -47,13 +60,14 @@ spec:
                 configMapKeyRef:
                   name: lobboss-config
                   key: VAULT_REPO
+            - name: LOBWIFE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: lobboss-config
+                  key: LOBWIFE_URL
           volumeMounts:
             - name: vault
               mountPath: /opt/vault
-            - name: gh-token
-              mountPath: /run/secrets/gh-token
-              subPath: GH_TOKEN
-              readOnly: true
       containers:
         - name: lobboss
           image: ghcr.io/minsley/lobmob-lobboss:latest
@@ -61,6 +75,9 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          env:
+            - name: SERVICE_NAME
+              value: "lobboss"
           envFrom:
             - secretRef:
                 name: lobmob-secrets
@@ -99,9 +116,6 @@ spec:
         - name: vault
           persistentVolumeClaim:
             claimName: vault-pvc
-        - name: gh-token
-          secret:
-            secretName: lobmob-secrets
         - name: health-data
           emptyDir: {}
       restartPolicy: Always
