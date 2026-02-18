@@ -268,6 +268,33 @@ echo ""
 echo -e "${CYAN}[3/6] Redeploy${NC}"
 stage_start
 
+# Terraform — ensure infra matches expected state
+echo -e "  Applying terraform..."
+cd "$INFRA_DIR"
+terraform workspace select dev 2>/dev/null || terraform workspace new dev
+terraform apply -var-file="$TFVARS_FILE" -auto-approve 2>&1 | while read -r line; do
+  echo -e "    $line"
+done
+
+# Wait for all nodes to be Ready
+echo -e "  Waiting for nodes..."
+for i in $(seq 1 60); do
+  NOT_READY=$(kubectl --context "$KUBE_CONTEXT" get nodes --no-headers 2>/dev/null \
+    | grep -cv ' Ready' || true)
+  if [[ "$NOT_READY" -eq 0 ]]; then
+    NODES=$(kubectl --context "$KUBE_CONTEXT" get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$NODES" -gt 0 ]]; then
+      echo -e "    All $NODES nodes Ready"
+      break
+    fi
+  fi
+  if [[ "$i" -eq 60 ]]; then
+    warn "Timed out waiting for nodes (5min)"
+  fi
+  sleep 5
+done
+cd "$PROJECT_DIR"
+
 # Apply k8s manifests
 echo -e "  Applying k8s manifests..."
 kubectl --context "$KUBE_CONTEXT" apply -k "$PROJECT_DIR/k8s/overlays/dev/" 2>&1 | while read -r line; do
