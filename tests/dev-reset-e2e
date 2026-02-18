@@ -269,16 +269,12 @@ echo -e "${CYAN}[3/6] Redeploy${NC}"
 stage_start
 
 # Terraform — ensure infra matches expected state
-echo -e "  Initializing terraform..."
 cd "$INFRA_DIR"
-terraform init -input=false -no-color 2>&1 | while read -r line; do
-  echo -e "    $line"
-done
+echo -e "  Initializing terraform..."
+terraform init -input=false -no-color
 terraform workspace select dev 2>/dev/null || terraform workspace new dev
 echo -e "  Applying terraform..."
-terraform apply -var-file="$TFVARS_FILE" -auto-approve -no-color 2>&1 | while read -r line; do
-  echo -e "    $line"
-done
+terraform apply -var-file="$TFVARS_FILE" -auto-approve -no-color
 
 # Wait for all nodes to be Ready
 echo -e "  Waiting for nodes..."
