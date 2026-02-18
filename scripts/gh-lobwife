@@ -1,0 +1,20 @@
+#!/bin/bash
+# gh-lobwife — gh CLI wrapper that fetches a fresh token from lobwife broker.
+# Installed as /usr/local/bin/gh in lobster containers, shadowing the real gh.
+# The real gh is moved to /usr/bin/gh-real during image build.
+set -euo pipefail
+
+TASK_ID="${TASK_ID:-}"
+LOBWIFE_URL="${LOBWIFE_URL:-}"
+
+if [[ -n "$TASK_ID" && -n "$LOBWIFE_URL" ]]; then
+  TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token" \
+    -H "Content-Type: application/json" \
+    -d "{\"task_id\": \"${TASK_ID}\"}" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null) || true
+  if [[ -n "${TOKEN:-}" ]]; then
+    export GH_TOKEN="$TOKEN"
+  fi
+fi
+
+exec /usr/bin/gh-real "$@"

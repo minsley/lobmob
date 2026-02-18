@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import logging
-import os
 import sys
 
 from common.logging import setup_logging, log_structured
@@ -67,9 +66,6 @@ async def main_async() -> int:
     db_id = _parse_db_id(config.task_id)
 
     logger.info("Starting lobster: task=%s type=%s model=%s", config.task_id, config.lobster_type, config.model)
-
-    # Fetch broker token for gh CLI (git uses credential helper, but gh needs GH_TOKEN)
-    await _setup_gh_token(config.task_id)
 
     # Log started event via API
     if db_id:
@@ -235,30 +231,6 @@ async def main_async() -> int:
         )
 
     return 1 if result["is_error"] else 0
-
-
-async def _setup_gh_token(task_id: str) -> None:
-    """Fetch a GitHub token from lobwife broker and export as GH_TOKEN for gh CLI."""
-    lobwife_url = os.environ.get("LOBWIFE_URL", "")
-    if not lobwife_url:
-        logger.warning("LOBWIFE_URL not set, gh CLI will not be authenticated")
-        return
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{lobwife_url}/api/token",
-                json={"task_id": task_id},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    os.environ["GH_TOKEN"] = data["token"]
-                    logger.info("GH_TOKEN set from broker for gh CLI auth")
-                else:
-                    logger.warning("Broker token request failed: HTTP %d", resp.status)
-    except Exception as e:
-        logger.warning("Failed to fetch broker token for gh CLI: %s", e)
 
 
 async def _resolve_vault_tid(task_id: str, db_id: int | None) -> str:
