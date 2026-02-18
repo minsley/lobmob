@@ -36,7 +36,7 @@ spec:
                 TOKEN=$(wget -qO- --post-data='{"service":"lobboss-init"}' \
                   --header='Content-Type: application/json' \
                   "${LOBWIFE_URL}/api/v1/service-token" 2>/dev/null \
-                  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p') || true
+                  | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p') || true
                 if [ -n "$TOKEN" ]; then break; fi
                 echo "Waiting for lobwife broker (attempt $i/12)..."
                 sleep 5
