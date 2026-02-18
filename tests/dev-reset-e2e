@@ -224,11 +224,11 @@ done
 
 # Reset main to seed state
 echo -e "  Resetting vault to seed state..."
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+VAULT_TMPDIR=$(mktemp -d)
+trap 'rm -rf "$VAULT_TMPDIR"' EXIT
 
-gh repo clone "$VAULT_REPO" "$TMPDIR" 2>/dev/null
-cd "$TMPDIR"
+gh repo clone "$VAULT_REPO" "$VAULT_TMPDIR" 2>/dev/null
+cd "$VAULT_TMPDIR"
 
 # Remove everything except .git
 find . -maxdepth 1 ! -name '.git' ! -name '.' -exec rm -rf {} +
@@ -248,7 +248,7 @@ git commit -m "Reset vault to seed state (dev-reset-e2e)" --quiet 2>/dev/null ||
 git push --force origin main --quiet
 
 cd "$PROJECT_DIR"
-rm -rf "$TMPDIR"
+rm -rf "$VAULT_TMPDIR"
 trap - EXIT
 
 # Remove local vault clone (will be re-cloned by e2e-task)
