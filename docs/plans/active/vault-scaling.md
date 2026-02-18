@@ -3,7 +3,7 @@ status: active
 tags: [vault, infrastructure, lobwife]
 maturity: implementation
 created: 2026-02-15
-updated: 2026-02-16
+updated: 2026-02-18
 ---
 # Vault Scaling & State Store
 
@@ -219,7 +219,10 @@ GET    /health, /api/status, /api/jobs, /api/jobs/{name}, etc.
 
 ### Phase 2: Migrate task lifecycle to DB
 
-- **Status**: implemented (PR pending)
+- **Status**: complete (PR #12, merged into v0.3.0)
+- **Lingering items**:
+  - `lobmob-task-manager.sh` still exists alongside Python rewrite (can be removed or renamed `.deprecated`)
+  - `broker_tasks` table still used as fallback — broker checks tasks table first, falls back to broker_tasks. Full drop deferred until broker_tasks entries are fully migrated
 - **Goal**: Consumers create and update task state via API. Vault still used for task content (body, results). Dual-write to vault frontmatter during this phase so Obsidian stays current until the sync daemon (Phase 3) takes over.
 
 **2.1 — Shared lobwife API client**
