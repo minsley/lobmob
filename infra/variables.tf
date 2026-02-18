@@ -49,6 +49,18 @@ variable "doks_lobboss_node_size" {
   default     = "s-2vcpu-4gb"
 }
 
+variable "doks_lobwife_node_size" {
+  description = "Node size for the lobwife (always-on) node pool"
+  type        = string
+  default     = "s-1vcpu-2gb"
+}
+
+variable "doks_lobsigliere_node_size" {
+  description = "Node size for the lobsigliere (always-on) node pool"
+  type        = string
+  default     = "s-2vcpu-4gb"
+}
+
 variable "doks_lobster_node_size" {
   description = "Node size for the lobster (autoscaling) node pool"
   type        = string

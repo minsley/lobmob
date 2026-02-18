@@ -22,6 +22,34 @@ resource "digitalocean_kubernetes_cluster" "lobmob" {
   tags = [digitalocean_tag.lobboss.id]
 }
 
+# Lobwife node pool — always-on, single node
+resource "digitalocean_kubernetes_node_pool" "lobwife" {
+  cluster_id = digitalocean_kubernetes_cluster.lobmob.id
+  name       = "lobwife"
+  size       = var.doks_lobwife_node_size
+  node_count = 1
+
+  labels = {
+    "lobmob.io/role" = "lobwife"
+  }
+
+  tags = [digitalocean_tag.lobwife.id]
+}
+
+# Lobsigliere node pool — always-on, single node
+resource "digitalocean_kubernetes_node_pool" "lobsigliere" {
+  cluster_id = digitalocean_kubernetes_cluster.lobmob.id
+  name       = "lobsigliere"
+  size       = var.doks_lobsigliere_node_size
+  node_count = 1
+
+  labels = {
+    "lobmob.io/role" = "lobsigliere"
+  }
+
+  tags = [digitalocean_tag.lobsigliere.id]
+}
+
 # Lobster node pool — autoscaling, 0 to N
 resource "digitalocean_kubernetes_node_pool" "lobsters" {
   cluster_id = digitalocean_kubernetes_cluster.lobmob.id
