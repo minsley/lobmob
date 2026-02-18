@@ -164,6 +164,10 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
         + VAULT_REPO
         + '.git" /opt/vault'
         " || { echo 'Broker token failed, vault clone aborted'; exit 1; }"
+        " && cd /opt/vault"
+        " && git remote set-url origin https://github.com/"
+        + VAULT_REPO
+        + ".git"
     )
 
     job = client.V1Job(

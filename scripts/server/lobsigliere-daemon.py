@@ -235,6 +235,7 @@ async def ensure_vault() -> bool:
         return False
 
     clone_url = f"https://x-access-token:{token}@github.com/{vault_repo}.git"
+    clean_url = f"https://github.com/{vault_repo}.git"
 
     logger.info("Cloning vault from %s...", vault_repo)
     proc = await asyncio.create_subprocess_exec(
@@ -246,6 +247,11 @@ async def ensure_vault() -> bool:
     if proc.returncode != 0:
         logger.error("Vault clone failed: %s", stderr.decode().strip())
         return False
+
+    # Strip credentials from remote — gh auth handles future operations
+    await asyncio.create_subprocess_exec(
+        "git", "-C", str(vault), "remote", "set-url", "origin", clean_url,
+    )
     logger.info("Vault cloned successfully")
     return True
 

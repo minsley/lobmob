@@ -57,12 +57,16 @@ fi
 LOBMOB_REPO="/home/engineer/lobmob"
 if [[ -d "$LOBMOB_REPO/.git" ]]; then
     echo "Updating lobmob repo..."
+    # Strip any baked-in credentials, gh auth handles auth now
+    su - engineer -c "cd '$LOBMOB_REPO' && git remote set-url origin 'https://github.com/minsley/lobmob.git'" || true
     su - engineer -c "cd '$LOBMOB_REPO' && git fetch origin && git pull origin develop --rebase" || true
 else
     echo "Cloning lobmob repo..."
     # Use broker service token for clone
     CLONE_TOKEN="${_INIT_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}}"
     if su - engineer -c "git clone 'https://x-access-token:${CLONE_TOKEN}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'" 2>/dev/null; then
+        # Strip credentials from remote — gh auth handles future operations
+        su - engineer -c "cd '$LOBMOB_REPO' && git remote set-url origin 'https://github.com/minsley/lobmob.git'" || true
         su - engineer -c "cd '$LOBMOB_REPO' && git checkout develop" || true
     else
         echo "HTTPS clone failed. Clone manually after SSH in:"
@@ -72,21 +76,27 @@ fi
 
 # Clone vault repo into engineer's home (persistent on PVC, used by daemon)
 VAULT_DIR="/home/engineer/vault"
+LOBMOB_ENV="${LOBMOB_ENV:-prod}"
+if [[ "$LOBMOB_ENV" == "dev" ]]; then
+    VAULT_REPO_NAME="lobmob-vault-dev"
+else
+    VAULT_REPO_NAME="lobmob-vault"
+fi
 if [[ -d "$VAULT_DIR/.git" ]]; then
     echo "Updating vault repo..."
+    # Strip any baked-in credentials, gh auth handles auth now
+    su - engineer -c "cd '$VAULT_DIR' && git remote set-url origin 'https://github.com/minsley/${VAULT_REPO_NAME}.git'" || true
     su - engineer -c "cd '$VAULT_DIR' && git pull --rebase origin main" || true
 else
     echo "Cloning vault repo..."
     # Use broker service token, fall back to env tokens
     CLONE_TOKEN="${_INIT_TOKEN:-${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}}"
-    LOBMOB_ENV="${LOBMOB_ENV:-prod}"
-    if [[ "$LOBMOB_ENV" == "dev" ]]; then
-        VAULT_REPO_NAME="lobmob-vault-dev"
+    if su - engineer -c "git clone 'https://x-access-token:${CLONE_TOKEN}@github.com/minsley/${VAULT_REPO_NAME}.git' '$VAULT_DIR'" 2>/dev/null; then
+        # Strip credentials from remote — gh auth handles future operations
+        su - engineer -c "cd '$VAULT_DIR' && git remote set-url origin 'https://github.com/minsley/${VAULT_REPO_NAME}.git'" || true
     else
-        VAULT_REPO_NAME="lobmob-vault"
-    fi
-    su - engineer -c "git clone 'https://x-access-token:${CLONE_TOKEN}@github.com/minsley/${VAULT_REPO_NAME}.git' '$VAULT_DIR'" 2>/dev/null || \
         echo "Vault clone failed — daemon will retry on startup"
+    fi
 fi
 
 # Set up .bashrc with lobmob environment (idempotent)

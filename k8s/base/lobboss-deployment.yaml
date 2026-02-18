@@ -45,13 +45,19 @@ spec:
                 echo "ERROR: Could not get broker token after 60s"
                 exit 1
               fi
+              AUTHED_URL="https://x-access-token:${TOKEN}@github.com/${VAULT_REPO}.git"
+              CLEAN_URL="https://github.com/${VAULT_REPO}.git"
               if [ -d /opt/vault/.git ]; then
-                cd /opt/vault && git reset --hard HEAD && git pull origin main || true
+                cd /opt/vault
+                git remote set-url origin "$AUTHED_URL"
+                git reset --hard HEAD && git pull origin main || true
               else
                 rm -rf /opt/vault/lost+found
-                git clone "https://x-access-token:${TOKEN}@github.com/${VAULT_REPO}.git" /opt/vault
+                git clone "$AUTHED_URL" /opt/vault
               fi
               cd /opt/vault
+              # Strip credentials from remote — main container uses gh auth for future pulls
+              git remote set-url origin "$CLEAN_URL"
               git config user.name "lobboss"
               git config user.email "lobboss@lobmob.local"
           env:
