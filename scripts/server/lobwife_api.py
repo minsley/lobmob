@@ -14,6 +14,7 @@ from aiohttp import web
 from lobwife_db import get_db, DB_PATH
 from lobwife_jobs import JobRunner
 from lobwife_broker import TokenBroker
+from lobwife_sync import VaultSyncDaemon
 
 log = logging.getLogger("lobwife")
 
@@ -30,7 +31,8 @@ VALID_TASK_STATUSES = {
 }
 
 
-def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
+def build_app(runner: JobRunner, broker: TokenBroker,
+              sync_daemon: VaultSyncDaemon | None = None) -> web.Application:
     app = web.Application()
 
     # === Health & status ===
@@ -188,6 +190,10 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
         )
         await db.commit()
 
+        # Trigger vault sync on task creation
+        if sync_daemon:
+            sync_daemon.request_sync()
+
         return web.json_response(
             {"id": task_id, "task_id": f"T{task_id}"},
             status=201,
@@ -300,6 +306,12 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
         )
         await db.commit()
 
+        # Trigger vault sync on significant status changes
+        if sync_daemon and "status" in updates:
+            new_status = updates.get("status")
+            if new_status in ("completed", "failed", "cancelled"):
+                sync_daemon.request_sync()
+
         return web.json_response({"id": task_id, "task_id": f"T{task_id}", "updated": changed})
 
     async def handle_cancel_task(request):
@@ -323,6 +335,10 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
             (task_id, "cancelled", "Task cancelled via API"),
         )
         await db.commit()
+
+        # Trigger vault sync on cancellation
+        if sync_daemon:
+            sync_daemon.request_sync()
 
         return web.json_response({"id": task_id, "task_id": f"T{task_id}", "status": "cancelled"})
 
@@ -494,6 +510,23 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
         except RuntimeError as e:
             return web.json_response({"error": str(e)}, status=503)
 
+    # === Vault sync ===
+
+    async def handle_sync_status(request):
+        if not sync_daemon:
+            return web.json_response({"enabled": False})
+        return web.json_response({
+            "enabled": True,
+            "last_sync": sync_daemon._last_sync,
+            "running": sync_daemon._running,
+        })
+
+    async def handle_sync_trigger(request):
+        if not sync_daemon:
+            return web.json_response({"error": "sync daemon not enabled"}, status=503)
+        sync_daemon.request_sync()
+        return web.json_response({"status": "sync requested"})
+
     # === Routes ===
 
     # Health & status
@@ -526,5 +559,9 @@ def build_app(runner: JobRunner, broker: TokenBroker) -> web.Application:
     app.router.add_get("/api/v1/tasks/{id}/events", handle_get_task_events)
     app.router.add_post("/api/v1/tasks/{id}/events", handle_create_task_event)
     app.router.add_post("/api/v1/tasks/{id}/register", handle_register_task_v1)
+
+    # Vault sync
+    app.router.add_get("/api/v1/sync", handle_sync_status)
+    app.router.add_post("/api/v1/sync/trigger", handle_sync_trigger)
 
     return app

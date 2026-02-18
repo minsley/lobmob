@@ -1,14 +1,13 @@
 """Autonomous task poller — picks up queued tasks from API and spawns lobsters.
 
-Queries lobwife API for queued tasks (source of truth), spawns k8s Jobs,
-and dual-writes to vault frontmatter for Obsidian visibility (Phase 2).
+Queries lobwife API for queued tasks (source of truth) and spawns k8s Jobs.
+DB is sole state authority; vault sync daemon handles Obsidian visibility.
 """
 
 import asyncio
 import logging
 from datetime import datetime, timezone
 
-from common.vault import commit_and_push, pull_vault, read_task, write_task
 from common.lobwife_client import (
     list_tasks as api_list_tasks,
     update_task as api_update_task,
@@ -51,9 +50,6 @@ def _job_exists_for_task(task_id: str) -> bool:
 
 async def poll_and_spawn(vault_path: str, max_concurrent: int, bot=None) -> int:
     """Single poll cycle. Returns number of tasks spawned."""
-    # Pull vault for reading task body (lobster needs the file)
-    await pull_vault(vault_path)
-
     active_count = _count_active_lobster_jobs()
     available = max_concurrent - active_count
     if available <= 0:
@@ -123,40 +119,7 @@ async def poll_and_spawn(vault_path: str, max_concurrent: int, bot=None) -> int:
             )
             await api_log_event(db_id, "spawned", f"Job {job_name} ({lobster_type})", "task_poller")
         except (LobwifeAPIError, RuntimeError) as e:
-            logger.error("Failed to PATCH API for %s: %s (continuing with vault-only)", task_id, e)
-
-        # Dual-write: update vault frontmatter for Obsidian visibility
-        # Try T-format first, then fall back to slug (for migrated tasks)
-        vault_task_id = task_id
-        try:
-            task_data = read_task(vault_path, task_id)
-        except FileNotFoundError:
-            slug = task.get("slug")
-            if slug and slug != task_id:
-                try:
-                    task_data = read_task(vault_path, slug)
-                    vault_task_id = slug
-                except FileNotFoundError:
-                    task_data = None
-            else:
-                task_data = None
-
-        if task_data:
-            try:
-                meta = task_data["metadata"]
-                meta["status"] = "active"
-                meta["assigned_to"] = job_name
-                meta["assigned_at"] = now
-                rel_path = write_task(vault_path, vault_task_id, meta, task_data["body"])
-                await commit_and_push(
-                    vault_path,
-                    f"[poller] Spawn {lobster_type} for {task_id}",
-                    [rel_path],
-                )
-            except Exception as e:
-                logger.error("Failed to dual-write vault for %s: %s", task_id, e)
-        else:
-            logger.warning("Vault file not found for %s (task may be API-only)", task_id)
+            logger.error("Failed to PATCH API for %s: %s", task_id, e)
 
         # Post to Discord thread if configured
         thread_id = task.get("discord_thread_id")

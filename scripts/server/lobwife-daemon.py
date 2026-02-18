@@ -27,6 +27,7 @@ from lobwife_db import init_db, close_db, get_db, DB_PATH, STATE_DIR
 from lobwife_jobs import JobRunner, JOB_DEFS
 from lobwife_broker import TokenBroker
 from lobwife_api import build_app
+from lobwife_sync import VaultSyncDaemon
 
 DAEMON_PORT = 8081
 
@@ -64,6 +65,11 @@ async def main():
     # Token broker
     broker = TokenBroker()
 
+    # Vault sync daemon
+    sync_daemon = VaultSyncDaemon()
+    asyncio.create_task(sync_daemon.run())
+    log.info("Vault sync daemon started")
+
     # Periodic maintenance loop (every 5 min)
     backup_counter = 0
 
@@ -92,7 +98,7 @@ async def main():
     asyncio.create_task(persist_loop())
 
     # HTTP API server
-    app = build_app(runner, broker)
+    app = build_app(runner, broker, sync_daemon)
     api_runner = web.AppRunner(app)
     await api_runner.setup()
     site = web.TCPSite(api_runner, "0.0.0.0", DAEMON_PORT)
@@ -107,6 +113,7 @@ async def main():
 
     await stop.wait()
     log.info("Shutting down...")
+    sync_daemon.stop()
     runner.scheduler.shutdown(wait=False)
     await api_runner.cleanup()
     await close_db()
