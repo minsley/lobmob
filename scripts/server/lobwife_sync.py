@@ -312,7 +312,7 @@ async def run_sync_cycle(last_sync: str | None) -> str:
         await _pull_vault()
     except RuntimeError as e:
         log.warning("Vault pull failed, skipping sync cycle: %s", e)
-        return last_sync or now
+        return last_sync  # Don't advance timestamp on failure
 
     # Query tasks updated since last sync
     tasks = await _query_updated_tasks(last_sync)
@@ -363,10 +363,11 @@ class VaultSyncDaemon:
     an immediate sync on the next loop iteration.
     """
 
-    def __init__(self):
+    def __init__(self, broker=None):
         self._last_sync: str | None = None
         self._sync_needed = asyncio.Event()
         self._running = False
+        self._broker = broker
 
     def request_sync(self):
         """Signal that an immediate sync is needed (called from API handlers)."""
@@ -381,6 +382,16 @@ class VaultSyncDaemon:
         if not Path(VAULT_PATH).joinpath(".git").is_dir():
             log.error("Vault path %s is not a git repo — sync daemon disabled", VAULT_PATH)
             return
+
+        # Ensure git identity is configured for commits
+        try:
+            await _git("config", "user.email", "lobwife@lobmob.local")
+            await _git("config", "user.name", "lobwife sync")
+        except RuntimeError:
+            pass
+
+        # Refresh vault remote URL with a fresh token before first sync
+        await self._refresh_vault_credentials()
 
         # Initial sync on startup (full scan)
         try:
@@ -404,12 +415,35 @@ class VaultSyncDaemon:
                     # Normal interval sync
                     pass
 
+                await self._refresh_vault_credentials()
                 self._last_sync = await run_sync_cycle(self._last_sync)
 
             except Exception:
                 log.exception("Vault sync cycle failed")
                 # Don't spin on repeated failures
                 await asyncio.sleep(60)
+
+    async def _refresh_vault_credentials(self):
+        """Update vault remote URL with a fresh GitHub App token from the broker."""
+        if not self._broker:
+            return
+        try:
+            token_data = await self._broker.create_service_token("lobwife-sync")
+            token = token_data["token"]
+            vault_repo = os.environ.get("VAULT_REPO", "")
+            if not vault_repo:
+                # Detect repo from current remote URL
+                current = await _git("remote", "get-url", "origin")
+                # Extract org/repo from URL
+                if "github.com" in current:
+                    parts = current.rstrip("/").rstrip(".git").split("github.com/")[-1]
+                    vault_repo = parts
+            if vault_repo:
+                new_url = f"https://x-access-token:{token}@github.com/{vault_repo}.git"
+                await _git("remote", "set-url", "origin", new_url)
+                log.debug("Vault credentials refreshed")
+        except Exception as e:
+            log.warning("Failed to refresh vault credentials: %s", e)
 
     def stop(self):
         self._running = False

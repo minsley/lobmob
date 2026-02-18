@@ -66,7 +66,7 @@ async def main():
     broker = TokenBroker()
 
     # Vault sync daemon
-    sync_daemon = VaultSyncDaemon()
+    sync_daemon = VaultSyncDaemon(broker=broker)
     asyncio.create_task(sync_daemon.run())
     log.info("Vault sync daemon started")
 
