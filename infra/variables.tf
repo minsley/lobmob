@@ -46,7 +46,7 @@ variable "doks_k8s_version" {
 variable "doks_lobboss_node_size" {
   description = "Node size for the lobboss (always-on) node pool"
   type        = string
-  default     = "s-2vcpu-4gb"
+  default     = "s-1vcpu-2gb"
 }
 
 variable "doks_lobwife_node_size" {
