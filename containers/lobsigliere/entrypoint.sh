@@ -62,9 +62,10 @@ fi
 LOBMOB_REPO="/home/engineer/lobmob"
 if [[ -d "$LOBMOB_REPO/.git" ]]; then
     echo "Updating lobmob repo..."
-    # Strip any baked-in credentials, gh auth handles auth now
-    su - engineer -c "cd '$LOBMOB_REPO' && git remote set-url origin 'https://github.com/minsley/lobmob.git'" || true
+    # Use broker token for pull, then strip credentials from remote
+    su - engineer -c "cd '$LOBMOB_REPO' && git remote set-url origin 'https://x-access-token:${_INIT_TOKEN}@github.com/minsley/lobmob.git'" || true
     su - engineer -c "cd '$LOBMOB_REPO' && git fetch origin && git pull origin develop --rebase" || true
+    su - engineer -c "cd '$LOBMOB_REPO' && git remote set-url origin 'https://github.com/minsley/lobmob.git'" || true
 else
     echo "Cloning lobmob repo..."
     # Use broker service token for clone
@@ -89,9 +90,10 @@ else
 fi
 if [[ -d "$VAULT_DIR/.git" ]]; then
     echo "Updating vault repo..."
-    # Strip any baked-in credentials, gh auth handles auth now
-    su - engineer -c "cd '$VAULT_DIR' && git remote set-url origin 'https://github.com/minsley/${VAULT_REPO_NAME}.git'" || true
+    # Use broker token for pull, then strip credentials from remote
+    su - engineer -c "cd '$VAULT_DIR' && git remote set-url origin 'https://x-access-token:${_INIT_TOKEN}@github.com/minsley/${VAULT_REPO_NAME}.git'" || true
     su - engineer -c "cd '$VAULT_DIR' && git pull --rebase origin main" || true
+    su - engineer -c "cd '$VAULT_DIR' && git remote set-url origin 'https://github.com/minsley/${VAULT_REPO_NAME}.git'" || true
 else
     echo "Cloning vault repo..."
     # Use broker service token, fall back to env tokens
