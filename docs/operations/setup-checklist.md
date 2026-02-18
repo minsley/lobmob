@@ -35,23 +35,19 @@ k8s Secrets and applies manifests via kubectl.
   - The `lobmob vault-init` command creates this for you
   - Dev environment uses a separate repo (e.g. `lobmob-vault-dev`)
 
-### GitHub App (recommended for token rotation)
+### GitHub App (required)
 - [ ] Create a GitHub App (Settings -> Developer settings -> GitHub Apps)
   - **Permissions**: Contents (R/W), Pull requests (R/W), Metadata (R)
-  - **Repository access**: Only select repositories (vault + lobmob repos)
+  - **Repository access**: All repositories the App is installed on (vault, vault-dev, lobmob)
+  - **Webhook**: Uncheck "Active" (not needed)
 - [ ] Install the App on your account/org
 - [ ] Download the private key PEM file
-  - Base64-encode and save as `GH_APP_PRIVATE_KEY` in `secrets.env`
+  - Base64-encode: `base64 -w0 < your-app.pem`
+  - Save as `GH_APP_PEM_B64` in `secrets.env`
 - [ ] Note the App ID and Installation ID
-  - Save as `GH_APP_ID` and `GH_APP_INSTALLATION_ID` in `secrets.env`
+  - Save as `GH_APP_ID` and `GH_APP_INSTALL_ID` in `secrets.env`
 
-The `gh-token-refresh` CronJob rotates tokens every 45 minutes automatically.
-
-### Alternative: Fine-Grained PAT
-- [ ] Create a fine-grained PAT scoped to vault + lobmob repos
-  - **Permissions**: Contents (R/W), Pull requests (R/W), Metadata (R)
-  - Save as `GH_TOKEN` in `secrets.env`
-- Note: PATs don't auto-rotate. Prefer the GitHub App approach.
+The lobwife token broker generates ephemeral tokens on-demand. All containers use the `gh-lobwife` wrapper for automatic token refresh. See [Token Management](token-management.md) for details.
 
 ---
 
@@ -145,10 +141,9 @@ cp infra/dev.tfvars.example infra/dev.tfvars
 ```bash
 DO_TOKEN=dop_v1_...
 DIGITALOCEAN_TOKEN=dop_v1_...   # same as DO_TOKEN, used by Terraform
-GH_TOKEN=ghp_...                # or leave empty if using GitHub App
 GH_APP_ID=123456
-GH_APP_INSTALLATION_ID=789012
-GH_APP_PRIVATE_KEY=base64...
+GH_APP_INSTALL_ID=789012
+GH_APP_PEM_B64=base64...        # base64-encoded PEM (lobwife broker uses this)
 DISCORD_BOT_TOKEN=MTIz...
 ANTHROPIC_API_KEY=sk-ant-...
 ```

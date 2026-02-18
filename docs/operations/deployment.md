@@ -7,7 +7,7 @@
 - [gh](https://cli.github.com/) (GitHub CLI)
 - [Docker](https://www.docker.com/) with buildx (for image builds)
 - A DigitalOcean account with API token
-- A GitHub account with App installation or fine-grained PAT
+- A GitHub App installation (for token broker — see [Setup Checklist](setup-checklist.md))
 - A Discord bot application with token
 
 See [[operations/setup-checklist]] for complete setup instructions.
@@ -41,8 +41,10 @@ For dev environment: `lobmob --env dev deploy`
 |---|---|---|
 | DOKS cluster | Terraform | Managed Kubernetes (free control plane) |
 | `lobmob` namespace | k8s | All resources live here |
-| `lobmob-secrets` | k8s Secret | API tokens and keys |
+| `lobmob-secrets` | k8s Secret | Discord, Anthropic, DO tokens |
+| `lobwife-secrets` | k8s Secret | GitHub App PEM + credentials (broker only) |
 | `lobboss-config` | k8s ConfigMap | Environment config |
+| `lobwife` | k8s Deployment | Token broker + scheduler daemon |
 | `lobboss` | k8s Deployment | Manager agent |
 | `lobsigliere` | k8s Deployment | Ops console + task daemon |
 | CronJobs (5) | k8s CronJob | Automated maintenance tasks |
@@ -73,12 +75,20 @@ docker buildx build --builder amd64-builder --platform linux/amd64 \
 
 docker buildx build --builder amd64-builder --platform linux/amd64 \
   --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
+  -t ghcr.io/minsley/lobmob-lobwife:latest --push \
+  -f containers/lobwife/Dockerfile .
+
+docker buildx build --builder amd64-builder --platform linux/amd64 \
+  --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
   -t ghcr.io/minsley/lobmob-lobsigliere:latest --push \
   -f containers/lobsigliere/Dockerfile .
 ```
 
-After pushing, restart deployments to pick up new images:
+After pushing, restart deployments to pick up new images.
+**Important**: lobwife must be restarted first (other services depend on the token broker at startup):
 ```bash
+kubectl -n lobmob rollout restart deployment/lobwife
+kubectl -n lobmob rollout status deployment/lobwife --timeout=60s
 kubectl -n lobmob rollout restart deployment/lobboss deployment/lobsigliere
 ```
 

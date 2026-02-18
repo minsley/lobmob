@@ -10,14 +10,16 @@ Agent swarm management on DigitalOcean Kubernetes (DOKS). Manager (lobboss) coor
 - **Three lobster types**: research (Sonnet), swe (Opus), qa (Sonnet)
 - **lobboss**: k8s Deployment, discord.py + Agent SDK (long-running, session rotation every 2-4h)
 - **lobsters**: k8s Jobs, Agent SDK `query()` (ephemeral, one task per container)
-- **Images**: GHCR — lobmob-base, lobmob-lobboss, lobmob-lobster (all amd64)
+- **lobwife**: k8s Deployment, APScheduler daemon + aiohttp API + token broker
+- **lobsigliere**: k8s Deployment, system task processor + SSH dev shell
+- **Images**: GHCR — lobmob-base, lobmob-lobboss, lobmob-lobster, lobmob-lobwife, lobmob-lobsigliere (all amd64)
 
 ## Project Structure
 ```
 src/lobboss/                       — Bot + agent (Python, discord.py + Agent SDK)
 src/lobster/                       — Ephemeral task worker (Python, Agent SDK)
 src/common/                        — Shared modules (vault, logging, health)
-containers/{base,lobboss,lobster}/ — Dockerfiles
+containers/{base,lobboss,lobster,lobwife,lobsigliere}/ — Dockerfiles
 k8s/base/                          — Kubernetes manifests (Kustomize base)
 k8s/overlays/{dev,prod}/           — Environment-specific overlays
 scripts/lobmob                     — CLI dispatcher
@@ -61,10 +63,14 @@ cd infra && terraform validate
 - Dockerfile FROM arg: Use `ARG BASE_IMAGE` + `FROM ${BASE_IMAGE}` so buildx resolves GHCR base
 - PVC lost+found: New PVCs have `lost+found` dir. Clean before git clone
 - GHCR pull secrets: `imagePullSecrets` needed in deployment AND cronjob pod specs
-- GitHub App tokens: lobwife token broker generates on-demand (no more CronJob)
 - Vault clone MUST use HTTPS remote (not SSH) — App tokens only work over HTTPS
 - ConfigMap keys are case-sensitive — match exactly
 - Don't manually fix lobster mistakes — fix root causes so they behave correctly autonomously
+- **Token broker**: lobwife generates GitHub App tokens on-demand. All containers use `gh-lobwife` wrapper as `/usr/local/bin/gh` (shadows `gh-real`). No static PAT needed
+- **Credential helper**: Use `git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'` — never `gh auth setup-git` (that routes to `gh-real`, bypassing broker)
+- **PVC gitconfig**: `.gitconfig` persists across restarts on PVCs. Always `--unset-all` stale credential helpers before setting new ones
+- **`su -` env reset**: `su - engineer` resets environment. Pass env vars explicitly or use tokens in URLs for entrypoint operations
+- **Deploy order**: lobwife must be up before lobboss/lobsigliere (they need broker for init). Restart lobwife first
 
 ## Git Workflow
 - Always create a feature branch for changes (never commit directly to main)

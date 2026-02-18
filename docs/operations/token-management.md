@@ -6,16 +6,52 @@ How lobmob handles API tokens, including automatic renewal via GitHub App and DO
 
 | Service | Method | Lifetime | Renewal |
 |---|---|---|---|
-| GitHub | App installation token | 1 hour | Automatic (JWT + PEM) |
-| GitHub | Fine-grained PAT (fallback) | 30-90 days | Manual |
+| GitHub | App installation token (via broker) | 1 hour | Automatic (lobwife broker) |
 | DigitalOcean | OAuth access token | 30 days | Automatic (refresh token cron) |
 | DigitalOcean | API token (fallback) | Until revoked | Manual |
 | Discord | Bot token | Until revoked | Manual (regenerate in dev portal) |
 | Anthropic | API key | Until revoked | Manual (regenerate in console) |
 
-## GitHub App (Recommended)
+## GitHub App Token Broker
 
-GitHub Apps generate short-lived (1-hour) installation tokens from a PEM private key. No user interaction needed for renewal.
+All GitHub operations use ephemeral tokens generated on-demand by the **lobwife token broker**. No static PAT is needed.
+
+### How It Works
+
+The broker runs as part of the lobwife daemon and generates short-lived (1-hour) GitHub App installation tokens:
+
+1. **lobwife** holds the GitHub App PEM key and generates JWT-signed requests
+2. Services request tokens from the broker via HTTP API
+3. The `gh-lobwife` wrapper (installed as `/usr/local/bin/gh` in all containers) fetches a fresh token before every `gh` invocation
+4. Git credential helper routes through the wrapper: `git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'`
+
+### Two Token Paths
+
+| Path | Endpoint | Scope | Used By |
+|---|---|---|---|
+| Task tokens | `POST /api/token` | Single repo (vault) | Lobsters (ephemeral workers) |
+| Service tokens | `POST /api/v1/service-token` | All repos the App can access | lobboss, lobsigliere, init containers |
+
+Task tokens require pre-registration by lobboss (`POST /api/register`). Service tokens require only a service name.
+
+### Container Auth Flow
+
+Each container follows the same pattern at startup:
+
+1. Fetch an initial token from the broker (with retry loop for lobwife startup)
+2. Configure git credential helper: `git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'`
+3. The `gh-lobwife` wrapper handles all subsequent token refreshes transparently
+
+**Important**: Do NOT use `gh auth setup-git` — it registers `gh-real` (the actual gh binary) instead of the wrapper, bypassing broker tokens.
+
+### Token Audit
+
+Check issued tokens:
+```
+GET /api/token/audit
+```
+
+Returns a log of all token issuances with service names, task IDs, and timestamps.
 
 ### Setup
 
@@ -26,7 +62,7 @@ GitHub Apps generate short-lived (1-hour) installation tokens from a PEM private
    - Uncheck "Active" under Webhook (not needed)
 2. After creation, note the **App ID** from the app settings page
 3. Generate a private key (Downloads a `.pem` file)
-4. Click "Install App" and install it on the vault repo only
+4. Click "Install App" and install it on all lobmob repos (lobmob, vault, vault-dev)
 5. Note the **Installation ID** from the URL: `github.com/settings/installations/<ID>`
 
 ### Configuration
@@ -38,19 +74,7 @@ GH_APP_INSTALL_ID=789012
 GH_APP_PEM_B64=<base64 -w0 < your-app.pem>
 ```
 
-The PEM is pushed to `/etc/lobmob/gh-app.pem` on lobboss during `lobmob provision-secrets`.
-
-### How It Works
-
-The `lobmob-gh-token` script on each node:
-1. Reads the PEM and App ID from `/etc/lobmob/`
-2. Creates a JWT (10-minute expiry) signed with RS256
-3. POSTs to GitHub API to exchange JWT for an installation token
-4. Returns the 1-hour token to stdout
-
-Used as: `GH_TOKEN=$(lobmob-gh-token)` -- drop-in replacement for a PAT.
-
-Both `lobmob-provision` and `lobmob-spawn-lobster` try the App token first, falling back to the `GH_TOKEN` PAT if the App isn't configured.
+These are deployed to the `lobwife-secrets` k8s Secret (separate from `lobmob-secrets`). Only lobwife needs the PEM — all other services get tokens from the broker.
 
 ## DigitalOcean OAuth
 
@@ -60,7 +84,7 @@ DO OAuth tokens auto-renew via a refresh token. Requires one-time browser author
 
 1. Create an OAuth App at https://cloud.digitalocean.com/account/api/applications
    - Name: `lobmob-fleet`
-   - Callback URL: `http://<lobboss-reserved-ip>:8080/oauth/digitalocean/callback`
+   - Callback URL: `http://<lobboss-ip>:8080/oauth/digitalocean/callback`
 2. Note the **Client ID** and **Client Secret**
 
 ### Configuration
@@ -71,25 +95,15 @@ DO_OAUTH_CLIENT_ID=abc123...
 DO_OAUTH_CLIENT_SECRET=def456...
 ```
 
-These are pushed to `/etc/lobmob/web.env` on lobboss during provisioning.
-
 ### Authorization Flow
 
 1. Open `http://<lobboss-ip>:8080/oauth/digitalocean` in your browser
 2. Authorize the app on DigitalOcean
-3. Callback stores access + refresh tokens in `/etc/lobmob/secrets.env`
+3. Callback stores access + refresh tokens
 
 ### Automatic Renewal
 
-A cron job runs `/usr/local/bin/lobmob-refresh-do-token` every 25 days (tokens last 30 days). It uses the refresh token to get a new access token without user interaction.
-
-## Fallback Behavior
-
-All token integrations are backward-compatible:
-
-- If `GH_APP_PEM_B64` is not in `secrets.env`, the system uses `GH_TOKEN` (PAT) directly
-- If `web.env` doesn't exist, the web UI and DO OAuth refresh cron are not started
-- `DO_TOKEN` (API token) is always used for doctl authentication and Terraform
+A cron job runs the DO token refresh every 25 days (tokens last 30 days). It uses the refresh token to get a new access token without user interaction.
 
 ## Token Rotation
 
@@ -97,18 +111,19 @@ All token integrations are backward-compatible:
 1. Go to the App settings on GitHub
 2. Generate a new private key
 3. Update `GH_APP_PEM_B64` in `secrets.env`
-4. Run `lobmob provision-secrets`
-
-### Rotate DO OAuth
-1. Visit `http://<lobboss-ip>:8080/oauth/digitalocean` to re-authorize
-2. New tokens are stored automatically
+4. Run `lobmob deploy` (or `lobmob apply` to just update secrets)
+5. Restart lobwife: `kubectl -n lobmob rollout restart deployment/lobwife`
 
 ### Rotate Discord Bot Token
 1. Regenerate in the Discord Developer Portal
 2. Update `DISCORD_BOT_TOKEN` in `secrets.env`
-3. Run `lobmob provision-secrets`
+3. Run `lobmob deploy` and restart deployments
 
 ### Rotate Anthropic API Key
 1. Regenerate in the Anthropic Console
 2. Update `ANTHROPIC_API_KEY` in `secrets.env`
-3. Run `lobmob provision-secrets`
+3. Run `lobmob deploy` and restart deployments
+
+### Rotate DO OAuth
+1. Visit `http://<lobboss-ip>:8080/oauth/digitalocean` to re-authorize
+2. New tokens are stored automatically
