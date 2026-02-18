@@ -46,8 +46,9 @@ if [[ -n "${LOBWIFE_URL:-}" ]]; then
         sleep 3
     done
     if [[ -n "$_INIT_TOKEN" ]]; then
-        su - engineer -c "GH_TOKEN='$_INIT_TOKEN' gh auth setup-git"
-        echo "gh auth setup-git configured via broker"
+        # Configure git to use our gh wrapper (not gh-real) so broker tokens flow through
+        su - engineer -c "git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'"
+        echo "git credential helper configured (gh-lobwife wrapper)"
     else
         echo "WARNING: Could not get broker token, git auth may not work"
     fi

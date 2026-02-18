@@ -270,20 +270,19 @@ async def _setup_gh_token(task_id: str) -> None:
         logger.warning("Failed to fetch broker token for gh CLI: %s", e)
         return
 
-    # Wire git credentials through gh CLI (gh-lobwife wrapper refreshes tokens)
+    # Wire git credentials through gh-lobwife wrapper (not gh-real, so broker tokens flow)
     try:
         proc = await asyncio.create_subprocess_exec(
-            "gh", "auth", "setup-git",
+            "git", "config", "--global",
+            "credential.https://github.com.helper",
+            "!/usr/local/bin/gh auth git-credential",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-        if proc.returncode == 0:
-            logger.info("gh auth setup-git configured")
-        else:
-            logger.warning("gh auth setup-git failed: %s", stderr.decode().strip())
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+        logger.info("git credential helper configured (gh-lobwife wrapper)")
     except Exception as e:
-        logger.warning("Failed to run gh auth setup-git: %s", e)
+        logger.warning("Failed to configure git credential helper: %s", e)
 
 
 async def _ensure_vault_pr(config, vault_repo: str) -> None:

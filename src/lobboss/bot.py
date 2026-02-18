@@ -47,20 +47,20 @@ class LobbossBot(discord.Client):
             self.loop.create_task(self._run_task_poller())
 
     async def _setup_git_auth(self) -> None:
-        """Configure git to use gh CLI for credentials (broker-backed)."""
+        """Configure git to use gh-lobwife wrapper for credentials."""
         try:
+            # Use our wrapper (/usr/local/bin/gh) not gh-real, so broker tokens flow through
             proc = await asyncio.create_subprocess_exec(
-                "gh", "auth", "setup-git",
+                "git", "config", "--global",
+                "credential.https://github.com.helper",
+                "!/usr/local/bin/gh auth git-credential",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode == 0:
-                logger.info("gh auth setup-git configured")
-            else:
-                logger.warning("gh auth setup-git failed: %s", stderr.decode().strip())
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+            logger.info("git credential helper configured (gh-lobwife wrapper)")
         except Exception as e:
-            logger.warning("Failed to run gh auth setup-git: %s", e)
+            logger.warning("Failed to configure git credential helper: %s", e)
 
     async def on_ready(self) -> None:
         logger.info("Connected as %s (id=%s)", self.user, self.user.id)
