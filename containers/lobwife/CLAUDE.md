@@ -23,6 +23,7 @@ You're inside **lobwife**, the persistent cron scheduler for lobmob. This pod re
 | `lobwife_jobs.py` | JobRunner (cron scheduling, DB-backed state, .py + .sh support) |
 | `lobwife_broker.py` | TokenBroker (unified: checks tasks table first, falls back to broker_tasks) |
 | `lobwife_api.py` | HTTP routes (jobs, broker compat shims, Task CRUD, broker registration) |
+| `lobwife_sync.py` | VaultSyncDaemon (periodic DB→vault sync, event-triggered) |
 | `lobwife-schema.sql` | SQLite DDL (6 tables, schema v2 with broker columns on tasks) |
 
 ## Scheduled Jobs
@@ -70,6 +71,15 @@ Broker registration is now unified into the `tasks` table (Phase 2). The old bro
 ## Schema (v2)
 
 The `tasks` table now includes broker fields: `broker_repos`, `broker_status`, `token_count`, `broker_registered_at`. This allows broker registration to work directly through the tasks table instead of requiring a separate `broker_tasks` entry.
+
+## Vault Sync Daemon
+
+The sync daemon runs as a background asyncio task inside the lobwife daemon. It replaces the Phase 2 dual-writes: DB is the sole state authority, and the sync daemon periodically snapshots DB task state into vault frontmatter for Obsidian browsing.
+
+- **Interval**: 5 minutes (configurable via `VAULT_SYNC_INTERVAL` env var)
+- **Event-triggered**: Immediate sync on task creation, completion, failure, cancellation
+- **Overview file**: `010-tasks/_overview.md` with status counts and recent tasks table
+- **API**: `GET /api/v1/sync` (status), `POST /api/v1/sync/trigger` (manual trigger)
 
 ## Troubleshooting
 
