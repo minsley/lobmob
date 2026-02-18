@@ -304,8 +304,12 @@ async def _write_overview() -> str:
 
 
 async def run_sync_cycle(last_sync: str | None) -> str:
-    """Run a single sync cycle. Returns the new last_sync timestamp."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Run a single sync cycle. Returns the new last_sync timestamp.
+
+    Uses SQLite datetime format (YYYY-MM-DD HH:MM:SS) for timestamps
+    to match the DB's datetime('now') output.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     # Pull latest vault state
     try:
