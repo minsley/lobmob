@@ -190,6 +190,29 @@ async def process_task(task_id: str, task_data: dict):
         await cleanup_workspace()
 
 
+async def _get_broker_token() -> str:
+    """Fetch a service token from the lobwife broker."""
+    lobwife_url = os.environ.get("LOBWIFE_URL", "")
+    service = os.environ.get("SERVICE_NAME", "lobsigliere")
+    if not lobwife_url:
+        return ""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{lobwife_url}/api/v1/service-token",
+                json={"service": service},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["token"]
+                logger.warning("Broker token request failed: HTTP %d", resp.status)
+    except Exception as e:
+        logger.warning("Failed to fetch broker token: %s", e)
+    return ""
+
+
 async def ensure_vault() -> bool:
     """Clone vault if not present, otherwise pull. Returns True if vault is ready."""
     vault = Path(VAULT_PATH)
@@ -203,8 +226,15 @@ async def ensure_vault() -> bool:
         env = os.environ.get("LOBMOB_ENV", "prod")
         vault_repo = "minsley/lobmob-vault-dev" if env == "dev" else "minsley/lobmob-vault"
 
-    gh_token = os.environ.get("GH_TOKEN", "")
-    clone_url = f"https://x-access-token:{gh_token}@github.com/{vault_repo}.git"
+    # Get token from broker (preferred) or fall back to env
+    token = await _get_broker_token()
+    if not token:
+        token = os.environ.get("GH_TOKEN", "")
+    if not token:
+        logger.error("No GitHub token available for vault clone")
+        return False
+
+    clone_url = f"https://x-access-token:{token}@github.com/{vault_repo}.git"
 
     logger.info("Cloning vault from %s...", vault_repo)
     proc = await asyncio.create_subprocess_exec(

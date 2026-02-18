@@ -32,9 +32,25 @@ fi
 if [[ -n "${GIT_USER_EMAIL:-}" ]]; then
     su - engineer -c "git config --global user.email '${GIT_USER_EMAIL}'"
 fi
-# Configure lobwife token broker as git credential helper
+# Configure git to use gh CLI for credentials (broker-backed via gh-lobwife wrapper)
 if [[ -n "${LOBWIFE_URL:-}" ]]; then
-    su - engineer -c "git config --global credential.helper lobwife"
+    # Fetch initial token for gh auth setup-git
+    _INIT_TOKEN=""
+    for _i in 1 2 3 4 5; do
+        _INIT_TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/v1/service-token" \
+            -H "Content-Type: application/json" \
+            -d '{"service":"lobsigliere"}' 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null) || true
+        if [[ -n "$_INIT_TOKEN" ]]; then break; fi
+        echo "Waiting for lobwife broker (attempt $_i/5)..."
+        sleep 3
+    done
+    if [[ -n "$_INIT_TOKEN" ]]; then
+        su - engineer -c "GH_TOKEN='$_INIT_TOKEN' gh auth setup-git"
+        echo "gh auth setup-git configured via broker"
+    else
+        echo "WARNING: Could not get broker token, git auth may not work"
+    fi
 fi
 
 # Clone lobmob repo into engineer's home (persistent on PVC)
@@ -44,12 +60,12 @@ if [[ -d "$LOBMOB_REPO/.git" ]]; then
     su - engineer -c "cd '$LOBMOB_REPO' && git fetch origin && git pull origin develop --rebase" || true
 else
     echo "Cloning lobmob repo..."
-    # Use LOBSIGLIERE_GH_TOKEN (scoped to lobmob repo), fall back to GH_TOKEN
-    CLONE_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
+    # Use broker service token for clone
+    CLONE_TOKEN="${_INIT_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}}"
     if su - engineer -c "git clone 'https://x-access-token:${CLONE_TOKEN}@github.com/minsley/lobmob.git' '$LOBMOB_REPO'" 2>/dev/null; then
         su - engineer -c "cd '$LOBMOB_REPO' && git checkout develop" || true
     else
-        echo "HTTPS clone failed (token may not have repo access). Clone manually after SSH in:"
+        echo "HTTPS clone failed. Clone manually after SSH in:"
         echo "  git clone git@github.com:minsley/lobmob.git ~/lobmob"
     fi
 fi
@@ -61,8 +77,8 @@ if [[ -d "$VAULT_DIR/.git" ]]; then
     su - engineer -c "cd '$VAULT_DIR' && git pull --rebase origin main" || true
 else
     echo "Cloning vault repo..."
-    # Use GH_TOKEN (app token with vault access), not LOBSIGLIERE_GH_TOKEN (lobmob-only)
-    CLONE_TOKEN="${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}"
+    # Use broker service token, fall back to env tokens
+    CLONE_TOKEN="${_INIT_TOKEN:-${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}}"
     LOBMOB_ENV="${LOBMOB_ENV:-prod}"
     if [[ "$LOBMOB_ENV" == "dev" ]]; then
         VAULT_REPO_NAME="lobmob-vault-dev"
@@ -83,7 +99,7 @@ export LOBMOB_ENV="${LOBMOB_ENV:-dev}"
 export KUBERNETES_SERVICE_HOST="${KUBERNETES_SERVICE_HOST:-}"
 export KUBERNETES_SERVICE_PORT="${KUBERNETES_SERVICE_PORT:-443}"
 export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
-export GH_TOKEN="${LOBSIGLIERE_GH_TOKEN:-${GH_TOKEN:-}}"
+export SERVICE_NAME="${SERVICE_NAME:-lobsigliere}"
 export LOBWIFE_URL="${LOBWIFE_URL:-}"
 ENVBLOCK
 
@@ -129,7 +145,7 @@ su - engineer -c "VAULT_PATH=/home/engineer/vault \
     SYSTEM_WORKSPACE=/home/engineer/lobmob \
     PYTHONPATH=/opt/lobmob/src \
     ANTHROPIC_API_KEY='${ANTHROPIC_API_KEY:-}' \
-    GH_TOKEN='${GH_TOKEN:-${LOBSIGLIERE_GH_TOKEN:-}}' \
+    SERVICE_NAME=lobsigliere \
     LOBWIFE_URL='${LOBWIFE_URL:-}' \
     LOBMOB_ENV='${LOBMOB_ENV:-prod}' \
     python3 /opt/lobmob/scripts/server/lobsigliere-daemon.py" &
