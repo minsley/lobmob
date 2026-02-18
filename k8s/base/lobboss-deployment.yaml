@@ -69,10 +69,10 @@ spec:
           resources:
             requests:
               memory: "512Mi"
-              cpu: "500m"
+              cpu: "200m"
             limits:
               memory: "1536Mi"
-              cpu: "1000m"
+              cpu: "900m"
           volumeMounts:
             - name: vault
               mountPath: /opt/vault

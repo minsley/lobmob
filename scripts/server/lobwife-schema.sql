@@ -26,7 +26,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at          TEXT    NOT NULL DEFAULT (datetime('now')),
     queued_at           TEXT    NOT NULL DEFAULT (datetime('now')),
     assigned_at         TEXT,
-    completed_at        TEXT
+    completed_at        TEXT,
+    broker_repos        TEXT,
+    broker_status       TEXT,
+    token_count         INTEGER NOT NULL DEFAULT 0,
+    broker_registered_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

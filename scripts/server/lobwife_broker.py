@@ -121,6 +121,23 @@ class TokenBroker:
         if not self.enabled:
             raise RuntimeError("Token broker not configured (no PEM key)")
         db = await get_db()
+
+        # Try tasks table first (unified broker fields)
+        task_row = await self._find_task_with_broker(db, task_id)
+        if task_row:
+            repos = json.loads(task_row["broker_repos"])
+            if task_row["broker_status"] != "active":
+                raise ValueError(f"Task {task_id} broker is {task_row['broker_status']}, not active")
+            token_data = await self.create_scoped_token(repos)
+            await db.execute(
+                "UPDATE tasks SET token_count = token_count + 1 WHERE id = ?",
+                (task_row["id"],),
+            )
+            await self._audit(db, "token_issued", task_id, repos)
+            await db.commit()
+            return token_data
+
+        # Fall back to broker_tasks for legacy entries
         async with db.execute(
             "SELECT * FROM broker_tasks WHERE task_id = ?", (task_id,)
         ) as cur:
@@ -138,6 +155,41 @@ class TokenBroker:
         await self._audit(db, "token_issued", task_id, repos)
         await db.commit()
         return token_data
+
+    async def _find_task_with_broker(self, db, task_id: str):
+        """Find a task with broker_repos set, by slug, name, or T-format ID."""
+        # Try T-format: "T42" → id=42
+        if task_id.startswith("T") and task_id[1:].isdigit():
+            tid = int(task_id[1:])
+            async with db.execute(
+                "SELECT * FROM tasks WHERE id = ? AND broker_repos IS NOT NULL", (tid,)
+            ) as cur:
+                row = await cur.fetchone()
+                if row:
+                    return row
+
+        # Try slug or name match
+        for field in ("slug", "name"):
+            async with db.execute(
+                f"SELECT * FROM tasks WHERE {field} = ? AND broker_repos IS NOT NULL",
+                (task_id,),
+            ) as cur:
+                row = await cur.fetchone()
+                if row:
+                    return row
+
+        # Try job-name based match: "lobster-swe-t42" → extract task ref
+        # The task_id from git-credential-lobwife is the original task_id string
+        # passed to the job, so also try matching assigned_to
+        async with db.execute(
+            "SELECT * FROM tasks WHERE assigned_to = ? AND broker_repos IS NOT NULL",
+            (task_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return row
+
+        return None
 
     async def cleanup_expired(self):
         db = await get_db()

@@ -186,6 +186,21 @@ git -C "$VAULT_LOCAL" add "$TASK_FILE_REL"
 git -C "$VAULT_LOCAL" commit -m "[test] Create ${TASK_ID}" --quiet
 git -C "$VAULT_LOCAL" push origin main --quiet
 
+# Register task in lobwife DB (Phase 2: poller reads from API)
+LOBWIFE_SVC=$(kubectl --context "$KUBE_CONTEXT" -n lobmob get svc lobwife -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+if [[ -n "$LOBWIFE_SVC" ]]; then
+  API_CREATE=$(kubectl --context "$KUBE_CONTEXT" -n lobmob exec deployment/lobwife -- \
+    curl -sf -X POST "http://localhost:8081/api/v1/tasks" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\": \"${TITLE}\", \"type\": \"${LOBSTER_TYPE}\", \"slug\": \"${TASK_ID}\", \"actor\": \"e2e-test\"}" 2>/dev/null || echo "")
+  if [[ -n "$API_CREATE" ]]; then
+    DB_TASK_ID=$(echo "$API_CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")
+    echo -e "       db: ${DB_TASK_ID} (registered via API)"
+  else
+    echo -e "       ${YELLOW}WARN: Failed to register in DB — poller may not pick up${NC}"
+  fi
+fi
+
 stage_end
 pass "Task pushed: ${TASK_ID}"
 echo -e "       vault: ${VAULT_REPO}  file: ${TASK_FILE_REL}"
@@ -240,7 +255,12 @@ stage_start
 
 JOB_TIMEOUT=120
 ELAPSED=0
-SANITIZED=$(sanitize_k8s_name "$TASK_ID")
+# Use T-format ID for job label if available (Phase 2: poller labels with T-format)
+if [[ -n "${DB_TASK_ID:-}" ]]; then
+  SANITIZED=$(sanitize_k8s_name "$DB_TASK_ID")
+else
+  SANITIZED=$(sanitize_k8s_name "$TASK_ID")
+fi
 JOB_NAME=""
 POD_PHASE=""
 
@@ -334,11 +354,12 @@ PR_URL=""
 PR_MERGED=false
 
 while [[ "$ELAPSED" -lt "$PR_TIMEOUT" ]]; do
-  # Look for PR
+  # Look for PR (try T-format ID first, then slug)
   if [[ -z "$PR_NUMBER" ]]; then
-    PR_JSON=$(gh pr list --repo "$VAULT_REPO" --state all --search "$TASK_ID" \
+    SEARCH_ID="${DB_TASK_ID:-$TASK_ID}"
+    PR_JSON=$(gh pr list --repo "$VAULT_REPO" --state all --search "$SEARCH_ID" \
       --json number,url,state,headRefName \
-      --jq ".[] | select(.headRefName | contains(\"$TASK_ID\"))" 2>/dev/null || echo "")
+      --jq ".[] | select(.headRefName | test(\"$SEARCH_ID|$TASK_ID\"; \"i\"))" 2>/dev/null || echo "")
     if [[ -n "$PR_JSON" ]]; then
       PR_NUMBER=$(echo "$PR_JSON" | head -1 | jq -r '.number' 2>/dev/null || echo "")
       PR_URL=$(echo "$PR_JSON" | head -1 | jq -r '.url' 2>/dev/null || echo "")
@@ -353,12 +374,16 @@ while [[ "$ELAPSED" -lt "$PR_TIMEOUT" ]]; do
     fi
   fi
 
-  # Check merge status
+  # Check merge status (if closed without merge, reset and look for retry PR)
   if [[ -n "$PR_NUMBER" ]] && [[ "$PR_MERGED" == false ]]; then
     PR_STATE=$(gh pr view "$PR_NUMBER" --repo "$VAULT_REPO" --json state --jq '.state' 2>/dev/null || echo "")
     if [[ "$PR_STATE" == "MERGED" ]]; then
       PR_MERGED=true
       break
+    elif [[ "$PR_STATE" == "CLOSED" ]]; then
+      echo -e " PR #${PR_NUMBER} closed (retry expected)"
+      PR_NUMBER=""
+      PR_URL=""
     fi
   fi
 

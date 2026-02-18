@@ -150,11 +150,17 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
     }
 
     vault_clone_script = (
-        'TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token"'
-        ' -H "Content-Type: application/json"'
-        ' -d "{\\"task_id\\": \\"${TASK_ID}\\"}"'
-        " | python3 -c \"import sys,json; print(json.load(sys.stdin)['token'])\" 2>/dev/null)"
-        " && git clone \"https://x-access-token:${TOKEN}@github.com/"
+        'for i in 1 2 3 4 5; do'
+        '  TOKEN=$(curl -sf -X POST "${LOBWIFE_URL}/api/token"'
+        '  -H "Content-Type: application/json"'
+        '  -d "{\\"task_id\\": \\"${TASK_ID}\\"}"'
+        " | python3 -c \"import sys,json; print(json.load(sys.stdin)['token'])\" 2>/dev/null);"
+        '  if [ -n "$TOKEN" ]; then break; fi;'
+        '  echo "Token not ready (attempt $i/5), waiting 3s..."; sleep 3;'
+        " done"
+        " && sleep 2"
+        " && GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone"
+        " \"https://x-access-token:${TOKEN}@github.com/"
         + VAULT_REPO
         + '.git" /opt/vault'
         " || { echo 'Broker token failed, vault clone aborted'; exit 1; }"
@@ -288,6 +294,61 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
         raise RuntimeError(f"Failed to create job {job_name}: {e}") from e
 
 
+async def _create_task_via_api(
+    name: str, type: str, priority: str = "normal", **kwargs
+) -> dict:
+    """Create a task in the lobwife DB via API. Returns {id, task_id}."""
+    payload = {"name": name, "type": type, "priority": priority}
+    for key in (
+        "model", "estimate_minutes", "requires_qa", "discord_thread_id",
+        "repos", "slug", "workflow", "actor",
+    ):
+        if key in kwargs and kwargs[key] is not None:
+            payload[key] = kwargs[key]
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{LOBWIFE_URL}/api/v1/tasks",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            body = await resp.json()
+            if resp.status >= 400:
+                msg = body.get("error", str(body))
+                raise RuntimeError(f"lobwife API {resp.status}: {msg}")
+            return body
+
+
+@tool("create_task_via_api", "Create a task in the DB via lobwife API", {
+    "name": str,
+    "type": str,
+    "priority": str,
+    "model": str,
+    "estimate_minutes": int,
+    "requires_qa": bool,
+    "discord_thread_id": str,
+    "repos": list,
+    "slug": str,
+})
+async def create_task_via_api(args: dict[str, Any]) -> dict[str, Any]:
+    """MCP tool to create a task via the lobwife API."""
+    try:
+        result = await _create_task_via_api(
+            name=args["name"],
+            type=args.get("type", "swe"),
+            priority=args.get("priority", "normal"),
+            model=args.get("model"),
+            estimate_minutes=args.get("estimate_minutes"),
+            requires_qa=args.get("requires_qa"),
+            discord_thread_id=args.get("discord_thread_id"),
+            repos=args.get("repos"),
+            slug=args.get("slug"),
+        )
+        return {"content": [{"type": "text", "text": f"Task created: id={result['id']}, task_id={result['task_id']}"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error creating task: {e}"}]}
+
+
 @tool("spawn_lobster", "Spawn a lobster worker agent for a task", {
     "task_id": str,
     "lobster_type": str,
@@ -383,5 +444,5 @@ async def lobster_status(args: dict[str, Any]) -> dict[str, Any]:
 lobmob_mcp = create_sdk_mcp_server(
     name="lobmob",
     version="1.0.0",
-    tools=[discord_post, spawn_lobster, lobster_status],
+    tools=[discord_post, create_task_via_api, spawn_lobster, lobster_status],
 )

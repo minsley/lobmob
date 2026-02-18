@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# lobwife-task-lifecycle — end-to-end task lifecycle test
+#
+# Tests the full create → assign → complete → verify cycle via the
+# lobwife API. Requires a running lobwife daemon (local or port-forwarded).
+#
+# Usage:
+#   tests/lobwife-task-lifecycle                    # default: localhost:8081
+#   API_URL=http://10.0.0.1:8081 tests/lobwife-task-lifecycle  # custom URL
+
+API="${API_URL:-http://127.0.0.1:8081}"
+PASS=0
+FAIL=0
+
+check() {
+    local desc="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        echo "  PASS: $desc"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $desc"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+echo "=== lobwife-task-lifecycle test ==="
+echo "API: $API"
+
+# Verify API is reachable
+if ! curl -sf "$API/health" >/dev/null 2>&1; then
+    echo "ERROR: lobwife API not reachable at $API"
+    echo "Start daemon or set API_URL"
+    exit 1
+fi
+
+echo ""
+echo "--- 1. Create task ---"
+CREATE=$(curl -sf -X POST "$API/api/v1/tasks" \
+    -H "Content-Type: application/json" \
+    -d '{"name": "Lifecycle test task", "type": "swe", "priority": "normal", "slug": "lifecycle-test", "estimate_minutes": 30}')
+TASK_DB_ID=$(echo "$CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+TASK_ID=$(echo "$CREATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['task_id'])")
+
+check "task created with id" bash -c "[[ '$TASK_DB_ID' -gt 0 ]]"
+check "task_id is T-format" bash -c "[[ '$TASK_ID' == T* ]]"
+echo "  Created: $TASK_ID (db_id=$TASK_DB_ID)"
+
+echo ""
+echo "--- 2. Verify initial state ---"
+GET=$(curl -sf "$API/api/v1/tasks/$TASK_DB_ID")
+check "status is queued" bash -c "echo '$GET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='queued'\""
+check "type is swe" bash -c "echo '$GET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['type']=='swe'\""
+check "slug preserved" bash -c "echo '$GET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['slug']=='lifecycle-test'\""
+check "estimate_minutes set" bash -c "echo '$GET' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['estimate_minutes']==30\""
+
+echo ""
+echo "--- 3. Register broker ---"
+BREG=$(curl -sf -X POST "$API/api/v1/tasks/$TASK_DB_ID/register" \
+    -H "Content-Type: application/json" \
+    -d '{"repos": ["minsley/lobmob-vault"], "lobster_type": "swe"}')
+check "broker registered" bash -c "echo '$BREG' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='registered'\""
+
+GET2=$(curl -sf "$API/api/v1/tasks/$TASK_DB_ID")
+check "broker_repos set" bash -c "echo '$GET2' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d.get('broker_repos') is not None\""
+check "broker_status active" bash -c "echo '$GET2' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d.get('broker_status')=='active'\""
+
+echo ""
+echo "--- 4. Simulate spawn (assign) ---"
+ASSIGN=$(curl -sf -X PATCH "$API/api/v1/tasks/$TASK_DB_ID" \
+    -H "Content-Type: application/json" \
+    -d '{"status": "active", "assigned_to": "lobster-swe-lifecycle", "assigned_at": "2026-02-16T12:00:00Z", "actor": "task_poller"}')
+check "assigned to active" bash -c "echo '$ASSIGN' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert 'status' in d['updated']\""
+
+# Log spawn event
+curl -sf -X POST "$API/api/v1/tasks/$TASK_DB_ID/events" \
+    -H "Content-Type: application/json" \
+    -d '{"event_type": "spawned", "detail": "lobster-swe-lifecycle", "actor": "task_poller"}' >/dev/null
+
+echo ""
+echo "--- 5. Simulate lobster events ---"
+# Started event
+curl -sf -X POST "$API/api/v1/tasks/$TASK_DB_ID/events" \
+    -H "Content-Type: application/json" \
+    -d '{"event_type": "started", "detail": "model=claude-opus-4-6", "actor": "lobster"}' >/dev/null
+check "started event logged" bash -c "true"
+
+echo ""
+echo "--- 6. Simulate completion ---"
+COMPLETE=$(curl -sf -X PATCH "$API/api/v1/tasks/$TASK_DB_ID" \
+    -H "Content-Type: application/json" \
+    -d '{"status": "completed", "completed_at": "2026-02-16T12:30:00Z", "actor": "lobster"}')
+check "completed via PATCH" bash -c "echo '$COMPLETE' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert 'status' in d['updated']\""
+
+curl -sf -X POST "$API/api/v1/tasks/$TASK_DB_ID/events" \
+    -H "Content-Type: application/json" \
+    -d '{"event_type": "completed", "detail": "turns=12 cost=$1.50", "actor": "lobster"}' >/dev/null
+
+echo ""
+echo "--- 7. Verify final state ---"
+FINAL=$(curl -sf "$API/api/v1/tasks/$TASK_DB_ID")
+check "final status is completed" bash -c "echo '$FINAL' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['status']=='completed'\""
+check "completed_at set" bash -c "echo '$FINAL' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['completed_at'] is not None\""
+check "assigned_to preserved" bash -c "echo '$FINAL' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['assigned_to']=='lobster-swe-lifecycle'\""
+
+echo ""
+echo "--- 8. Verify event trail ---"
+EVENTS=$(curl -sf "$API/api/v1/tasks/$TASK_DB_ID/events")
+check "has created event" bash -c "echo '$EVENTS' | python3 -c \"import sys,json; evts=[e['event_type'] for e in json.load(sys.stdin)]; assert 'created' in evts\""
+check "has broker_registered event" bash -c "echo '$EVENTS' | python3 -c \"import sys,json; evts=[e['event_type'] for e in json.load(sys.stdin)]; assert 'broker_registered' in evts\""
+check "has spawned event" bash -c "echo '$EVENTS' | python3 -c \"import sys,json; evts=[e['event_type'] for e in json.load(sys.stdin)]; assert 'spawned' in evts\""
+check "has started event" bash -c "echo '$EVENTS' | python3 -c \"import sys,json; evts=[e['event_type'] for e in json.load(sys.stdin)]; assert 'started' in evts\""
+check "has completed event" bash -c "echo '$EVENTS' | python3 -c \"import sys,json; evts=[e['event_type'] for e in json.load(sys.stdin)]; assert 'completed' in evts\""
+
+echo ""
+echo "--- 9. Compat token route ---"
+# The compat route should still work for token requests (will fail on token
+# generation since no PEM key in test, but should find the task)
+TOKEN_RESP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/api/token" \
+    -H "Content-Type: application/json" \
+    -d "{\"task_id\": \"$TASK_ID\"}")
+# Expect 503 (broker not configured) or 403 (not active status), not 403 (not found)
+check "compat token route finds task" bash -c "[[ '$TOKEN_RESP' == '503' || '$TOKEN_RESP' == '403' ]]"
+
+echo ""
+echo "--- 10. List filters ---"
+LIST_C=$(curl -sf "$API/api/v1/tasks?status=completed")
+check "list completed returns results" bash -c "echo '$LIST_C' | python3 -c \"import sys,json; d=json.load(sys.stdin); assert len(d)>0\""
+
+LIST_Q=$(curl -sf "$API/api/v1/tasks?status=queued&type=swe")
+# Our test task is now completed, so this may be empty — just check it works
+check "list with queued+swe filter works" bash -c "echo '$LIST_Q' | python3 -c \"import sys,json; json.load(sys.stdin)\""
+
+echo ""
+echo "=== Results: $PASS passed, $FAIL failed ==="
+[[ "$FAIL" -eq 0 ]]

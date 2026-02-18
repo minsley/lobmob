@@ -14,7 +14,7 @@ export LOBMOB_ENV="${LOBMOB_ENV:-prod}"
 
 # Secrets are injected as env vars via envFrom in the CronJob spec.
 
-# Log helper — scripts use lobmob-log, ensure it's on PATH
+# Cron scripts need gh, git, etc. on PATH
 export PATH="/app/scripts:${PATH}"
 
 # GitHub App PEM — mounted as a Secret

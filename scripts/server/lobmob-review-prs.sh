@@ -95,7 +95,7 @@ echo "$PRS" | jq -c '.' | while read -r PR; do
     # Auto-merge vault housekeeping PRs
     echo "Auto-merging housekeeping PR #$NUMBER: $TITLE"
     gh pr merge "$NUMBER" --merge --delete-branch 2>/dev/null || true
-    lobmob-log pr-review "Auto-merged housekeeping PR #$NUMBER: $TITLE"
+    echo "[review-prs] Auto-merged housekeeping PR #$NUMBER: $TITLE"
   else
     # Code PR — post check results, leave for LLM QA review
     EXISTING=$(gh pr view "$NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -c "checks passed" || echo 0)
