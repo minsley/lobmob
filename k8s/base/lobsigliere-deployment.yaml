@@ -19,6 +19,8 @@ spec:
         app.kubernetes.io/name: lobsigliere
         app.kubernetes.io/part-of: lobmob
     spec:
+      nodeSelector:
+        lobmob.io/role: lobsigliere
       serviceAccountName: lobsigliere
       imagePullSecrets:
         - name: ghcr-pull-secret

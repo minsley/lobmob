@@ -1,5 +1,8 @@
 # --- DOKS Kubernetes Cluster ---
 # Free control plane; pay only for worker nodes.
+# The default node pool can't be resized without cluster recreation,
+# so we use lobsigliere (highest requirements, benefits from headroom
+# as a remote dev environment, unlikely to ever downsize).
 
 resource "digitalocean_kubernetes_cluster" "lobmob" {
   name    = "${var.project_name}-k8s"
@@ -8,18 +11,46 @@ resource "digitalocean_kubernetes_cluster" "lobmob" {
 
   vpc_uuid = digitalocean_vpc.swarm.id
 
-  # lobboss node pool — always-on, single node
+  # lobsigliere node pool (default) — always-on, single node
   node_pool {
-    name       = "lobboss"
-    size       = var.doks_lobboss_node_size
+    name       = "lobsigliere"
+    size       = var.doks_lobsigliere_node_size
     node_count = 1
 
     labels = {
-      "lobmob.io/role" = "lobboss"
+      "lobmob.io/role" = "lobsigliere"
     }
   }
 
+  tags = [digitalocean_tag.lobsigliere.id]
+}
+
+# Lobboss node pool — always-on, single node
+resource "digitalocean_kubernetes_node_pool" "lobboss" {
+  cluster_id = digitalocean_kubernetes_cluster.lobmob.id
+  name       = "lobboss"
+  size       = var.doks_lobboss_node_size
+  node_count = 1
+
+  labels = {
+    "lobmob.io/role" = "lobboss"
+  }
+
   tags = [digitalocean_tag.lobboss.id]
+}
+
+# Lobwife node pool — always-on, single node
+resource "digitalocean_kubernetes_node_pool" "lobwife" {
+  cluster_id = digitalocean_kubernetes_cluster.lobmob.id
+  name       = "lobwife"
+  size       = var.doks_lobwife_node_size
+  node_count = 1
+
+  labels = {
+    "lobmob.io/role" = "lobwife"
+  }
+
+  tags = [digitalocean_tag.lobwife.id]
 }
 
 # Lobster node pool — autoscaling, 0 to N

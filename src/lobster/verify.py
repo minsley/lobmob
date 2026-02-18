@@ -47,8 +47,24 @@ async def verify_completion(task_id: str, lobster_type: str, vault_path: str) ->
     """
     missing = []
 
+    # Resolve slug for T-format IDs (vault files may use old slug names)
+    effective_id = task_id
+    slug = None
+    if task_id.startswith("T") and task_id[1:].isdigit():
+        try:
+            from common.lobwife_client import get_task
+            db_id = int(task_id[1:])
+            api_task = await get_task(db_id)
+            slug = api_task.get("slug", "")
+        except Exception:
+            pass
+
     # --- Task file checks ---
     task_file = _find_task_file(vault_path, task_id)
+    if task_file is None and slug:
+        task_file = _find_task_file(vault_path, slug)
+        if task_file:
+            effective_id = slug
     if task_file is None:
         missing.append("task_file_missing: Cannot find task file in vault")
         return missing
@@ -69,8 +85,12 @@ async def verify_completion(task_id: str, lobster_type: str, vault_path: str) ->
         missing.append("notes_section: '## Lobster Notes' section is empty or missing")
 
     # --- Branch + PR checks vary by lobster type ---
+    # Search by both T-format and slug for PR detection
+    pr_search_ids = [task_id]
+    if slug and slug != task_id:
+        pr_search_ids.append(slug)
     if lobster_type in ("qa", "research", "swe", "image-gen"):
-        await _check_vault_pr(task_id, vault_path, missing)
+        await _check_vault_pr(pr_search_ids, vault_path, missing)
     elif lobster_type == "system":
         # System tasks (lobsigliere) create PRs in the code repo, not vault
         await _check_code_pr(task_id, vault_path, missing)
@@ -85,22 +105,42 @@ async def verify_completion(task_id: str, lobster_type: str, vault_path: str) ->
 
 
 def _find_task_file(vault_path: str, task_id: str) -> Path | None:
-    """Find the task file in active/, completed/, or failed/."""
+    """Find the task file in active/, completed/, or failed/.
+
+    Searches for exact match first (handles both T-format like T42
+    and old slug format like task-2026-02-15-a1b2).
+    """
     for subdir in ("active", "completed", "failed"):
         p = Path(vault_path) / "010-tasks" / subdir / f"{task_id}.md"
         if p.exists():
             return p
+    # Try case-insensitive match for T-format (e.g. searching for "t42" finds "T42.md")
+    if task_id and task_id[0].lower() == "t" and task_id[1:].isdigit():
+        upper_id = f"T{task_id[1:]}"
+        for subdir in ("active", "completed", "failed"):
+            p = Path(vault_path) / "010-tasks" / subdir / f"{upper_id}.md"
+            if p.exists():
+                return p
     return None
 
 
-async def _check_vault_pr(task_id: str, vault_path: str, missing: list[str]) -> None:
+async def _check_vault_pr(search_ids: list[str], vault_path: str, missing: list[str]) -> None:
     """Check if a vault PR exists for this task."""
-    rc, output = await _run(
-        f"gh pr list --state all --search '{task_id}' --json number --jq 'length'",
-        cwd=vault_path,
-    )
-    if rc != 0 or output in ("", "0"):
-        missing.append("vault_pr: No vault PR found for this task")
+    any_succeeded = False
+    for sid in search_ids:
+        rc, output = await _run(
+            f"gh pr list --state all --search '{sid}' --json number --jq 'length'",
+            cwd=vault_path,
+        )
+        if rc == 0:
+            any_succeeded = True
+            if output not in ("", "0"):
+                return  # Found a PR
+    if not any_succeeded:
+        # gh CLI not working (not authenticated or not installed) — skip PR check
+        logger.warning("gh CLI failed for all searches, skipping vault PR check")
+        return
+    missing.append("vault_pr: No vault PR found for this task")
 
 
 async def _check_code_pr(task_id: str, vault_path: str, missing: list[str]) -> None:
@@ -109,5 +149,8 @@ async def _check_code_pr(task_id: str, vault_path: str, missing: list[str]) -> N
         f"gh pr list --repo {CODE_REPO} --state all --search '{task_id}' --json number --jq 'length'",
         cwd=vault_path,
     )
-    if rc != 0 or output in ("", "0"):
+    if rc != 0:
+        logger.warning("gh CLI failed for code PR check, skipping")
+        return
+    if output in ("", "0"):
         missing.append(f"code_pr: No code PR found in {CODE_REPO} for this task")

@@ -26,6 +26,14 @@ resource "digitalocean_tag" "lobboss" {
   name = "${var.project_name}-lobboss"
 }
 
+resource "digitalocean_tag" "lobwife" {
+  name = "${var.project_name}-lobwife"
+}
+
+resource "digitalocean_tag" "lobsigliere" {
+  name = "${var.project_name}-lobsigliere"
+}
+
 resource "digitalocean_tag" "lobster" {
   name = "${var.project_name}-lobster"
 }

@@ -49,13 +49,16 @@ Keep the proposal SHORT — under 500 characters if possible to avoid Discord me
 
 ## Phase 3 — Create
 
-1. Generate a task ID: `task-YYYY-MM-DD-<4hex>` (e.g. `task-2026-02-05-a1b2`)
-2. Save the thread ID (this is the thread on the user's message)
-3. Create the task file at `010-tasks/active/<task-id>.md`:
+1. Use the `create_task_via_api` MCP tool to create the task in the DB:
+   - Pass: name (title), type, priority, model, estimate_minutes, requires_qa, discord_thread_id, repos (as list), slug (optional)
+   - Returns: `{id: 42, task_id: "T42"}`
+2. Save the returned `task_id` (e.g. "T42") and `id` (e.g. 42)
+3. Create the vault task file at `010-tasks/active/<task_id>.md` (e.g. `T42.md`):
 
 ```markdown
 ---
-id: <task-id>
+id: <task_id>
+db_id: <id>
 status: queued
 created: <ISO timestamp>
 assigned_to:
@@ -88,6 +91,6 @@ _Pending_
 ```
 
 4. Commit and push to main
-5. Reply in the thread: `**[lobboss]** Task created: **<task-id>**. The task-manager will assign it shortly.`
+5. Reply in the thread: `**[lobboss]** Task created: **<task_id>**. The task poller will assign it shortly.`
 
-The `lobmob-task-manager` cron (every 5 min) handles auto-assignment to an available lobster.
+The lobboss task poller queries the DB for queued tasks and auto-assigns them.

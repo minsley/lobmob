@@ -78,11 +78,20 @@ def read_task(vault_path: str, task_id: str) -> dict[str, Any]:
     """Load and parse a task file. Returns {'metadata': dict, 'body': str}.
 
     Searches active/, then completed/, then failed/.
+    Handles both T-format (T42) and old slug format (task-2026-02-15-a1b2).
     """
     for subdir in ("active", "completed", "failed"):
         task_path = Path(vault_path) / "010-tasks" / subdir / f"{task_id}.md"
         if task_path.exists():
             return _parse_task_file(task_path)
+
+    # Try case-insensitive T-format (e.g. "t42" -> "T42.md")
+    if task_id and task_id[0].lower() == "t" and task_id[1:].isdigit():
+        upper_id = f"T{task_id[1:]}"
+        for subdir in ("active", "completed", "failed"):
+            task_path = Path(vault_path) / "010-tasks" / subdir / f"{upper_id}.md"
+            if task_path.exists():
+                return _parse_task_file(task_path)
 
     raise FileNotFoundError(f"Task {task_id} not found in vault")
 

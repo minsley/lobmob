@@ -1,3 +1,10 @@
+---
+status: completed
+tags: [infrastructure, security, lobwife]
+maturity: implementation
+created: 2026-02-14
+updated: 2026-02-14
+---
 # GitHub Access Broker & Setup Wizard
 
 > Centralized GitHub credential management for the lobmob agent cluster.
