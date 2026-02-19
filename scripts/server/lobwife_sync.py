@@ -387,6 +387,13 @@ class VaultSyncDaemon:
             log.error("Vault path %s is not a git repo — sync daemon disabled", VAULT_PATH)
             return
 
+        # Mark vault as safe directory (PVC may be owned by a different user)
+        proc = await asyncio.create_subprocess_exec(
+            "git", "config", "--global", "--add", "safe.directory", VAULT_PATH,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+
         # Ensure git identity is configured for commits
         try:
             await _git("config", "user.email", "lobwife@lobmob.local")
