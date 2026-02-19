@@ -306,11 +306,9 @@ def build_app(runner: JobRunner, broker: TokenBroker,
         )
         await db.commit()
 
-        # Trigger vault sync on significant status changes
-        if sync_daemon and "status" in updates:
-            new_status = updates.get("status")
-            if new_status in ("completed", "failed", "cancelled"):
-                sync_daemon.request_sync()
+        # Trigger vault sync on status or assignment changes
+        if sync_daemon and ({"status", "assigned_to"} & updates.keys()):
+            sync_daemon.request_sync()
 
         return web.json_response({"id": task_id, "task_id": f"T{task_id}", "updated": changed})
 
