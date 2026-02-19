@@ -303,7 +303,7 @@ GET    /health, /api/status, /api/jobs, /api/jobs/{name}, etc.
 
 ### Phase 3: Vault sync daemon
 
-- **Status**: pending
+- **Status**: complete (PR #TBD, deployed to dev 2026-02-19)
 - **Goal**: Remove dual-writes. DB is sole state authority. Sync daemon periodically snapshots DB state into vault for Obsidian. Vault git noise drops to one commit per sync cycle.
 
 **3.1 — Sync daemon in lobwife**
