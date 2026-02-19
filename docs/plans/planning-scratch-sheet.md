@@ -33,6 +33,7 @@ When an item graduates to a plan doc, replace it with a link.
 	- Arduino lobster (platform.io in vscode user accessible, simulation, serial comms tunneling)
 	- PCB design lobster (kicad, models with image processing, spice simulation, pcb manufacturer understanding, etc)
 	- Home Assistant lobster (this should possibly be a whole separate project, but maybe an IoT-SwissArmyKnife lobster?)
+	- ROS2 lobster for working on robots
 - device tunneling for Lobsters that deploy to device hardware (android, Xcode, Arduino)?
 - test flows for lobster variants' specific abilities
 - allow lobsters to identify missing tools that they need, install them, have a process for ensuring these make it back into the lobster container's install requirements

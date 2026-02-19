@@ -85,7 +85,8 @@ Future: research direct agent-to-Discord communication (each lobster posts indep
 ### Phase 1: Channel consolidation + slash commands
 
 - **Status**: pending
-- Create `#lobmob` channel (prod) and `#dev-lobmob` channel (dev)
+- Create `#lobmob` channel (prod) and `#lobmob-dev` channel (dev)
+	- Already created. `#lobmob` channel ID is 1473200779459297355. `#lobmob-dev` channel ID is 1473200751881752668.
 - Implement slash command registration via discord.py app commands
 - Implement core commands: `/task create`, `/task status`, `/task cancel`, `/fleet status`
 - Migrate lobboss config from 3 channel IDs to 1
