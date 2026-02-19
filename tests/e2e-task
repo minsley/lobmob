@@ -84,13 +84,15 @@ read_field() {
 }
 
 find_task_file() {
-  local task_id="$1"
-  for dir in active completed failed; do
-    local path="$VAULT_LOCAL/010-tasks/$dir/${task_id}.md"
-    if [[ -f "$path" ]]; then
-      echo "$path"
-      return
-    fi
+  # Search by slug first, then by DB task_id (sync daemon renames slug -> T{id})
+  for id in "$@"; do
+    for dir in active completed failed; do
+      local path="$VAULT_LOCAL/010-tasks/$dir/${id}.md"
+      if [[ -f "$path" ]]; then
+        echo "$path"
+        return
+      fi
+    done
   done
 }
 
@@ -220,7 +222,7 @@ ASSIGNED_TO=""
 
 while [[ "$ELAPSED" -lt "$PICKUP_TIMEOUT" ]]; do
   vault_pull
-  TASK_FILE=$(find_task_file "$TASK_ID")
+  TASK_FILE=$(find_task_file "$TASK_ID" "$DB_TASK_ID")
   if [[ -n "$TASK_FILE" ]]; then
     STATUS=$(read_field "$TASK_FILE" "status")
     ASSIGNED_TO=$(read_field "$TASK_FILE" "assigned_to")
@@ -415,7 +417,7 @@ TASK_COMPLETED=false
 
 while [[ "$ELAPSED" -lt "$DONE_TIMEOUT" ]]; do
   vault_pull
-  TASK_FILE=$(find_task_file "$TASK_ID")
+  TASK_FILE=$(find_task_file "$TASK_ID" "$DB_TASK_ID")
   if [[ -n "$TASK_FILE" ]]; then
     STATUS=$(read_field "$TASK_FILE" "status")
     if [[ "$STATUS" == "completed" ]]; then
