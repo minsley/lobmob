@@ -193,48 +193,6 @@ async def main_async() -> int:
             await _api_update_status(db_id, "completed", completed_at=now)
             await _api_log_event(db_id, "completed", f"turns={total_turns} cost=${total_cost:.2f}", "lobster")
 
-    # Dual-write: update vault frontmatter with final status
-    # May need to retry if a PR merge overwrites the status change
-    try:
-        from common.vault import commit_and_push, write_task, _run_git
-        vault_tid = await _resolve_vault_tid(config.task_id, db_id)
-        # Ensure we're on main before dual-writing (agent may have switched branches)
-        try:
-            await _run_git(config.vault_path, "checkout", "main")
-        except Exception:
-            pass
-        for attempt in range(2):
-            await pull_vault(config.vault_path)
-            try:
-                task_data = read_task(config.vault_path, vault_tid)
-            except FileNotFoundError:
-                task_data = read_task(config.vault_path, config.task_id)
-                vault_tid = config.task_id
-            meta = task_data["metadata"]
-            if meta.get("status") == final_status:
-                logger.info("Vault already shows %s for %s", final_status, config.task_id)
-                break
-            meta["status"] = final_status
-            meta["completed_at"] = now
-            rel_path = write_task(config.vault_path, vault_tid, meta, task_data["body"])
-            await commit_and_push(
-                config.vault_path,
-                f"[lobster] Mark {config.task_id} as {final_status}",
-                [rel_path],
-            )
-            # Verify it stuck (PR merges can overwrite)
-            await pull_vault(config.vault_path)
-            check = read_task(config.vault_path, vault_tid)
-            if check["metadata"].get("status") == final_status:
-                logger.info("Vault dual-write: %s -> %s", config.task_id, final_status)
-                break
-            logger.warning("Vault status overwritten (PR merge race), retrying...")
-            await asyncio.sleep(3)
-        else:
-            logger.warning("Vault dual-write didn't stick after retries")
-    except Exception as e:
-        logger.warning("Failed to dual-write vault status: %s", e)
-
     # Always log totals if retries were attempted
     if total_turns != result["num_turns"] or total_cost != (result["cost_usd"] or 0):
         log_structured(
@@ -346,20 +304,6 @@ async def _ensure_vault_pr(config, vault_repo: str) -> None:
             logger.warning("Failed to create safety-net PR: %s", result.stderr.strip())
     except Exception as e:
         logger.warning("Failed to create safety-net PR: %s", e)
-
-
-async def _resolve_vault_tid(task_id: str, db_id: int | None) -> str:
-    """Resolve the vault task ID (may be slug for migrated tasks)."""
-    if db_id:
-        try:
-            from common.lobwife_client import get_task as api_get_task
-            api_t = await api_get_task(db_id)
-            slug = api_t.get("slug", "")
-            if slug and slug != task_id:
-                return slug
-        except Exception:
-            pass
-    return task_id
 
 
 def _now_iso() -> str:

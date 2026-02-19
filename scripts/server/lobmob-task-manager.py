@@ -314,9 +314,6 @@ async def detect_orphans(session: aiohttp.ClientSession):
             except Exception as e:
                 log.error("Failed to re-queue %s via API: %s", task_id, e)
 
-            # Dual-write: update vault if file exists
-            _vault_update_status(task_id, "queued", clear_assignment=True, commit_msg=f"[task-manager] Re-queue {task_id} ({assigned_to} offline)")
-
             _discord_post(thread_id,
                 f"**[task-manager]** Re-queued **{task_id}** — **{assigned_to}** went offline. Will reassign.")
         else:
@@ -329,42 +326,12 @@ async def detect_orphans(session: aiohttp.ClientSession):
             except Exception as e:
                 log.error("Failed to fail %s via API: %s", task_id, e)
 
-            # Dual-write vault
-            _vault_update_status(task_id, "failed", commit_msg=f"[task-manager] Fail {task_id} ({assigned_to} offline, no PR)")
-
             _discord_post(thread_id,
                 f"**[task-manager]** Failed **{task_id}** — **{assigned_to}** offline for {elapsed_min}m with no PR.")
 
             # Layer 3: Create investigation task
             await _create_investigation_task(session, task_id, task_type, assigned_to,
                 f"Orphan: lobster offline {elapsed_min}m, no PR, no fallback branch")
-
-
-def _vault_update_status(task_id: str, status: str, clear_assignment: bool = False, commit_msg: str = ""):
-    """Dual-write: update vault frontmatter via sed + git (best-effort)."""
-    try:
-        # Find the task file
-        for subdir in ("active", "completed", "failed"):
-            task_file = os.path.join(VAULT_DIR, "010-tasks", subdir, f"{task_id}.md")
-            if os.path.exists(task_file):
-                break
-        else:
-            return
-
-        # Use sed to update frontmatter (macOS-compatible)
-        _run(f"sed -i '' 's/^status: .*/status: {status}/' '{task_file}' 2>/dev/null || "
-             f"sed -i 's/^status: .*/status: {status}/' '{task_file}'")
-        if clear_assignment:
-            _run(f"sed -i '' 's/^assigned_to: .*/assigned_to:/' '{task_file}' 2>/dev/null || "
-                 f"sed -i 's/^assigned_to: .*/assigned_to:/' '{task_file}'")
-            _run(f"sed -i '' 's/^assigned_at: .*/assigned_at:/' '{task_file}' 2>/dev/null || "
-                 f"sed -i 's/^assigned_at: .*/assigned_at:/' '{task_file}'")
-
-        if commit_msg:
-            _run(f"cd '{VAULT_DIR}' && git add -A && git commit -m '{commit_msg}' --quiet 2>/dev/null")
-            _run(f"cd '{VAULT_DIR}' && git push origin main --quiet 2>/dev/null")
-    except Exception as e:
-        log.warning("Vault dual-write failed for %s: %s", task_id, e)
 
 
 async def _create_investigation_task(
