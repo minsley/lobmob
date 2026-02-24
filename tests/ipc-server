@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ipc-server — smoke test for LobsterIPC
+#
+# Starts LobsterIPC standalone, checks /health, /inject 202/400, SSE connects.
+# No k8s required. Requires: python3 with aiohttp installed.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0
+FAIL=0
+SERVER_PID=""
+
+cleanup() {
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+check() {
+  local desc="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "  PASS: $desc"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: $desc"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+echo "=== ipc-server smoke test ==="
+
+# Start the IPC server in a background Python process
+python3 - <<'PYEOF' &
+import asyncio
+import sys
+sys.path.insert(0, 'src')
+from lobster.ipc import LobsterIPC
+
+async def main():
+    eq = asyncio.Queue(maxsize=500)
+    iq = asyncio.Queue(maxsize=100)
+    ev = asyncio.Event()
+    ipc = LobsterIPC(eq, iq, ev)
+    await ipc.start()
+    # Keep running until killed
+    try:
+        await asyncio.sleep(30)
+    finally:
+        await ipc.stop()
+
+asyncio.run(main())
+PYEOF
+SERVER_PID=$!
+
+# Wait for server to start
+for i in $(seq 1 20); do
+  if curl -sf http://127.0.0.1:8090/health &>/dev/null; then
+    break
+  fi
+  sleep 0.2
+done
+
+check "/health returns 200" \
+  curl -sf http://127.0.0.1:8090/health
+
+check "/health reports sse_clients=0" bash -c \
+  "curl -sf http://127.0.0.1:8090/health | python3 -c \"import sys,json; d=json.load(sys.stdin); assert d['sse_clients'] == 0\""
+
+check "/inject 202 on valid message" bash -c \
+  "curl -sf -X POST http://127.0.0.1:8090/inject \
+    -H 'Content-Type: application/json' \
+    -d '{\"message\": \"test injection\"}' \
+    -o /tmp/inject-resp.json -w '%{http_code}' | grep -q 202"
+
+check "/inject response includes interrupt=true" bash -c \
+  "python3 -c \"import json; d=json.load(open('/tmp/inject-resp.json')); assert d.get('interrupt') is True\""
+
+check "/inject 400 on missing message" bash -c \
+  "curl -sf -X POST http://127.0.0.1:8090/inject \
+    -H 'Content-Type: application/json' \
+    -d '{}' -w '%{http_code}' -o /dev/null | grep -q 400"
+
+check "/inject 400 on empty message" bash -c \
+  "curl -sf -X POST http://127.0.0.1:8090/inject \
+    -H 'Content-Type: application/json' \
+    -d '{\"message\": \"\"}' -w '%{http_code}' -o /dev/null | grep -q 400"
+
+check "/events returns SSE headers" bash -c \
+  "curl -sf -I -m 1 http://127.0.0.1:8090/events 2>/dev/null || true; \
+   curl -sv -m 1 http://127.0.0.1:8090/events 2>&1 | grep -qi 'text/event-stream'"
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[[ "$FAIL" -eq 0 ]]

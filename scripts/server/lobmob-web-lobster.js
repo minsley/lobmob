@@ -7,6 +7,7 @@
 const http = require('http');
 const https = require('https');
 const { readFileSync } = require('fs');
+const net = require('net');
 
 const PORT = 8080;
 const NAMESPACE = 'lobmob';
@@ -206,6 +207,8 @@ function dashboardHtml(podStatus, logs) {
       <p class="refresh-note">Auto-refreshes every 10s · <a href="/api/logs" style="color:var(--blue);text-decoration:none">Raw</a> · <a href="/api/status" style="color:var(--blue);text-decoration:none">API</a></p>
     </div>
 
+    ${EVENTS_PANEL_HTML}
+
     <footer>lobmob lobster sidecar · port ${PORT}</footer>
   </div>
   <script>
@@ -223,8 +226,151 @@ function dashboardHtml(podStatus, logs) {
 </html>`;
 }
 
+const IPC_HOST = '127.0.0.1';
+const IPC_PORT = 8090;
+const IPC_RETRIES = 5;
+const IPC_RETRY_DELAY = 500;
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function proxyToIpc(req, res, ipcPath, method) {
+  for (let attempt = 0; attempt < IPC_RETRIES; attempt++) {
+    try {
+      await new Promise((resolve, reject) => {
+        const proxyReq = http.request({
+          hostname: IPC_HOST,
+          port: IPC_PORT,
+          path: ipcPath,
+          method: method,
+          headers: Object.assign({}, req.headers, { host: IPC_HOST + ':' + IPC_PORT }),
+        }, (proxyRes) => {
+          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          proxyRes.pipe(res);
+          proxyRes.on('end', resolve);
+          proxyRes.on('error', reject);
+        });
+        proxyReq.on('error', reject);
+        proxyReq.setTimeout(10000, () => { proxyReq.destroy(); reject(new Error('timeout')); });
+        if (method === 'POST') {
+          req.pipe(proxyReq);
+        } else {
+          proxyReq.end();
+          // For SSE, resolve immediately since the stream stays open
+          if (ipcPath === '/events') resolve();
+        }
+      });
+      return;
+    } catch (e) {
+      if (attempt < IPC_RETRIES - 1) {
+        await sleep(IPC_RETRY_DELAY);
+      } else {
+        if (!res.headersSent) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+        }
+        res.end(JSON.stringify({ error: 'IPC not available' }));
+      }
+    }
+  }
+}
+
+const EVENTS_PANEL_HTML = `
+  <div class="section">
+    <div class="section-title">&#x26A1; Live Events</div>
+    <div class="log-box" id="events" style="max-height:300px"></div>
+  </div>
+  <div class="section">
+    <div class="section-title">&#x1F4AC; Inject Guidance</div>
+    <div style="display:flex;gap:8px">
+      <input id="inject-input" placeholder="Send guidance to lobster..."
+        style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+               padding:8px 12px;color:var(--text);font-size:13px;outline:none">
+      <button id="inject-btn"
+        style="background:var(--accent);color:#fff;border:none;border-radius:8px;
+               padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer">Send</button>
+    </div>
+    <p id="inject-status" style="font-size:12px;color:var(--text-muted);margin-top:6px"></p>
+  </div>
+  <script>
+    const evEl = document.getElementById('events');
+    const input = document.getElementById('inject-input');
+    const btn = document.getElementById('inject-btn');
+    const status = document.getElementById('inject-status');
+
+    function fmtEvent(e) {
+      const ts = e.ts ? new Date(e.ts * 1000).toISOString().slice(11, 19) : '';
+      const pfx = ts ? '[' + ts + '] ' : '';
+      switch (e.type) {
+        case 'turn_start':      return pfx + 'episode ' + e.outer_turn + ' start';
+        case 'tool_start':      return pfx + 'tool  ' + e.tool;
+        case 'tool_denied':     return pfx + 'tool denied  ' + e.tool + ' (' + (e.reason || '') + ')';
+        case 'text': { const t = String(e.text || ''); return pfx + 'text  ' + t.replace(/\\n/g, ' ').slice(0, 80) + (t.length > 80 ? '...' : ''); }
+        case 'turn_end':        return pfx + 'episode ' + e.outer_turn + ' end  turns=' + e.inner_turns + ' cost=$' + (+(e.cost_usd || 0)).toFixed(4);
+        case 'verify':          return pfx + 'verify  ' + (e.missing && e.missing.length ? 'MISSING: ' + e.missing.join(', ') : 'PASS');
+        case 'inject':          return pfx + 'inject  >> ' + (e.messages || []).join(' | ');
+        case 'inject_received': return pfx + 'inject queued  ' + (e.message || '');
+        case 'inject_abort':    return pfx + 'INTERRUPTED \u2014 applying operator guidance next episode';
+        case 'done':            return pfx + (e.is_error ? 'ERROR' : 'DONE') + '  cost=$' + (+(e.cost_usd || 0)).toFixed(4);
+        case 'error':           return pfx + 'ERROR  ' + (e.message || '');
+        default:                return pfx + e.type + '  ' + JSON.stringify(e).slice(0, 100);
+      }
+    }
+
+    function appendEvent(line) {
+      const div = document.createElement('div');
+      div.textContent = line;
+      evEl.appendChild(div);
+      evEl.scrollTop = evEl.scrollHeight;
+    }
+
+    const es = new EventSource('/api/events');
+    es.onmessage = (e) => {
+      try { appendEvent(fmtEvent(JSON.parse(e.data))); } catch { appendEvent(e.data); }
+    };
+    es.onerror = () => appendEvent('[connection error \u2014 retrying]');
+
+    async function sendInject() {
+      const msg = input.value.trim();
+      if (!msg) return;
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/inject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg }),
+        });
+        if (r.ok) {
+          input.value = '';
+          status.textContent = 'sent \u2014 will interrupt at next tool call';
+          status.style.color = 'var(--green)';
+        } else {
+          const d = await r.json().catch(() => ({}));
+          status.textContent = 'error: ' + (d.error || r.status);
+          status.style.color = 'var(--accent)';
+        }
+      } catch (err) {
+        status.textContent = 'error: ' + err.message;
+        status.style.color = 'var(--accent)';
+      } finally {
+        btn.disabled = false;
+        setTimeout(() => { status.textContent = ''; }, 4000);
+      }
+    }
+
+    btn.addEventListener('click', sendInject);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendInject(); });
+  </script>
+`;
+
 const handler = async (req, res) => {
   const url = new URL(req.url, 'http://' + req.headers.host);
+
+  if (url.pathname === '/api/events') {
+    proxyToIpc(req, res, '/events', 'GET'); return;
+  }
+
+  if (url.pathname === '/api/inject' && req.method === 'POST') {
+    proxyToIpc(req, res, '/inject', 'POST'); return;
+  }
 
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });

@@ -8,13 +8,10 @@ import sys
 
 from common.logging import setup_logging, log_structured
 from common.vault import pull_vault, read_task
-from lobster.agent import run_retry, run_task
+from lobster.agent import run_task
 from lobster.config import LobsterConfig
-from lobster.verify import verify_completion
 
 logger = logging.getLogger("lobster.run_task")
-
-MAX_RETRIES = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -117,19 +114,40 @@ async def main_async() -> int:
 
     logger.info("Task loaded: status=%s, type=%s", metadata.get("status"), metadata.get("type"))
 
-    # Run the agent
-    result = await run_task(config, body)
+    # Set up event queues and IPC server for attach/inject support
+    event_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+    inject_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    inject_event = asyncio.Event()
 
-    # Log summary
+    ipc_server = None
+    try:
+        from lobster.ipc import LobsterIPC
+        ipc_server = LobsterIPC(event_queue, inject_queue, inject_event)
+        await ipc_server.start()
+    except Exception as e:
+        logger.warning("IPC server unavailable (attach disabled): %s", e)
+
+    try:
+        result = await run_task(
+            config, body,
+            event_queue=event_queue,
+            inject_queue=inject_queue,
+            inject_event=inject_event,
+        )
+    finally:
+        if ipc_server:
+            await ipc_server.stop()
+
     total_turns = result["num_turns"]
-    total_cost = result["cost_usd"] or 0
+    total_cost = result["cost_usd"]
+
     log_structured(
         logger, "Task complete",
         task_id=config.task_id,
         lobster_type=config.lobster_type,
         model=config.model,
-        turns=result["num_turns"],
-        cost_usd=result["cost_usd"],
+        turns=total_turns,
+        cost_usd=total_cost,
         is_error=result["is_error"],
     )
 
@@ -141,50 +159,8 @@ async def main_async() -> int:
         except Exception as e:
             logger.warning("Vault PR safety net failed: %s", e)
 
-    # Verify-retry loop: check completion and retry missing steps
-    if not result["is_error"]:
-        for attempt in range(1, MAX_RETRIES + 1):
-            # Pull vault to get fresh state before checking
-            try:
-                await pull_vault(config.vault_path)
-            except Exception:
-                pass
-
-            missing = await verify_completion(config.task_id, config.lobster_type, config.vault_path)
-            if not missing:
-                logger.info("Verification passed — all steps complete")
-                break
-
-            logger.warning(
-                "Verification attempt %d/%d: missing steps: %s",
-                attempt, MAX_RETRIES, ", ".join(missing),
-            )
-            if db_id:
-                await _api_log_event(db_id, "retry", f"Attempt {attempt}: {', '.join(missing)}", "lobster")
-
-            retry_result = await run_retry(config, missing)
-            total_turns += retry_result["num_turns"]
-            total_cost += retry_result["cost_usd"] or 0
-
-            if retry_result["is_error"]:
-                logger.error("Retry %d failed with agent error, stopping", attempt)
-                break
-        else:
-            # Ran all retries without breaking — do one final check
-            try:
-                await pull_vault(config.vault_path)
-            except Exception:
-                pass
-            final_missing = await verify_completion(config.task_id, config.lobster_type, config.vault_path)
-            if final_missing:
-                logger.error(
-                    "Still missing after %d retries: %s",
-                    MAX_RETRIES, ", ".join(final_missing),
-                )
-
     # PATCH API with final status
     now = _now_iso()
-    final_status = "failed" if result["is_error"] else "completed"
     if db_id:
         if result["is_error"]:
             await _api_update_status(db_id, "failed", completed_at=now)
@@ -192,15 +168,6 @@ async def main_async() -> int:
         else:
             await _api_update_status(db_id, "completed", completed_at=now)
             await _api_log_event(db_id, "completed", f"turns={total_turns} cost=${total_cost:.2f}", "lobster")
-
-    # Always log totals if retries were attempted
-    if total_turns != result["num_turns"] or total_cost != (result["cost_usd"] or 0):
-        log_structured(
-            logger, "Final totals (including retries)",
-            task_id=config.task_id,
-            total_turns=total_turns,
-            total_cost_usd=total_cost,
-        )
 
     return 1 if result["is_error"] else 0
 
