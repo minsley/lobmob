@@ -27,16 +27,8 @@ When an item graduates to a plan doc, replace it with a link.
 - `github.com/kulesh/catsyphon` for getting more insight into our own claude usage?
 
 ## Lobster updates
-- Variants
-	- ghidra lobster (isolated malware scans of binaries, general purpose reverse engineering tasks, vtable recreation and method naming, editing and rebuilding binaries, creating documentation for undocumented reverse engineered software)
-	- Xcode lobster (how to manage licensing?, device tunneling)
-	- Arduino lobster (platform.io in vscode user accessible, simulation, serial comms tunneling)
-	- PCB design lobster (kicad, models with image processing, spice simulation, pcb manufacturer understanding, etc)
-	- Home Assistant lobster (this should possibly be a whole separate project, but maybe an IoT-SwissArmyKnife lobster?)
-	- ROS2 lobster for working on robots
-- device tunneling for Lobsters that deploy to device hardware (android, Xcode, Arduino)?
-- test flows for lobster variants' specific abilities
-- allow lobsters to identify missing tools that they need, install them, have a process for ensuring these make it back into the lobster container's install requirements
+
+See [Lobster Variants](./draft/lobster-variants.md) — overview plan + individual plans for android, unity, ghidra, xcode, arduino, pcb, ros2, homeassistant.
 
 ## Vault updates
 
