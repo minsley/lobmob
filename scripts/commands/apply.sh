@@ -6,6 +6,9 @@
 if [[ "$LOBMOB_ENV" == "dev" ]]; then
   KUBE_CONTEXT="do-nyc3-lobmob-dev-k8s"
   OVERLAY="dev"
+elif [[ "$LOBMOB_ENV" == "local" ]]; then
+  KUBE_CONTEXT="k3d-lobmob-local"
+  OVERLAY="local"
 else
   KUBE_CONTEXT="do-nyc3-lobmob-k8s"
   OVERLAY="prod"

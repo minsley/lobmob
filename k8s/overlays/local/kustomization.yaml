@@ -1,0 +1,108 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  # --- ConfigMap: local env settings ---
+  - target:
+      kind: ConfigMap
+      name: lobboss-config
+    patch: |
+      - op: add
+        path: /data/LOBMOB_ENV
+        value: "local"
+      - op: add
+        path: /data/VAULT_REPO
+        value: "minsley/lobmob-vault-dev"
+      - op: add
+        path: /data/TASK_QUEUE_CHANNEL_ID
+        value: "REPLACE_WITH_LOBMOB_LOCAL_CHANNEL_ID"
+      - op: add
+        path: /data/LOBSTER_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster:local"
+      - op: add
+        path: /data/LOBSTER_ANDROID_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster-android:local"
+      - op: add
+        path: /data/LOBSTER_UNITY_IMAGE
+        value: "ghcr.io/minsley/lobmob-lobster-unity:local"
+
+  # --- lobboss: imagePullPolicy + remove imagePullSecrets ---
+  - target:
+      kind: Deployment
+      name: lobboss
+    patch: |
+      - op: remove
+        path: /spec/template/spec/imagePullSecrets
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "256Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "100m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "512Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "500m"
+
+  # --- lobwife: imagePullPolicy + remove imagePullSecrets ---
+  - target:
+      kind: Deployment
+      name: lobwife
+    patch: |
+      - op: remove
+        path: /spec/template/spec/imagePullSecrets
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "256Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "100m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "512Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "500m"
+
+  # --- lobsigliere: imagePullPolicy + remove imagePullSecrets ---
+  - target:
+      kind: Deployment
+      name: lobsigliere
+    patch: |
+      - op: remove
+        path: /spec/template/spec/imagePullSecrets
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "512Mi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "100m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "500m"
+
+  # --- vault-pvc: use k3d default storage class ---
+  - target:
+      kind: PersistentVolumeClaim
+      name: vault-pvc
+    patch: |
+      - op: replace
+        path: /spec/storageClassName
+        value: local-path

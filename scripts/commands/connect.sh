@@ -9,6 +9,8 @@ TARGET="${1:-lobboss}"
 # Determine kubectl context
 if [[ "$LOBMOB_ENV" == "dev" ]]; then
   KUBE_CONTEXT="do-nyc3-lobmob-dev-k8s"
+elif [[ "$LOBMOB_ENV" == "local" ]]; then
+  KUBE_CONTEXT="k3d-lobmob-local"
 else
   KUBE_CONTEXT="do-nyc3-lobmob-k8s"
 fi
