@@ -15,9 +15,9 @@ Injections interrupt the current episode immediately (at the next tool-use bound
 
 ## Open Questions
 
-- [ ] Should `MAX_OUTER_TURNS` be configurable per task (e.g. via task metadata)?
-- [ ] Should injections from `lobmob attach` be logged to the lobwife event log (via `_api_log_event`)?
-- [ ] Should the SSE event panel in the dashboard persist across page refreshes (store in sessionStorage)?
+- [ ] Should `MAX_OUTER_TURNS` be configurable per task (e.g. via task metadata)? — deferred. 5 is fine for now; revisit if long tasks hit the limit.
+- [ ] Should injections from `lobmob attach` be logged to the lobwife event log (via `_api_log_event`)? — deferred. IPC emits to SSE stream already; lobwife logging is a nice-to-have.
+- [ ] Should the SSE event panel in the dashboard persist across page refreshes (store in sessionStorage)? — deferred. The event stream restarts on reconnect; sessionStorage adds complexity for minor UX gain.
 
 ## Architecture
 
@@ -618,6 +618,53 @@ No k8s manifest changes needed (no new ports or volumes).
 - If the deny-all-tools-on-inject approach is needed (agent tries workarounds after first deny), the simplest implementation is: once `inject_event` is set, deny every tool call until the episode ends. The event is only cleared in the episode loop, not in `can_use_tool`.
 - Consider: should `inject.md` include a summary of what tools were denied? Would help agent understand where it was interrupted. Could pass last denied tool name via a `{interrupted_tool}` placeholder. Low priority.
 - Future consideration: WebSocket upgrade for the SSE endpoint would allow bidirectional communication, but SSE + POST is simpler and sufficient.
+
+## Session Handoff (2026-02-24)
+
+**Branch**: `feature/local-overlay-multi-turn` — all 6 phases committed, not yet merged.
+
+**What's done**: All code written and syntax-checked. No live run yet.
+
+**What's needed next (in order)**:
+
+1. **Merge the branch** (PR to develop, then sync main if releasing):
+   ```bash
+   git checkout develop && git merge feature/local-overlay-multi-turn && git push
+   ```
+
+2. **Rebuild the lobster image** — this is required; the new `ipc.py` and changed `agent.py` won't run without it:
+   ```bash
+   lobmob build lobster   # pushes :latest to GHCR (amd64)
+   ```
+   Then restart the dev cluster: `lobmob --env dev restart lobwife` (not needed) or just let the next lobster Job pull the new image (imagePullPolicy: Always in dev).
+
+3. **Run unit tests** (no k8s needed):
+   ```bash
+   cd /path/to/lobmob
+   python3 tests/episode-loop
+   tests/ipc-server
+   ```
+   The episode-loop test mocks all SDK calls. The ipc-server test starts a local Python process on port 8090.
+
+4. **Run e2e on dev** to confirm task completion still works:
+   ```bash
+   LOBMOB_ENV=dev tests/e2e-task --timeout 15
+   ```
+   This should now pass more than 7/10 since context loss on retry is eliminated.
+
+5. **Manual attach test** — during an e2e run, in a second terminal:
+   ```bash
+   lobmob --env dev attach <job-name>
+   # watch events stream, then type a message and press Enter
+   ```
+
+**Key implementation notes for the next session**:
+
+- `run_retry()` in `agent.py` is deprecated — body intact, returns a no-op dict. It should not be called. `run_task.py` no longer imports or calls it.
+- `cost_usd` in `result` starts as `0` (not `None`) — this was a deliberate change to allow `+=` accumulation. If anything downstream does `if result["cost_usd"]:` to check for None, it will now skip `0.0` costs — check for `is None` instead.
+- `tests/episode-loop` uses `unittest.mock.patch.object` on the agent module. If `agent.py` import paths change, update the patch targets.
+- The `attach.sh` SSE reader uses process substitution (`< <(curl ...)`). The done-flag detection is slightly race-prone — the curl process may exit before the flag is checked. If attach doesn't auto-exit cleanly, this is where to look.
+- `proxyToIpc` in `lobmob-web-lobster.js` resolves for SSE by calling `resolve()` immediately after `proxyReq.end()` (since SSE never ends). If the IPC server restarts mid-stream, the client gets a broken pipe — the SSE EventSource in the browser will auto-reconnect.
 
 ## Related
 

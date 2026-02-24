@@ -131,6 +131,37 @@ Add a `k8s/overlays/local/` Kustomize overlay so lobmob can run locally using k3
 - lobster Jobs inherit settings from job template — ensure `imagePullPolicy` and `imagePullSecrets` patches cover the Job template too
 - Token broker works unchanged locally — it's an HTTP service inside the cluster, GH App just needs credentials in secrets
 
+## Session Handoff (2026-02-24)
+
+**Branch**: `feature/local-overlay-multi-turn` — all 4 phases committed, not yet merged.
+
+**What's done**: All code written and syntax-checked. No live test yet.
+
+**What's needed next (in order)**:
+
+1. **Create the #lobmob-local Discord channel** and copy the channel ID.
+2. **Patch the channel ID** in `k8s/overlays/local/kustomization.yaml` — replace `REPLACE_WITH_LOBMOB_LOCAL_CHANNEL_ID`.
+3. **Create secrets-local.env**: copy from `secrets-dev.env`, update `TASK_QUEUE_CHANNEL_ID` to the local channel ID. All other values (GH App creds, ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN) reuse dev values.
+4. **Install k3d** if not present: `brew install k3d`.
+5. **Create the cluster**: `lobmob --env local cluster-create`
+   - Verify node labels: `kubectl --context k3d-lobmob-local get nodes -L lobmob.io/role`
+6. **Build all images**: `lobmob --env local build all`
+   - This runs `docker build` (native arm64) then `k3d image import` for each.
+   - Base image must be built first (it has no BASE_IMAGE arg).
+7. **Deploy**: `lobmob --env local apply`
+   - Note: `apply` calls `push_k8s_secrets` which needs `load_secrets` — secrets-local.env must be present.
+   - Dry run first: `lobmob --env local apply --dry-run`
+8. **Verify fleet**: `lobmob --env local status`
+
+**Known unknowns / likely issues**:
+- `cluster-create.sh` uses `python3 -c` with JSON parsing to label nodes. If k3d node names differ from expected format, the labeling loop may silently skip. Check with `kubectl get nodes` after.
+- The lobboss init container waits on lobwife broker — deploy lobwife first or tolerate the retry loop.
+- lobwife-home PVC has no `storageClassName` set in base (uses cluster default). k3d default is `local-path` — should work without patching, but verify it provisions.
+- If `lobmob --env local apply` fails because `TFVARS_FILE` is empty string and something tries to use it — check `deploy.sh` for any unconditional use of that var.
+
+**Cleanup when done testing**:
+- `lobmob --env local cluster-delete` tears down k3d cluster and all PVCs.
+
 ## Related
 
 - [Roadmap](../roadmap.md)
