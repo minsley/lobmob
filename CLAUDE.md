@@ -8,9 +8,9 @@ Agent swarm management on DigitalOcean Kubernetes (DOKS). Manager (lobboss) coor
 - **Dev DOKS**: `lobmob-dev-k8s` cluster, context `do-nyc3-lobmob-dev-k8s`, vault=lobmob-vault-dev
 - **Git-flow**: `main`=production, `develop`=integration. SWE lobsters branch from develop.
 - **Three lobster types**: research (Sonnet), swe (Opus), qa (Sonnet)
-- **lobboss**: k8s Deployment, discord.py + Agent SDK (long-running, session rotation every 2-4h)
-- **lobsters**: k8s Jobs, Agent SDK `query()` (ephemeral, one task per container)
-- **lobwife**: k8s Deployment, APScheduler daemon + aiohttp API + token broker
+- **lobboss**: k8s Deployment, discord.py + Agent SDK (long-running, session rotation every 2-4h). Polls lobwife API for queued tasks, spawns lobsters
+- **lobsters**: k8s Jobs, Agent SDK `query()` (ephemeral, one task per container). Report status to lobwife API
+- **lobwife**: k8s Deployment, central state store. SQLite DB (source of truth for task state) + REST API (`/api/v1/`) + token broker + vault sync daemon (DB→vault every 5min + on events) + APScheduler
 - **lobsigliere**: k8s Deployment, system task processor + SSH dev shell
 - **Images**: GHCR — lobmob-base, lobmob-lobboss, lobmob-lobster, lobmob-lobwife, lobmob-lobsigliere (all amd64)
 
@@ -71,6 +71,9 @@ cd infra && terraform validate
 - **PVC gitconfig**: `.gitconfig` persists across restarts on PVCs. Always `--unset-all` stale credential helpers before setting new ones
 - **`su -` env reset**: `su - engineer` resets environment. Pass env vars explicitly or use tokens in URLs for entrypoint operations
 - **Deploy order**: lobwife must be up before lobboss/lobsigliere (they need broker for init). Restart lobwife first
+- **Image rebuild on merge**: After merging code changes to main, MUST rebuild and push all affected container images. TF apply alone won't pick up code changes
+- **DB is source of truth**: Task state lives in lobwife SQLite. Vault is a read-only mirror updated by the sync daemon. Never write task state directly to vault
+- **Sync daemon safe.directory**: Vault PVC may be owned by a different user than the daemon process. The sync daemon handles this automatically
 
 ## Git Workflow
 - Always create a feature branch for changes (never commit directly to main)
