@@ -1,9 +1,9 @@
 ---
-status: draft
+status: active
 tags: [infrastructure, development, kubernetes, local]
-maturity: planning
+maturity: implementation
 created: 2026-02-23
-updated: 2026-02-23
+updated: 2026-02-24
 ---
 # Local Overlay
 
@@ -39,31 +39,29 @@ Add a `k8s/overlays/local/` Kustomize overlay so lobmob can run locally using k3
 
 ### Phases
 
-#### Phase 1: k3d cluster setup script
+#### Phase 1: k3d cluster setup script — **DONE**
 - `lobmob --env local cluster-create`: creates k3d cluster, labels nodes with `lobmob.io/role: <x>`
 - Node layout: server-0 (control plane), agent-0 (lobwife), agent-1 (lobboss), agent-2 (lobsigliere), agent-3 (lobsters)
 - Sets kubectl context to `k3d-lobmob-local`
 - `lobmob --env local cluster-delete`: tears down cluster
 
-#### Phase 2: Kustomize overlay
-- Add `k8s/overlays/local/kustomization.yaml`
-- Patch `imagePullPolicy: Always` → `IfNotPresent` on all Deployments and lobster Job template
-- Remove `imagePullSecrets` from all Deployments and lobster Job template
-- Patch `LOBMOB_ENV=local` in ConfigMap
-- Patch `TASK_QUEUE_CHANNEL_ID` for `#lobmob-local`
-- Patch `VAULT_REPO` if needed (same as dev, may inherit)
-- Relax resource requests/limits
+#### Phase 2: Kustomize overlay — **DONE**
+- `k8s/overlays/local/kustomization.yaml` added
+- imagePullPolicy: IfNotPresent on all Deployments
+- imagePullSecrets removed from all Deployments
+- LOBMOB_ENV=local, LOBSTER_IMAGE=:local, TASK_QUEUE_CHANNEL_ID placeholder in ConfigMap
+- storageClassName: local-path for vault-pvc
+- Relaxed resource requests/limits
+- Note: mcp_tools.py also patched to be LOBMOB_ENV-aware for dynamic job spawning
 
-#### Phase 3: Local build + import command
-- `lobmob --env local build [component]`: builds image(s) natively (no `--platform`), tags `:local`, imports into k3d
-- Wraps existing build script, strips `--platform linux/amd64`, adds `k3d image import`
-- Add `secrets-local.env` to `.gitignore`
+#### Phase 3: Local build + import command — **DONE**
+- `lobmob --env local build [component]`: native build (arm64), `:local` tag, `k3d image import`
+- `secrets-local.env` already covered by `secrets-*.env` glob in .gitignore
 
-#### Phase 4: CLI integration
-- Add `local` as valid `LOBMOB_ENV` in `scripts/lib/helpers.sh`
-- `lobmob --env local deploy`: applies `k8s/overlays/local/`, uses `k3d-lobmob-local` context
-- `lobmob --env local status`: uses local context
-- `lobmob --env local logs [pod]`: uses local context
+#### Phase 4: CLI integration — **DONE**
+- `local` env added to `scripts/lobmob` (secrets-local.env, no TFVARS)
+- apply, connect, status, logs, restart updated for `k3d-lobmob-local` context
+- cluster-create, cluster-delete registered; attach registered (from multi-turn plan)
 
 ## Decisions Log
 

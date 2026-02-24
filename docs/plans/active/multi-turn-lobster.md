@@ -1,7 +1,7 @@
 ---
-status: draft
+status: active
 tags: [lobster, agent-sdk, ipc, attach]
-maturity: ready
+maturity: implementation
 created: 2026-02-23
 updated: 2026-02-24
 ---
@@ -88,7 +88,7 @@ attempted.
 
 ### Phase 1: Multi-turn Episode Loop (`agent.py`)
 
-- **Status**: pending
+- **Status**: done
 
 **Imports — add, remove:**
 ```python
@@ -334,7 +334,7 @@ next iteration where it builds the inject prompt.
 
 ### Phase 2: IPC Server (`src/lobster/ipc.py`, new file)
 
-- **Status**: pending
+- **Status**: done
 
 ```python
 import asyncio, json, logging, time
@@ -411,7 +411,7 @@ SSE format: `data: {json}\n\n`. Bound to `127.0.0.1` only.
 
 ### Phase 3: Sidecar Proxy (`lobmob-web-lobster.js`)
 
-- **Status**: pending
+- **Status**: done
 
 Add `proxyToIpc(req, res, ipcPath, method)` helper:
 - Proxies to `127.0.0.1:8090`
@@ -447,7 +447,7 @@ Add inject input to dashboard HTML (below events panel):
 
 ### Phase 4: `lobmob attach` CLI
 
-- **Status**: pending
+- **Status**: done
 
 **`scripts/commands/attach.sh`** (new file):
 
@@ -483,7 +483,7 @@ Uses same local port as `connect` (`LOBMOB_CONNECT_PORT`, default `8080`). They 
 
 ### Phase 5: `run_task.py` cleanup
 
-- **Status**: pending
+- **Status**: done
 
 Remove:
 - `from lobster.agent import run_retry`
@@ -531,7 +531,7 @@ The `total_turns` / `total_cost` tracking block at the bottom of `main_async()` 
 
 ### Phase 6: Tests
 
-- **Status**: pending
+- **Status**: done
 
 **New `tests/ipc-server`**: Smoke test — starts `LobsterIPC` standalone, checks `/health`, `/inject` 202/400, SSE connects. Verify inject response includes `"interrupt": true`. No k8s needed.
 

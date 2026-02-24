@@ -88,15 +88,15 @@ SORT file.mtime DESC
 
 *Updated 2026-02-24*
 
-The system is at v0.5.3 on DOKS with SWE/research/QA lobster types, GitHub App token broker, and the vault sync daemon (DB as source of truth, vault as human mirror). The biggest pain points now are: lobster task failures from context loss on retry (3/10 e2e failures), slow cloud-only dev iteration, and no way to intervene mid-task.
+The system is at v0.5.3 on DOKS with SWE/research/QA lobster types, GitHub App token broker, and the vault sync daemon (DB as source of truth, vault as human mirror). Local overlay and multi-turn lobster are now implemented (all phases done, pending live test). The biggest remaining pain points are: no live test of local overlay (k3d not yet provisioned), and multi-turn needs a dev lobster run to validate end-to-end behavior.
 
 ### Current priority order
 
-1. **Local overlay** ([draft](draft/local-overlay.md)) — k3d cluster with Kustomize overlay for local dev. Shortens the feedback loop from "cross-build + push + deploy to DOKS" to "native build + k3d import". Unblocks fast iteration on multi-turn and lobster variants. 4 phases, mostly infra scripting.
+1. **Local overlay** ([active](active/local-overlay.md)) — all 4 phases implemented. Next: `lobmob --env local cluster-create`, fill `secrets-local.env`, `lobmob --env local build all`, `lobmob --env local deploy`. Validate with `lobmob --env local status`.
 
-2. **Multi-turn lobster** ([draft](draft/multi-turn-lobster.md)) — Replace one-shot `query()` + verify-retry with persistent `ClaudeSDKClient` episode loop. Verification happens in-session (agent keeps context). Operator injection via `lobmob attach` interrupts at the next tool boundary, similar to Claude Code's Escape flow. Directly addresses the #1 lobster failure mode.
+2. **Multi-turn lobster** ([active](active/multi-turn-lobster.md)) — all 6 phases implemented. Next: rebuild lobster image, deploy to dev, run `tests/ipc-server` and `tests/episode-loop`, validate with `lobmob --env dev attach` during a live e2e run.
 
-3. **Vault scaling P4-P6** ([active](active/vault-scaling.md), P1-P3 complete) — Cost/audit tables (P4), git workflow cleanup (P5), Obsidian Dataview views (P6). Independent phases, none blocking. P4 becomes more useful after multi-turn lands (per-episode cost accumulation gives better data).
+3. **Vault scaling P4-P6** ([active](active/vault-scaling.md), P1-P3 complete) — Cost/audit tables (P4), git workflow cleanup (P5), Obsidian Dataview views (P6). Independent phases, none blocking. P4 becomes more useful now that multi-turn tracks per-episode costs.
 
 ### Broader tracks (unchanged)
 
@@ -113,8 +113,8 @@ Quick reference of all roadmap themes and where they stand. See [planning-scratc
 
 | Theme | Tags | Current State | Priority |
 |-------|------|---------------|----------|
-| Local overlay | `infrastructure`, `local` | [Draft](draft/local-overlay.md) — k3d + Kustomize overlay | **Next up** |
-| Multi-turn lobster | `lobster`, `agent-sdk` | [Draft](draft/multi-turn-lobster.md) — episode loop + attach/inject | **Next up** |
+| Local overlay | `infrastructure`, `local` | [Active](active/local-overlay.md) — all phases done, pending live test | **Active** |
+| Multi-turn lobster | `lobster`, `agent-sdk` | [Active](active/multi-turn-lobster.md) — all phases done, pending live test | **Active** |
 | Vault scaling & sync | `vault`, `lobwife` | [Active](active/vault-scaling.md) — P1-P3 complete (v0.5.3), P4-P6 pending | Paused |
 | Lobster variants | `lobster` | [Draft](draft/lobster-variants.md) — overview + 8 individual variant plans | After local overlay |
 | CI/CD pipeline | `infrastructure`, `deployment` | [Draft](draft/ci-cd.md) — image builds + deploy automation | Draft ready |
