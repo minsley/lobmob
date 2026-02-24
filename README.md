@@ -3,7 +3,7 @@
 
 # lobmob
 
-Agent swarm management on DigitalOcean Kubernetes (DOKS). A persistent manager agent (lobboss) coordinates ephemeral worker agents (lobsters) to execute tasks via Claude Agent SDK. Communication flows through Discord. A shared Obsidian vault on GitHub provides persistent storage.
+Agent swarm management on DigitalOcean Kubernetes (DOKS). A persistent manager agent (lobboss) coordinates ephemeral worker agents (lobsters) to execute tasks via Claude Agent SDK. A central state store (lobwife) tracks all task state in SQLite, with a sync daemon that mirrors state to an Obsidian vault on GitHub for human browsing.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -21,28 +21,41 @@ Agent swarm management on DigitalOcean Kubernetes (DOKS). A persistent manager a
 │  │  discord.py  │  │  Agent SDK   │  │  SSH server       │   │
 │  │  Agent SDK   │  │  query()     │  │  task daemon      │   │
 │  │  MCP tools   │  │  (ephemeral) │  │  kubectl/tf/gh   │   │
-│  │  web dash    │  │              │  │  Claude Code CLI  │   │
+│  │  web dash    │  │  web sidecar │  │  Claude Code CLI  │   │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘   │
 │         │                  │                                  │
-│  ┌──────┴──────────────────┴──────────────────┐              │
-│  │           k8s Secrets + ConfigMaps          │              │
-│  └─────────────────────────────────────────────┘              │
+│         │    HTTP API      │                                  │
+│         ▼                  ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐     │
+│  │  LOBWIFE (Deployment)                                │     │
+│  │                                                      │     │
+│  │  SQLite DB ── task state, events, jobs, broker       │     │
+│  │  REST API ── /api/v1/ task CRUD + events             │     │
+│  │  Token broker ── GitHub App token generation         │     │
+│  │  Sync daemon ── DB → vault (5min + event-triggered)  │     │
+│  │  APScheduler ── cron jobs (task-manager, review-prs) │     │
+│  └──────────────────────┬──────────────────────────────┘     │
+│                          │                                    │
+│  ┌───────────────────────┴────────────────────────────┐      │
+│  │           k8s Secrets + ConfigMaps                  │      │
+│  └────────────────────────────────────────────────────┘      │
 └──────────────────────┬────────────────────────────────────────┘
                        │     ┌──────────┐
-                       └────►│  GitHub  │◄── Vault repo (tasks, logs)
+                       └────►│  GitHub  │◄── Vault repo (synced from DB)
                              │          │◄── lobmob repo (code PRs)
                              └──────────┘
 ```
 
 ## How It Works
 
-1. Tasks are submitted via Discord or pushed directly to the vault repo
-2. Lobboss proposes tasks, gets human confirmation, creates task files in the vault
-3. Lobsters are spawned as ephemeral k8s Jobs, execute tasks via Agent SDK, and open PRs
+1. Tasks are created via Discord or the lobwife API, stored in SQLite as the source of truth
+2. Lobboss polls the API for queued tasks and spawns lobsters as ephemeral k8s Jobs
+3. Lobsters execute tasks via Agent SDK, report status back to the API, and open PRs
 4. Lobboss reviews PRs semantically, merges or requests changes
-5. System tasks (`type: system`) are auto-processed by lobsigliere's background daemon
+5. The sync daemon on lobwife mirrors task state to the Obsidian vault for human browsing
+6. System tasks (`type: system`) are auto-processed by lobsigliere's background daemon
 
-All traffic stays within the k8s cluster. Secrets are managed via k8s Secrets. No SSH mesh or VPN required.
+All inter-service traffic stays within the k8s cluster. Secrets are managed via k8s Secrets. GitHub auth uses ephemeral App tokens via the lobwife broker.
 
 ## Project Structure
 
@@ -51,7 +64,7 @@ All traffic stays within the k8s cluster. Secrets are managed via k8s Secrets. N
 | `src/lobboss/` | Manager agent — discord.py + Agent SDK |
 | `src/lobster/` | Worker agent — ephemeral Agent SDK task runner |
 | `src/common/` | Shared modules (vault operations, logging, health) |
-| `containers/` | Dockerfiles (base, lobboss, lobster, lobsigliere) |
+| `containers/` | Dockerfiles (base, lobboss, lobster, lobwife, lobsigliere) |
 | `k8s/base/` | Kubernetes manifests (Kustomize base) |
 | `k8s/overlays/` | Environment-specific overlays (dev, prod) |
 | `scripts/lobmob` | CLI dispatcher for deployment and fleet management |
@@ -87,7 +100,7 @@ See `docs/operations/setup-checklist.md` for full prerequisites and `docs/operat
 - GitHub CLI (`gh`)
 - Docker with buildx (for image builds)
 - DigitalOcean account + API token
-- GitHub account + App installation (for token rotation)
+- GitHub account + App installation (for token broker — see [Token Management](docs/operations/token-management.md))
 - Discord bot application + token
 - Anthropic API key
 
