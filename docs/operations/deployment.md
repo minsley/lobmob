@@ -44,10 +44,10 @@ For dev environment: `lobmob --env dev deploy`
 | `lobmob-secrets` | k8s Secret | Discord, Anthropic, DO tokens |
 | `lobwife-secrets` | k8s Secret | GitHub App PEM + credentials (broker only) |
 | `lobboss-config` | k8s ConfigMap | Environment config |
-| `lobwife` | k8s Deployment | Token broker + scheduler daemon |
+| `lobwife` | k8s Deployment | SQLite state store + REST API + token broker + sync daemon + scheduler |
 | `lobboss` | k8s Deployment | Manager agent |
 | `lobsigliere` | k8s Deployment | Ops console + task daemon |
-| CronJobs (5) | k8s CronJob | Automated maintenance tasks |
+| `lobwife-state` PVC | k8s PVC | SQLite DB + vault clone for sync daemon |
 | ServiceAccounts (3) | k8s SA | RBAC for lobboss, lobster, lobsigliere |
 
 Lobster Jobs are created dynamically by lobboss when tasks are assigned.
@@ -85,12 +85,18 @@ docker buildx build --builder amd64-builder --platform linux/amd64 \
 ```
 
 After pushing, restart deployments to pick up new images.
-**Important**: lobwife must be restarted first (other services depend on the token broker at startup):
+
+**Important — deploy order**: lobwife must be restarted first and fully ready before restarting other services. lobboss and lobsigliere depend on the token broker at startup (init containers fetch tokens from lobwife). If lobwife isn't ready, init containers will retry for 60s then fail.
+
 ```bash
 kubectl -n lobmob rollout restart deployment/lobwife
-kubectl -n lobmob rollout status deployment/lobwife --timeout=60s
+kubectl -n lobmob rollout status deployment/lobwife --timeout=120s
 kubectl -n lobmob rollout restart deployment/lobboss deployment/lobsigliere
+kubectl -n lobmob rollout status deployment/lobboss --timeout=120s
+kubectl -n lobmob rollout status deployment/lobsigliere --timeout=120s
 ```
+
+**Note**: After merging code changes to main, you MUST rebuild and push all affected container images. Running `terraform apply` alone won't pick up code changes — pods pull `:latest` images, so only a new image push + rollout restart will update the running code.
 
 ## Step 4: Verify
 
