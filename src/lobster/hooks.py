@@ -1,4 +1,5 @@
 """Safety hooks for lobster agents — credential scoping and command restrictions."""
+from __future__ import annotations
 
 import logging
 import re

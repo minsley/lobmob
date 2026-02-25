@@ -1,4 +1,5 @@
 """Claude Agent SDK integration for lobster workers."""
+from __future__ import annotations
 
 import asyncio
 import logging

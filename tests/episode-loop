@@ -14,8 +14,29 @@ Tests the 7 scenarios from the multi-turn plan:
 import asyncio
 import sys
 import os
+import types
+import unittest.mock as _mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+# Pre-populate claude_agent_sdk in sys.modules before any lobster imports.
+# The real SDK is only available inside containers.
+_sdk = types.ModuleType('claude_agent_sdk')
+
+class _StubBase:
+    def __init__(self, *a, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+_sdk.AssistantMessage = type('AssistantMessage', (_StubBase,), {})
+_sdk.ClaudeAgentOptions = type('ClaudeAgentOptions', (_StubBase,), {})
+_sdk.ClaudeSDKClient = type('ClaudeSDKClient', (_StubBase,), {})
+_sdk.PermissionResultAllow = type('PermissionResultAllow', (_StubBase,), {})
+_sdk.PermissionResultDeny = type('PermissionResultDeny', (_StubBase,), {})
+_sdk.ToolPermissionContext = type('ToolPermissionContext', (_StubBase,), {})
+_sdk.ResultMessage = type('ResultMessage', (_StubBase,), {})
+_sdk.TextBlock = type('TextBlock', (_StubBase,), {})
+sys.modules['claude_agent_sdk'] = _sdk
 
 PASS = 0
 FAIL = 0
@@ -35,13 +56,13 @@ def check(desc, cond):
 # Minimal stubs
 # ---------------------------------------------------------------------------
 
-class _TextBlock:
+class _TextBlock(_sdk.TextBlock):
     def __init__(self, text): self.text = text
 
-class _AssistantMessage:
+class _AssistantMessage(_sdk.AssistantMessage):
     def __init__(self, text): self.content = [_TextBlock(text)]
 
-class _ResultMessage:
+class _ResultMessage(_sdk.ResultMessage):
     def __init__(self, cost=0.01, turns=5, is_error=False, session_id="sess-1"):
         self.total_cost_usd = cost
         self.num_turns = turns
@@ -66,7 +87,8 @@ class MockClient:
     async def disconnect(self): self.disconnected = True
 
     async def query(self, prompt):
-        pass  # just store that query was called
+        # Yield control so drain_events/trigger_at tasks can process turn_start
+        await asyncio.sleep(0.05)
 
     async def receive_response(self):
         if self._episode_idx >= len(self._episodes):
@@ -74,7 +96,9 @@ class MockClient:
         msgs, result = self._episodes[self._episode_idx]
         self._episode_idx += 1
         for m in msgs:
+            await asyncio.sleep(0)
             yield m
+        await asyncio.sleep(0)
         yield result
 
 
