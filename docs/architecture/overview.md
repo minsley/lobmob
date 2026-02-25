@@ -59,12 +59,14 @@
 ### Lobsters (k8s Jobs)
 - **Ephemeral** — created on demand, auto-cleaned after completion
 - One k8s Job per task, with TTL-based cleanup (1h after completion)
-- Agent SDK `query()` for one-shot task execution
+- **Multi-turn episode loop** — up to 5 episodes per task (MAX_OUTER_TURNS=5). Each episode runs Agent SDK `query()`, then verifies completion. On failure, a continuation prompt with missing steps triggers the next episode
+- **IPC server** — aiohttp server on 127.0.0.1:8090 inside the pod. SSE fan-out (`/events`), operator injection (`/inject`), health check (`/health`). Accessed via the web sidecar proxy on port 8080
 - Init container clones the vault; main container runs the agent
-- Native sidecar container serves web dashboard on port 8080
+- Native sidecar container serves web dashboard + IPC proxy on port 8080
 - Types: research (Sonnet), swe (Opus), qa (Sonnet), image-gen (Sonnet+Gemini)
 - SWE lobsters branch from `develop`, submit PRs to `develop`
 - Safety hooks enforce tool restrictions per type (e.g., QA can't push)
+- **Attach CLI** (`lobmob attach <job>`) — port-forwards to the sidecar, streams SSE events with colored output, and provides a readline prompt for injecting guidance mid-task
 
 ### Lobwife (Deployment)
 - **Persistent** — central state store and service hub, runs 24/7 as a k8s Deployment (1 replica)
@@ -105,7 +107,7 @@
 
 ## Container Images
 
-All images built for `linux/amd64` (DOKS node architecture), pushed to GHCR.
+Cloud images built for `linux/amd64` (DOKS node architecture), pushed to GHCR. Local images built natively (arm64 on Apple Silicon) and imported into k3d.
 
 | Image | Base | Purpose |
 |---|---|---|
@@ -120,8 +122,21 @@ All images built for `linux/amd64` (DOKS node architecture), pushed to GHCR.
 All inter-component communication uses k8s pod networking within the `lobmob` namespace:
 - **ClusterIP Services** for lobwife (port 8081 API), lobboss (port 8080 dashboard), and lobsigliere (port 22 SSH)
 - All task state operations route through the lobwife API (cluster-internal only)
-- **Port-forwarding** from local machine for dashboard access and SSH
-- No ingress, no public endpoints — access via `kubectl port-forward` or `lobmob connect`
+- **Lobster IPC**: aiohttp on 127.0.0.1:8090 (pod-local), proxied through the web sidecar on port 8080
+- **Port-forwarding** from local machine for dashboard access, SSH, and lobster attach
+- No ingress, no public endpoints — access via `kubectl port-forward` or `lobmob connect`/`lobmob attach`
+
+## Environments
+
+| | Prod | Dev (staging) | Local |
+|---|---|---|---|
+| Cluster | DOKS `lobmob-k8s` | DOKS `lobmob-dev-k8s` | k3d `lobmob-local` |
+| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` | `k3d-lobmob-local` |
+| Images | `:latest` amd64, GHCR pull | `:latest` amd64, GHCR pull | `:local` native, k3d import |
+| Nodes | 4 DO node pools (autoscale) | 4 DO node pools (autoscale) | 5 k3d nodes (fixed) |
+| Secrets | `secrets.env` | `secrets-dev.env` | `secrets-local.env` |
+
+Local env auto-installs dependencies (Docker via Colima, k3d) via `require_local_deps` on first use.
 
 ## Security
 

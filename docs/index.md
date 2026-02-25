@@ -1,28 +1,30 @@
 # lobmob
 
-OpenClaw agent swarm management system for DigitalOcean.
+Agent swarm management on DigitalOcean Kubernetes (DOKS) with local k3d development.
 
 ## Quick Links
-- [[architecture/overview]] — System architecture and component diagram
-- [[architecture/git-workflow]] — PR-based task delivery workflow
-- [[operations/setup-checklist]] — Pre-deployment setup (GitHub, DO, Discord)
-- [[operations/deployment]] — How to deploy the swarm
-- [[operations/daily-ops]] — Day-to-day fleet operations
-- [[operations/testing]] — Test scripts and end-to-end verification
-- [[operations/openclaw-setup]] — OpenClaw configuration on nodes
-- [[operations/token-management]] — API tokens, GitHub App, DO OAuth
-- [[operations/web-ui]] — Web UI for OAuth and management
-- [[reference/discord-protocol]] — Message formats and channel usage
-- [[reference/vault-structure]] — Obsidian vault layout and conventions
-- [[reference/cli]] — lobmob CLI reference
+- [Architecture overview](architecture/overview.md) — System architecture and component diagram
+- [Git workflow](architecture/git-workflow.md) — PR-based task delivery workflow
+- [Setup checklist](operations/setup-checklist.md) — Pre-deployment setup (GitHub, DO, Discord)
+- [Deployment guide](operations/deployment.md) — Cloud and local deployment
+- [Daily operations](operations/daily-ops.md) — Day-to-day fleet operations
+- [Testing](operations/testing.md) — Test scripts, unit tests, and local testing
+- [CLI reference](reference/cli.md) — lobmob CLI commands
+- [Vault structure](reference/vault-structure.md) — Obsidian vault layout and conventions
+- [Token management](operations/token-management.md) — GitHub App tokens, broker
+- [Web UI](operations/web-ui.md) — Web dashboards and lobster IPC
+- [Discord protocol](reference/discord-protocol.md) — Message formats and channel usage
 
 ## Components
 | Component | Location | Purpose |
 |---|---|---|
-| Terraform infra | `infra/` | VPC, firewall, lobboss droplet |
-| Cloud-init templates | `templates/` | Droplet bootstrapping |
-| OpenClaw skills | `skills/` | Agent capabilities |
-| Agent personas | `openclaw/` | AGENTS.md definitions |
-| Vault seed | `vault-seed/` | Initial Obsidian vault structure |
-| CLI | `scripts/lobmob` | Deployment and management commands |
+| lobboss | `src/lobboss/` | Manager agent — Discord bot + task poller + MCP tools |
+| lobster | `src/lobster/` | Worker agent — multi-turn episode loop + IPC server |
+| lobwife | `scripts/server/` | State store — SQLite + REST API + token broker + sync daemon |
+| lobsigliere | `containers/lobsigliere/` | Ops console — SSH + system task daemon |
+| Shared code | `src/common/` | Vault ops, models, lobwife API client |
+| Kubernetes | `k8s/` | Base manifests + overlays (prod, dev, local) |
+| Terraform | `infra/` | DOKS cluster provisioning |
+| Skills | `skills/` | Agent SDK skill definitions |
+| CLI | `scripts/lobmob` | Deployment and fleet management |
 | Docs (this vault) | `docs/` | Project documentation |
