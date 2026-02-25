@@ -48,7 +48,7 @@ k3s_nodes = [n for n in nodes
 servers = [n for n in k3s_nodes if n['role'] == 'server']
 agents  = [n for n in k3s_nodes if n['role'] == 'agent']
 ordered = servers + agents
-roles = ['lobsigliere', 'lobwife', 'lobboss', 'lobsters', 'lobsters']
+roles = ['lobsigliere', 'lobwife', 'lobboss', 'lobster', 'lobster']
 for i, node in enumerate(ordered):
   role = roles[i] if i < len(roles) else 'lobsters'
   print(node['name'] + '=' + role)
