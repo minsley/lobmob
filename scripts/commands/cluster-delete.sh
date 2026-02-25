@@ -10,7 +10,7 @@ fi
 CLUSTER_NAME="lobmob-local"
 
 if ! command -v k3d &>/dev/null; then
-  err "k3d not found"
+  err "k3d not found. Install with: brew install k3d"
   exit 1
 fi
 

@@ -13,11 +13,7 @@ fi
 CLUSTER_NAME="lobmob-local"
 KUBE_CONTEXT="k3d-${CLUSTER_NAME}"
 
-# Check k3d is installed
-if ! command -v k3d &>/dev/null; then
-  err "k3d not found. Install with: brew install k3d"
-  exit 1
-fi
+require_local_deps
 
 # Check if cluster already exists
 if k3d cluster list 2>/dev/null | grep -q "^${CLUSTER_NAME}"; then

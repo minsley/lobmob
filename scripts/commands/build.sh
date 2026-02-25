@@ -22,6 +22,7 @@ fi
 
 if [[ "$LOBMOB_ENV" == "local" ]]; then
   # Local: native build (arm64), :local tag, k3d import — no push
+  require_local_deps
   BASE_IMAGE="${REGISTRY}/lobmob-base:local"
 
   build_local() {
