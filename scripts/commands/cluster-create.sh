@@ -37,24 +37,22 @@ log "Labeling nodes with lobmob.io/role..."
 # Label nodes to match DOKS node pool architecture
 # server-0 gets lobsigliere role (control plane + default pool)
 # agents get dedicated roles matching the cloud pools
-k3d node list --cluster "${CLUSTER_NAME}" -o json 2>/dev/null | \
+k3d node list -o json 2>/dev/null | \
   python3 -c "
 import json, sys
 nodes = json.load(sys.stdin)
-# Filter to only k3s nodes (not registry/load balancer nodes)
-k3s_nodes = [n for n in nodes if n.get('role') in ('server', 'agent')]
-# Sort: servers first, then agents
+# Filter to cluster nodes with k3s roles (not tools/registry nodes)
+k3s_nodes = [n for n in nodes
+             if '${CLUSTER_NAME}' in n.get('name', '')
+             and n.get('role') in ('server', 'agent')]
 servers = [n for n in k3s_nodes if n['role'] == 'server']
 agents  = [n for n in k3s_nodes if n['role'] == 'agent']
 ordered = servers + agents
 roles = ['lobsigliere', 'lobwife', 'lobboss', 'lobsters', 'lobsters']
 for i, node in enumerate(ordered):
   role = roles[i] if i < len(roles) else 'lobsters'
-  # k3d node names use format k3d-<cluster>-<role>-<n>
-  # but in kubectl they appear as just the container name
   print(node['name'] + '=' + role)
 " | while IFS='=' read -r node_name role; do
-  # Strip k3d- prefix for kubectl
   kube_node="${node_name#k3d-}"
   kubectl --context "${KUBE_CONTEXT}" label node "${kube_node}" \
     "lobmob.io/role=${role}" --overwrite 2>/dev/null || \
