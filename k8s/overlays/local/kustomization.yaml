@@ -4,6 +4,16 @@ kind: Kustomization
 resources:
   - ../../base
 
+images:
+  - name: ghcr.io/minsley/lobmob-lobboss
+    newTag: local
+  - name: ghcr.io/minsley/lobmob-lobwife
+    newTag: local
+  - name: ghcr.io/minsley/lobmob-lobsigliere
+    newTag: local
+  - name: ghcr.io/minsley/lobmob-lobster
+    newTag: local
+
 patches:
   # --- ConfigMap: local env settings ---
   - target:
@@ -18,7 +28,7 @@ patches:
         value: "minsley/lobmob-vault-dev"
       - op: add
         path: /data/TASK_QUEUE_CHANNEL_ID
-        value: "REPLACE_WITH_LOBMOB_LOCAL_CHANNEL_ID"
+        value: "0"
       - op: add
         path: /data/LOBSTER_IMAGE
         value: "ghcr.io/minsley/lobmob-lobster:local"
@@ -36,6 +46,9 @@ patches:
     patch: |
       - op: remove
         path: /spec/template/spec/imagePullSecrets
+      - op: replace
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: IfNotPresent
       - op: replace
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent
