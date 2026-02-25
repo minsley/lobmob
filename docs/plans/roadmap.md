@@ -1,6 +1,6 @@
 ---
 tags: [meta]
-updated: 2026-02-24
+updated: 2026-02-25
 ---
 # lobmob Roadmap
 
@@ -86,23 +86,25 @@ SORT file.mtime DESC
 
 ## Priorities & Narrative
 
-*Updated 2026-02-24*
+*Updated 2026-02-25*
 
-The system is at v0.5.3 on DOKS with SWE/research/QA lobster types, GitHub App token broker, and the vault sync daemon (DB as source of truth, vault as human mirror). Local overlay and multi-turn lobster are now implemented (all phases done, pending live test). The biggest remaining pain points are: no live test of local overlay (k3d not yet provisioned), and multi-turn needs a dev lobster run to validate end-to-end behavior.
+The system is at v0.5.3 on DOKS with SWE/research/QA lobster types, GitHub App token broker, and the vault sync daemon (DB as source of truth, vault as human mirror). Local overlay and multi-turn lobster are both validated — local k3d cluster tested with all pods running, lobster T1 completed a full 5-episode multi-turn loop. Develop is ahead of main with these features plus live test fixes; next step is a release merge to main.
 
 ### Current priority order
 
-1. **Local overlay** ([active](active/local-overlay.md)) — all 4 phases implemented. Next: `lobmob --env local cluster-create`, fill `secrets-local.env`, `lobmob --env local build all`, `lobmob --env local deploy`. Validate with `lobmob --env local status`.
+1. **Local overlay + multi-turn release** — PR develop → main with release tag. Both [local overlay](active/local-overlay.md) and [multi-turn lobster](active/multi-turn-lobster.md) are validated. Remaining: DOKS dev staging test (deploy develop, run e2e with real task, test `attach`), then release merge.
 
-2. **Multi-turn lobster** ([active](active/multi-turn-lobster.md)) — all 6 phases implemented. Next: rebuild lobster image, deploy to dev, run `tests/ipc-server` and `tests/episode-loop`, validate with `lobmob --env dev attach` during a live e2e run.
+2. **Project READMEs** ([active](active/project-readmes.md)) — 5 READMEs in progress. Low-effort, high-documentation-value. Can interleave with other work.
 
-3. **Vault scaling P4-P6** ([active](active/vault-scaling.md), P1-P3 complete) — Cost/audit tables (P4), git workflow cleanup (P5), Obsidian Dataview views (P6). Independent phases, none blocking. P4 becomes more useful now that multi-turn tracks per-episode costs.
+3. **Test framework** ([draft](draft/test-framework.md)) — 8 phases: cleanup dead tests, shared test lib, pytest foundation + new unit tests for safety-critical code (hooks.py, verify.py, sync), test runner, lobster test path safety, CI lint+unit jobs, variant test conventions. Lock in coverage now before variant expansion adds surface area. Phases 1-4 are small (1-2 sessions); CI phases feed into CI/CD plan.
 
-### Broader tracks (unchanged)
+4. **Vault scaling P4-P6** ([active](active/vault-scaling.md), P1-P3 complete) — Cost/audit tables (P4), git workflow cleanup (P5), Obsidian Dataview views (P6). Independent phases, none blocking. P4 becomes more useful now that multi-turn tracks per-episode costs.
 
-- **New capabilities** — Lobster variants (Ghidra, Xcode, Arduino, PCB, ROS2, Home Assistant), MCP integrations. Unblocked by local overlay for experimentation without cloud cost.
+### Broader tracks
+
+- **New capabilities** — Lobster variants (Ghidra, Xcode, Arduino, PCB, ROS2, Home Assistant), MCP integrations. Unblocked by local overlay for experimentation without cloud cost. Test framework Phase 8 establishes the test convention that variant plans reference.
 - **User experience** — Discord UX overhaul, web dashboard, WAN access. Task flow improvements depend on vault-scaling P2 API (done).
-- **Infrastructure** — CI/CD pipeline, system maintenance automation. Draft plans ready.
+- **Infrastructure** — CI/CD pipeline (test framework Phase 6 is a prerequisite for CI/CD Phase 2), system maintenance automation. Draft plans ready.
 - **Self-improvement** — Autonomous failure recovery. Long-term research track.
 
 ---
@@ -118,6 +120,7 @@ Quick reference of all roadmap themes and where they stand. See [planning-scratc
 | Vault scaling & sync | `vault`, `lobwife` | [Active](active/vault-scaling.md) — P1-P3 complete (v0.5.3), P4-P6 pending | Paused |
 | Lobster variants | `lobster` | [Draft](draft/lobster-variants.md) — overview + 8 individual variant plans | After local overlay |
 | CI/CD pipeline | `infrastructure`, `deployment` | [Draft](draft/ci-cd.md) — image builds + deploy automation | Draft ready |
+| Test framework & CI integration | `infrastructure`, `testing` | [Draft](draft/test-framework.md) — 8 phases: cleanup, shared lib, pytest + safety tests, runner, CI jobs, variant conventions | **Next up** |
 | Cost tracking | `lobwife`, `infrastructure` | [Draft](draft/cost-tracking.md) — depends on vault-scaling P4 | Blocked |
 | System maintenance automation | `infrastructure` | [Draft](draft/system-maintenance-automation.md) | Draft ready |
 | Task flow improvements | `ui`, `infrastructure` | [Draft](draft/task-flow-improvements.md) — web task entry, depends on vault-scaling P2 API (done) | Draft ready |
