@@ -40,6 +40,8 @@ spec:
               value: "lobwife"
             - name: GIT_USER_EMAIL
               value: "lobwife@lobmob.local"
+            - name: VAULT_PATH
+              value: "/home/lobwife/vault"
           envFrom:
             - secretRef:
                 name: lobwife-secrets
