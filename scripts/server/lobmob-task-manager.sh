@@ -197,7 +197,10 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
 done
 
 # ── 2. Orphan Detection ─────────────────────────────────────────────
-ACTIVE_LOBSTERS=$(kubectl get jobs -n lobmob -l app.kubernetes.io/name=lobster --field-selector=status.active=1 -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' || true)
+# Note: --field-selector=status.active=1 is NOT valid for Jobs (BadRequest).
+# Use jq to filter for jobs with active pods instead.
+ACTIVE_LOBSTERS=$(kubectl get jobs -n lobmob -l app.kubernetes.io/name=lobster -o json 2>/dev/null \
+  | jq -r '.items[] | select((.status.active // 0) > 0) | .metadata.name' 2>/dev/null || true)
 
 for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   [[ -f "$task_file" ]] || continue

@@ -1,6 +1,11 @@
 ARG BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest
 FROM ${BASE_IMAGE}
 
+# kubectl (task-manager needs it for job status checks)
+RUN curl -fsSLo /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
+
 # Ops tooling + SSH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server tmux vim less sudo \
