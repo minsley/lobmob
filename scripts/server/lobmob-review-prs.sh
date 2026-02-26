@@ -14,7 +14,15 @@ cd "${VAULT_PATH:-/opt/vault}"
 
 git checkout main --quiet 2>/dev/null && git pull origin main --quiet 2>/dev/null
 
-PRS=$(gh pr list --state open --json number,title,headRefName,author --jq '.[]' 2>/dev/null)
+# Detect vault repo (gh can't infer from token-based clone URLs)
+VAULT_REMOTE=$(git remote get-url origin 2>/dev/null || true)
+VAULT_REPO=$(echo "$VAULT_REMOTE" | sed -E 's|.*github\.com[:/]||; s|\.git$||; s|^x-access-token:[^@]*@||')
+GH_REPO_FLAG=()
+if [[ -n "$VAULT_REPO" ]]; then
+  GH_REPO_FLAG=(--repo "$VAULT_REPO")
+fi
+
+PRS=$(gh pr list "${GH_REPO_FLAG[@]}" --state open --json number,title,headRefName,author --jq '.[]' 2>/dev/null)
 if [ -z "$PRS" ]; then
   exit 0
 fi
@@ -32,14 +40,14 @@ echo "$PRS" | jq -c '.' | while read -r PR; do
   ISSUES=""
 
   # Check diff for secrets
-  DIFF=$(gh pr diff "$NUMBER" 2>/dev/null || true)
+  DIFF=$(gh pr diff "${GH_REPO_FLAG[@]}" "$NUMBER" 2>/dev/null || true)
   if echo "$DIFF" | grep -qiE '(sk-ant-|dop_v1_|github_pat_|PRIVATE KEY|ANTHROPIC_API_KEY=sk-)'; then
     ISSUES="${ISSUES}\n- Possible secrets detected in diff"
     BLOCKED=1
   fi
 
   # Check file paths are within allowed directories (vault PRs only)
-  FILES=$(gh pr view "$NUMBER" --json files --jq '.files[].path' 2>/dev/null)
+  FILES=$(gh pr view "${GH_REPO_FLAG[@]}" "$NUMBER" --json files --jq '.files[].path' 2>/dev/null)
   INVALID=$(echo "$FILES" | grep -vE '^(010-tasks/|020-logs/|030-knowledge/|000-inbox/|040-fleet/|AGENTS\.md)' || true)
   if [ -n "$INVALID" ]; then
     ISSUES="${ISSUES}\n- Files outside allowed vault paths: $(echo "$INVALID" | tr '\n' ', ')"
@@ -51,7 +59,7 @@ echo "$PRS" | jq -c '.' | while read -r PR; do
   for tf in $TASK_FILES; do
     if [ -n "$tf" ]; then
       # Check the PR's version of the file for required fields
-      CONTENT=$(gh pr diff "$NUMBER" 2>/dev/null | grep -A 100 "^+++ b/$tf" | grep "^+" | head -20 || true)
+      CONTENT=$(gh pr diff "${GH_REPO_FLAG[@]}" "$NUMBER" 2>/dev/null | grep -A 100 "^+++ b/$tf" | grep "^+" | head -20 || true)
       if echo "$CONTENT" | grep -q "^+status:" 2>/dev/null; then
         # Has frontmatter — check required fields
         for field in status id created; do
@@ -65,9 +73,9 @@ echo "$PRS" | jq -c '.' | while read -r PR; do
 
   if [ "$BLOCKED" -eq 1 ]; then
     # Check if we already commented about these issues
-    EXISTING=$(gh pr view "$NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -c "BLOCKED" || echo 0)
+    EXISTING=$(gh pr view "${GH_REPO_FLAG[@]}" "$NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -c "BLOCKED" || echo 0)
     if [ "$EXISTING" -eq 0 ]; then
-      gh pr comment "$NUMBER" --body "**[review-prs]** BLOCKED$(echo -e "$ISSUES")" 2>/dev/null || true
+      gh pr comment "${GH_REPO_FLAG[@]}" "$NUMBER" --body "**[review-prs]** BLOCKED$(echo -e "$ISSUES")" 2>/dev/null || true
     fi
     echo "BLOCKED PR #$NUMBER"
     continue
@@ -94,13 +102,13 @@ echo "$PRS" | jq -c '.' | while read -r PR; do
   if [ "$IS_HOUSEKEEPING" -eq 1 ]; then
     # Auto-merge vault housekeeping PRs
     echo "Auto-merging housekeeping PR #$NUMBER: $TITLE"
-    gh pr merge "$NUMBER" --merge --delete-branch 2>/dev/null || true
+    gh pr merge "${GH_REPO_FLAG[@]}" "$NUMBER" --merge --delete-branch 2>/dev/null || true
     echo "[review-prs] Auto-merged housekeeping PR #$NUMBER: $TITLE"
   else
     # Code PR — post check results, leave for LLM QA review
-    EXISTING=$(gh pr view "$NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -c "checks passed" || echo 0)
+    EXISTING=$(gh pr view "${GH_REPO_FLAG[@]}" "$NUMBER" --json comments --jq '.comments[].body' 2>/dev/null | grep -c "checks passed" || echo 0)
     if [ "$EXISTING" -eq 0 ]; then
-      gh pr comment "$NUMBER" --body "**[review-prs]** Deterministic checks passed (no secrets, valid paths, frontmatter OK). Awaiting LLM QA review." 2>/dev/null || true
+      gh pr comment "${GH_REPO_FLAG[@]}" "$NUMBER" --body "**[review-prs]** Deterministic checks passed (no secrets, valid paths, frontmatter OK). Awaiting LLM QA review." 2>/dev/null || true
     fi
     echo "PR #$NUMBER passes checks — awaiting LLM review"
   fi

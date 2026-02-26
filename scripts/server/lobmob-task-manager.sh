@@ -170,7 +170,7 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   fi
 
   # Check for open PR (if PR exists, lobster is in review — skip timeout)
-  if gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | grep -q "$task_id"; then
+  if [[ -n "$VAULT_REPO" ]] && gh pr list --repo "$VAULT_REPO" --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | grep -q "$task_id"; then
     continue
   fi
 
@@ -227,7 +227,7 @@ for task_file in "$VAULT_DIR"/010-tasks/active/*.md; do
   elapsed_min=$(( (NOW - assigned_ts) / 60 ))
 
   # Check for open PR
-  if gh pr list --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | grep -q "$task_id"; then
+  if [[ -n "$VAULT_REPO" ]] && gh pr list --repo "$VAULT_REPO" --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | grep -q "$task_id"; then
     echo "$(date -Iseconds) ORPHAN (has PR): $task_id — $assigned_to gone but PR exists" >> "$LOG"
     [[ -n "$thread_id" ]] && discord_post "$thread_id" \
       "**[task-manager]** Note: **$assigned_to** is offline, but a PR for **$task_id** exists. Proceeding with review."
