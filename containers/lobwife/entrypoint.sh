@@ -141,6 +141,8 @@ su - lobwife -c "VAULT_PATH='${VAULT_PATH}' \
     TASK_QUEUE_CHANNEL_ID='${TASK_QUEUE_CHANNEL_ID:-}' \
     SWARM_CONTROL_CHANNEL_ID='${SWARM_CONTROL_CHANNEL_ID:-}' \
     SWARM_LOGS_CHANNEL_ID='${SWARM_LOGS_CHANNEL_ID:-}' \
+    SERVICE_NAME='${SERVICE_NAME:-lobwife}' \
+    LOBWIFE_URL='${LOBWIFE_URL:-http://localhost:8081}' \
     python3 /opt/lobmob/scripts/server/lobwife-daemon.py 2>&1 \
     | tee -a /home/lobwife/state/daemon.log" &
 DAEMON_PID=$!

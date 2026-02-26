@@ -42,6 +42,8 @@ spec:
               value: "lobwife@lobmob.local"
             - name: VAULT_PATH
               value: "/home/lobwife/vault"
+            - name: SERVICE_NAME
+              value: "lobwife"
           envFrom:
             - secretRef:
                 name: lobwife-secrets
