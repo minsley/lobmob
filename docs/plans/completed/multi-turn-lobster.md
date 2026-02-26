@@ -1,9 +1,10 @@
 ---
-status: active
+status: completed
 tags: [lobster, agent-sdk, ipc, attach]
 maturity: implementation
 created: 2026-02-23
-updated: 2026-02-24
+updated: 2026-02-26
+completed: 2026-02-26
 ---
 # Multi-turn Lobster Execution + Attach/Inject
 

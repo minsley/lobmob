@@ -86,19 +86,17 @@ SORT file.mtime DESC
 
 ## Priorities & Narrative
 
-*Updated 2026-02-25*
+*Updated 2026-02-26*
 
-The system is at v0.5.3 on DOKS with SWE/research/QA lobster types, GitHub App token broker, and the vault sync daemon (DB as source of truth, vault as human mirror). Local overlay and multi-turn lobster are both validated — local k3d cluster tested with all pods running, lobster T1 completed a full 5-episode multi-turn loop. Develop is ahead of main with these features plus live test fixes; next step is a release merge to main.
+The system is at v0.6.0 on DOKS with SWE/research/QA lobster types, GitHub App token broker, vault sync daemon, local k3d overlay, and multi-turn lobster execution. v0.6.0 was validated on DOKS dev: e2e 10/10, review-prs auto-merge, attach SSE streaming all passing. Five staging bugs were found and fixed during the dev test (kubectl missing from lobwife, invalid job field selector, VAULT_PATH mismatch, gh broker wrapper, Python 3.9 compat).
 
 ### Current priority order
 
-1. **Local overlay + multi-turn release** — PR develop → main with release tag. Both [local overlay](active/local-overlay.md) and [multi-turn lobster](active/multi-turn-lobster.md) are validated. Remaining: DOKS dev staging test (deploy develop, run e2e with real task, test `attach`), then release merge.
+1. **Project READMEs** ([active](active/project-readmes.md)) — 5 READMEs in progress. Low-effort, high-documentation-value. Can interleave with other work.
 
-2. **Project READMEs** ([active](active/project-readmes.md)) — 5 READMEs in progress. Low-effort, high-documentation-value. Can interleave with other work.
+2. **Test framework** ([draft](draft/test-framework.md)) — 8 phases: cleanup dead tests, shared test lib, pytest foundation + new unit tests for safety-critical code (hooks.py, verify.py, sync), test runner, lobster test path safety, CI lint+unit jobs, variant test conventions. Lock in coverage now before variant expansion adds surface area. Phases 1-4 are small (1-2 sessions); CI phases feed into CI/CD plan.
 
-3. **Test framework** ([draft](draft/test-framework.md)) — 8 phases: cleanup dead tests, shared test lib, pytest foundation + new unit tests for safety-critical code (hooks.py, verify.py, sync), test runner, lobster test path safety, CI lint+unit jobs, variant test conventions. Lock in coverage now before variant expansion adds surface area. Phases 1-4 are small (1-2 sessions); CI phases feed into CI/CD plan.
-
-4. **Vault scaling P4-P6** ([active](active/vault-scaling.md), P1-P3 complete) — Cost/audit tables (P4), git workflow cleanup (P5), Obsidian Dataview views (P6). Independent phases, none blocking. P4 becomes more useful now that multi-turn tracks per-episode costs.
+3. **Vault scaling P4-P6** ([active](active/vault-scaling.md), P1-P3 complete) — Cost/audit tables (P4), git workflow cleanup (P5), Obsidian Dataview views (P6). Independent phases, none blocking. P4 becomes more useful now that multi-turn tracks per-episode costs.
 
 ### Broader tracks
 
@@ -115,8 +113,8 @@ Quick reference of all roadmap themes and where they stand. See [planning-scratc
 
 | Theme | Tags | Current State | Priority |
 |-------|------|---------------|----------|
-| Local overlay | `infrastructure`, `local` | [Active](active/local-overlay.md) — all phases done, pending live test | **Active** |
-| Multi-turn lobster | `lobster`, `agent-sdk` | [Active](active/multi-turn-lobster.md) — all phases done, pending live test | **Active** |
+| Local overlay | `infrastructure`, `local` | [Completed](completed/local-overlay.md) — v0.6.0 | Done |
+| Multi-turn lobster | `lobster`, `agent-sdk` | [Completed](completed/multi-turn-lobster.md) — v0.6.0 | Done |
 | Vault scaling & sync | `vault`, `lobwife` | [Active](active/vault-scaling.md) — P1-P3 complete (v0.5.3), P4-P6 pending | Paused |
 | Lobster variants | `lobster` | [Draft](draft/lobster-variants.md) — overview + 8 individual variant plans | After local overlay |
 | CI/CD pipeline | `infrastructure`, `deployment` | [Draft](draft/ci-cd.md) — image builds + deploy automation | Draft ready |
