@@ -153,21 +153,73 @@ kubectl apply -k k8s/overlays/prod/
 
 For dev: `kubectl apply -k k8s/overlays/dev/`
 
+## Local Development (k3d)
+
+For fast iteration without cloud costs. Auto-installs Docker (via Colima) and k3d via brew.
+
+### Create cluster
+
+```bash
+lobmob --env local cluster-create
+```
+
+Creates a 5-node k3d cluster with node labels matching the DOKS pool architecture:
+- `k3d-lobmob-local-server-0` → `lobmob.io/role=lobsigliere`
+- `k3d-lobmob-local-agent-0` → `lobwife`
+- `k3d-lobmob-local-agent-1` → `lobboss`
+- `k3d-lobmob-local-agent-{2,3}` → `lobster`
+
+### Build images
+
+```bash
+lobmob --env local build all
+```
+
+Builds natively (arm64 on Apple Silicon, no `--platform`), tags `:local`, and imports into the k3d cluster. No GHCR push.
+
+### Deploy
+
+```bash
+cp secrets-dev.env secrets-local.env   # or fill in from secrets.env.example
+lobmob --env local apply               # manifests + secrets
+lobmob --env local status              # verify all pods Running
+```
+
+The local kustomize overlay (`k8s/overlays/local/`) patches:
+- Image tags: `:latest` → `:local`
+- Pull policy: `IfNotPresent` (use k3d-imported images)
+- No `imagePullSecrets` (no GHCR auth needed)
+- Reduced resource requests (fits on smaller nodes)
+- Local-path storage class for PVCs
+
+### Delete cluster
+
+```bash
+lobmob --env local cluster-delete
+```
+
+### Local vs cloud differences
+
+- Images are arm64 (native), not amd64 (cross-compiled)
+- No Terraform — k3d handles cluster lifecycle
+- `TASK_QUEUE_CHANNEL_ID=0` — Discord polling disabled by default
+- Tasks created via lobwife API: `curl -X POST http://localhost:8081/api/v1/tasks ...`
+- Vault shares `lobmob-vault-dev` (same as dev/staging)
+
 ## Tearing Down
 
 ```bash
-lobmob destroy
+lobmob destroy                         # DOKS cluster (prod/dev)
+lobmob --env local cluster-delete      # k3d cluster (local)
 ```
-
-This destroys the DOKS cluster and all resources within it.
 
 ## Environment-Specific Deployment
 
-| | Prod | Dev |
-|---|---|---|
-| Command | `lobmob deploy` | `lobmob --env dev deploy` |
-| Secrets file | `secrets.env` | `secrets-dev.env` |
-| Terraform vars | `infra/prod.tfvars` | `infra/dev.tfvars` |
-| TF workspace | `default` | `dev` |
-| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` |
-| k8s overlay | `k8s/overlays/prod/` | `k8s/overlays/dev/` |
+| | Prod | Dev (staging) | Local |
+|---|---|---|---|
+| Command | `lobmob deploy` | `lobmob --env dev deploy` | `lobmob --env local cluster-create` + `build` + `apply` |
+| Secrets file | `secrets.env` | `secrets-dev.env` | `secrets-local.env` |
+| Terraform vars | `infra/prod.tfvars` | `infra/dev.tfvars` | N/A (k3d) |
+| TF workspace | `default` | `dev` | N/A |
+| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` | `k3d-lobmob-local` |
+| k8s overlay | `k8s/overlays/prod/` | `k8s/overlays/dev/` | `k8s/overlays/local/` |

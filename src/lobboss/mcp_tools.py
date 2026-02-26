@@ -36,6 +36,9 @@ LOBWIFE_URL = os.environ.get(
     "LOBWIFE_URL", "http://lobwife.lobmob.svc.cluster.local:8081"
 )
 
+# When LOBMOB_ENV=local: use imported :local images, no pull secrets, IfNotPresent policy
+_LOBMOB_ENV = os.environ.get("LOBMOB_ENV", "prod")
+
 
 def set_bot(bot: Any) -> None:
     """Inject the Discord bot instance for discord_post to use."""
@@ -188,7 +191,10 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
                     restart_policy="Never",
                     node_selector={"lobmob.io/role": "lobster"},
                     service_account_name="lobster",
-                    image_pull_secrets=[client.V1LocalObjectReference(name="ghcr-pull-secret")],
+                    image_pull_secrets=(
+                        None if _LOBMOB_ENV == "local"
+                        else [client.V1LocalObjectReference(name="ghcr-pull-secret")]
+                    ),
                     init_containers=[
                         client.V1Container(
                             name="vault-clone",
@@ -231,7 +237,7 @@ async def _spawn_lobster_core(task_id: str, lobster_type: str, workflow: str = "
                         client.V1Container(
                             name="lobster",
                             image=image,
-                            image_pull_policy="Always",
+                            image_pull_policy="IfNotPresent" if _LOBMOB_ENV == "local" else "Always",
                             args=[
                                 "--task", task_id,
                                 "--type", lobster_type,

@@ -54,6 +54,39 @@ push_k8s_secrets() {
   fi
 }
 
+require_local_deps() {
+  # Ensure Docker (via Colima) and k3d are available for local dev.
+  # Auto-installs via brew and starts Colima if needed.
+  if ! command -v brew &>/dev/null; then
+    err "Homebrew not found. Install from https://brew.sh"
+    return 1
+  fi
+
+  # Docker CLI
+  if ! command -v docker &>/dev/null; then
+    log "Installing docker via brew..."
+    brew install docker || { err "Failed to install docker"; return 1; }
+  fi
+
+  # Colima (lightweight Docker runtime for macOS)
+  if ! command -v colima &>/dev/null; then
+    log "Installing colima via brew..."
+    brew install colima || { err "Failed to install colima"; return 1; }
+  fi
+
+  # Start Colima if Docker daemon isn't reachable
+  if ! docker info &>/dev/null 2>&1; then
+    log "Starting colima..."
+    colima start || { err "Failed to start colima"; return 1; }
+  fi
+
+  # k3d
+  if ! command -v k3d &>/dev/null; then
+    log "Installing k3d via brew..."
+    brew install k3d || { err "Failed to install k3d"; return 1; }
+  fi
+}
+
 _seed_vault() {
   local REPO="$1"
   local TMPDIR

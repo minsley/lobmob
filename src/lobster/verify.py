@@ -3,6 +3,7 @@
 Checks whether the agent completed all required workflow steps.
 Returns a list of missing steps (empty list = fully complete).
 """
+from __future__ import annotations
 
 import asyncio
 import logging

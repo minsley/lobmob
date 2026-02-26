@@ -62,11 +62,11 @@ All inter-service traffic stays within the k8s cluster. Secrets are managed via 
 | Directory | Purpose |
 |---|---|
 | `src/lobboss/` | Manager agent — discord.py + Agent SDK |
-| `src/lobster/` | Worker agent — ephemeral Agent SDK task runner |
+| `src/lobster/` | Worker agent — multi-turn episode loop + IPC server |
 | `src/common/` | Shared modules (vault operations, logging, health) |
 | `containers/` | Dockerfiles (base, lobboss, lobster, lobwife, lobsigliere) |
 | `k8s/base/` | Kubernetes manifests (Kustomize base) |
-| `k8s/overlays/` | Environment-specific overlays (dev, prod) |
+| `k8s/overlays/` | Environment-specific overlays (dev, prod, local) |
 | `scripts/lobmob` | CLI dispatcher for deployment and fleet management |
 | `scripts/commands/` | CLI command modules (deploy, status, connect, etc.) |
 | `scripts/server/` | Server-side scripts (cron jobs, web dashboard, daemon) |
@@ -82,13 +82,18 @@ All inter-service traffic stays within the k8s cluster. Secrets are managed via 
 git clone https://github.com/minsley/lobmob.git
 cd lobmob
 
-# Set up secrets
-cp secrets.env.example secrets.env   # fill in all tokens
-cp infra/prod.tfvars.example infra/prod.tfvars
+# Option A: Local dev (k3d — auto-installs Docker, Colima, k3d via brew)
+cp secrets-dev.env secrets-local.env  # or fill in from secrets.env.example
+lobmob --env local cluster-create     # k3d cluster with labeled nodes
+lobmob --env local build all          # native docker build + k3d import
+lobmob --env local apply              # deploy manifests + push secrets
+lobmob --env local status             # verify fleet
 
-# Deploy
-lobmob deploy                        # terraform + kubectl apply
-lobmob status                        # verify fleet
+# Option B: Cloud (DOKS)
+cp secrets.env.example secrets.env    # fill in all tokens
+cp infra/prod.tfvars.example infra/prod.tfvars
+lobmob deploy                         # terraform + kubectl apply
+lobmob status                         # verify fleet
 ```
 
 See `docs/operations/setup-checklist.md` for full prerequisites and `docs/operations/deployment.md` for the deployment guide.
@@ -116,12 +121,13 @@ See `docs/operations/setup-checklist.md` for full prerequisites and `docs/operat
 
 ## Environments
 
-| | Prod | Dev |
-|---|---|---|
-| DOKS cluster | `lobmob-k8s` | `lobmob-dev-k8s` |
-| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` |
-| Vault repo | `lobmob-vault` | `lobmob-vault-dev` |
-| CLI usage | `lobmob <cmd>` | `lobmob --env dev <cmd>` |
+| | Prod | Dev (staging) | Local |
+|---|---|---|---|
+| Cluster | DOKS `lobmob-k8s` | DOKS `lobmob-dev-k8s` | k3d `lobmob-local` |
+| kubectl context | `do-nyc3-lobmob-k8s` | `do-nyc3-lobmob-dev-k8s` | `k3d-lobmob-local` |
+| Vault repo | `lobmob-vault` | `lobmob-vault-dev` | `lobmob-vault-dev` |
+| CLI usage | `lobmob <cmd>` | `lobmob --env dev <cmd>` | `lobmob --env local <cmd>` |
+| Images | `:latest` (amd64, GHCR) | `:latest` (amd64, GHCR) | `:local` (native, k3d import) |
 
 ## Documentation
 

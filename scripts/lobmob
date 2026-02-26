@@ -24,6 +24,9 @@ set -- "${_ARGS[@]+"${_ARGS[@]}"}"
 if [ "$LOBMOB_ENV" = "dev" ]; then
   SECRETS_FILE="$PROJECT_DIR/secrets-dev.env"
   TFVARS_FILE="$INFRA_DIR/dev.tfvars"
+elif [ "$LOBMOB_ENV" = "local" ]; then
+  SECRETS_FILE="$PROJECT_DIR/secrets-local.env"
+  TFVARS_FILE=""  # no Terraform for local
 else
   SECRETS_FILE="$PROJECT_DIR/secrets.env"
   TFVARS_FILE="$INFRA_DIR/prod.tfvars"
@@ -34,7 +37,7 @@ source "$SCRIPT_DIR/lib/helpers.sh"
 
 usage() {
   cat <<EOF
-Usage: lobmob [--env prod|dev] <command> [options]
+Usage: lobmob [--env prod|dev|local] <command> [options]
 
 Environment:
   --env, -e             Select environment (default: prod, or set LOBMOB_ENV)
@@ -52,6 +55,11 @@ Connection:
   connect [target]    Port-forward to web dashboard + open browser
                       Targets: lobboss (default), lobwife, lobsigliere,
                       lobwife-ssh, or a lobster job name
+  attach <job>        Attach to a running lobster: live events + inject guidance
+
+Cluster (local only):
+  cluster-create      Create local k3d cluster with labeled nodes
+  cluster-delete      Delete local k3d cluster
 
 Vault:
   vault-init          Initialize the Obsidian vault GitHub repo
@@ -95,6 +103,9 @@ case "$COMMAND" in
   flush-logs)          source "$SCRIPT_DIR/commands/flush-logs.sh" ;;
   prs)                 source "$SCRIPT_DIR/commands/prs.sh" ;;
   connect)             source "$SCRIPT_DIR/commands/connect.sh" ;;
+  attach)              source "$SCRIPT_DIR/commands/attach.sh" ;;
+  cluster-create)      source "$SCRIPT_DIR/commands/cluster-create.sh" ;;
+  cluster-delete)      source "$SCRIPT_DIR/commands/cluster-delete.sh" ;;
   setup)
     SETUP_CMD="${1:-}"
     shift || true

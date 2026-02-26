@@ -1,61 +1,55 @@
 # Web UI
 
-Lobboss runs a lightweight web server on port 8080 for OAuth callbacks and fleet management.
+Each component runs a lightweight Node.js web server as a subprocess or native sidecar.
 
-## Architecture
+## Dashboards
 
-- **Server**: Single-file Node.js script at `/usr/local/bin/lobmob-web`
-- **Port**: 8080 (HTTP)
-- **Dependencies**: None (uses Node.js built-in `http` module)
-- **Service**: `lobmob-web.service` (systemd, auto-restart on failure)
-- **Logs**: `/var/log/lobmob-web.log`
-- **Config**: `/etc/lobmob/web.env` (OAuth client credentials)
+| Component | Port | Script | Purpose |
+|---|---|---|---|
+| Lobboss | 8080 | `lobmob-web.js` | Fleet status dashboard, session info |
+| Lobwife | 8080 | `lobwife-web.js` | DB status, task list, sync daemon state |
+| Lobster (sidecar) | 8080 | `lobmob-web-lobster.js` | Task progress, SSE event panel, inject textbox |
 
-## Routes
+All dashboards use Node.js built-in `http` module (no dependencies). Lobboss and lobwife run the web server as a subprocess; lobster runs it as a native k8s sidecar container.
+
+## Access
+
+No public endpoints. Access via port-forwarding:
+
+```bash
+lobmob connect                    # lobboss dashboard -> localhost:8080
+lobmob connect <job-name>         # lobster dashboard -> localhost:8080
+lobmob attach <job-name>          # lobster SSE stream + inject (CLI, not browser)
+```
+
+Or manually:
+```bash
+kubectl -n lobmob port-forward svc/lobboss 8080:8080
+kubectl -n lobmob port-forward svc/lobwife 8080:8080
+kubectl -n lobmob port-forward pod/<lobster-pod> 8080:8080
+```
+
+## Lobster Web Sidecar
+
+The lobster sidecar (`lobmob-web-lobster.js`) proxies to the IPC server running inside the lobster container on 127.0.0.1:8090:
 
 | Path | Method | Description |
 |---|---|---|
-| `/` | GET | Status dashboard with fleet overview |
-| `/health` | GET | JSON health check (`{"status":"ok","uptime":...}`) |
-| `/oauth/digitalocean` | GET | Redirects to DO OAuth authorize page |
-| `/oauth/digitalocean/callback` | GET | Receives OAuth code, exchanges for tokens |
+| `/` | GET | Task progress dashboard with SSE event panel and inject textbox |
+| `/health` | GET | JSON health check (`{"status":"ok","task":"T1","type":"swe"}`) |
+| `/api/events` | GET | SSE proxy — streams events from IPC server |
+| `/api/inject` | POST | Inject proxy — sends operator guidance to the running agent |
 
-## Management
+### IPC Server (inside lobster container)
 
-```bash
-# Check status
-systemctl status lobmob-web
+The `LobsterIPC` server (`src/lobster/ipc.py`) runs on 127.0.0.1:8090:
 
-# View logs
-tail -f /var/log/lobmob-web.log
+| Path | Method | Description |
+|---|---|---|
+| `/health` | GET | IPC health + SSE client count |
+| `/events` | GET | SSE fan-out — `turn_start`, `turn_end`, `text`, `verify`, `inject`, `inject_abort`, `done`, `error` |
+| `/inject` | POST | Inject operator message — sets the inject event flag, agent picks it up at next episode boundary |
 
-# Restart
-systemctl restart lobmob-web
-```
+## Health Checks
 
-## When Is It Started?
-
-The web UI is only started if `/etc/lobmob/web.env` exists (i.e., DO OAuth is configured). This happens during `lobmob-provision` if `DO_OAUTH_CLIENT_ID` and `DO_OAUTH_CLIENT_SECRET` are in `secrets.env`.
-
-## Firewall
-
-Port 8080 is open on the lobboss firewall (`lobmob-lobboss-fw`). This is required for:
-- OAuth callbacks (browser redirects from DigitalOcean)
-- Direct access to the status dashboard
-
-## Future Expansion
-
-The web UI is designed to be extended. Potential additions:
-- Setup wizard for initial configuration
-- Fleet monitoring dashboard (real-time lobster status)
-- Task management (create, assign, monitor tasks)
-- Log viewer (stream event logs from nodes)
-- Token status page (expiry times, refresh status)
-
-## HTTPS Upgrade Path
-
-Currently HTTP-only (no domain needed). To add HTTPS:
-1. Assign a domain to the reserved IP
-2. Use Let's Encrypt with certbot for a free certificate
-3. Update the web server to use `https.createServer()` with the cert
-4. Update the DO OAuth callback URL to use `https://`
+Lobboss and lobwife use HTTP readiness probes on their web server `/health` endpoints. The lobster sidecar provides health for the pod's readiness gate.

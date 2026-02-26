@@ -1,35 +1,31 @@
 """Claude Agent SDK integration for lobster workers."""
+from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator
+import time
 from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ClaudeSDKClient,
+    PermissionResultDeny,
     ResultMessage,
     TextBlock,
-    query,
 )
 
 from common.models import resolve_model
+from common.vault import pull_vault
 from lobster.config import LobsterConfig
 from lobster.hooks import create_tool_checker
+from lobster.verify import verify_completion
 
 logger = logging.getLogger("lobster.agent")
 
-
-async def _as_stream(prompt: str) -> AsyncIterator[dict[str, Any]]:
-    """Wrap a string prompt as an async iterable of message dicts.
-
-    Required when using can_use_tool with the one-shot query() function.
-    """
-    yield {
-        "type": "user",
-        "message": {"role": "user", "content": prompt},
-    }
+MAX_OUTER_TURNS = 5
 
 
 def _resolve_prompt_path(filename: str) -> Path | None:
@@ -45,7 +41,6 @@ def _resolve_prompt_path(filename: str) -> Path | None:
 
 def _load_system_prompt(config: LobsterConfig) -> str:
     """Load the type-specific system prompt, with optional workflow overlay."""
-    # Base prompt for the lobster type
     base_path = _resolve_prompt_path(f"{config.lobster_type}.md")
     if base_path:
         prompt = base_path.read_text()
@@ -53,7 +48,6 @@ def _load_system_prompt(config: LobsterConfig) -> str:
         logger.warning("No prompt found for type %s, using default", config.lobster_type)
         prompt = f"You are a {config.lobster_type} lobster agent. Complete the assigned task."
 
-    # Workflow overlay (e.g. swe-android.md, swe-unity.md)
     if config.workflow != "default":
         overlay_path = _resolve_prompt_path(f"{config.lobster_type}-{config.workflow}.md")
         if overlay_path:
@@ -66,36 +60,120 @@ def _load_system_prompt(config: LobsterConfig) -> str:
     return prompt
 
 
-def _load_retry_prompt(missing: list[str]) -> str:
-    """Load the retry prompt template and fill in the missing steps."""
-    path = _resolve_prompt_path("retry.md")
+async def _emit(q: asyncio.Queue | None, event_type: str, data: dict) -> None:
+    """Put an event onto the queue. Drops silently if queue is full or absent."""
+    if q is None:
+        return
+    try:
+        q.put_nowait({"type": event_type, "ts": time.time(), **data})
+    except asyncio.QueueFull:
+        logger.warning("Event queue full — dropping %s", event_type)
+
+
+def _drain_inject_queue(q: asyncio.Queue | None) -> list[str]:
+    """Drain all pending injection messages from the queue."""
+    if not q:
+        return []
+    items = []
+    while True:
+        try:
+            items.append(q.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    return items
+
+
+def _build_continue_prompt(task_id: str, missing: list[str], injections: list[str]) -> str:
+    """Build prompt for verification-failure continuation (may include injections)."""
+    path = _resolve_prompt_path("continue.md")
     if path:
-        template = path.read_text()
-    else:
-        template = (
-            "Your previous session did not complete all steps.\n"
-            "Missing steps:\n{missing_steps}\n"
-            "Complete them now."
-        )
-    formatted = "\n".join(f"- **{step}**" for step in missing)
-    return template.replace("{missing_steps}", formatted)
+        tmpl = path.read_text()
+        missing_str = "\n".join(f"- {s}" for s in missing)
+        inject_str = "\n".join(f"- {m}" for m in injections) if injections else "(none)"
+        return (tmpl
+                .replace("{task_id}", task_id)
+                .replace("{missing_steps}", missing_str)
+                .replace("{operator_messages}", inject_str))
+    # Inline fallback
+    lines = [f"## Continue: {task_id}", "", "The following steps remain incomplete:"]
+    lines += [f"- {s}" for s in missing]
+    if injections:
+        lines += ["", "Operator messages:"] + [f"- {m}" for m in injections]
+    lines += ["", "Review what's already done, then complete only the missing steps."]
+    return "\n".join(lines)
 
 
-async def run_retry(config: LobsterConfig, missing: list[str]) -> dict:
-    """Run a focused retry query to complete missing workflow steps.
+def _build_inject_prompt(task_id: str, injections: list[str]) -> str:
+    """Build prompt for operator-injection continuation (no verification failure)."""
+    path = _resolve_prompt_path("inject.md")
+    if path:
+        tmpl = path.read_text()
+        inject_str = "\n".join(f"- {m}" for m in injections)
+        return (tmpl
+                .replace("{task_id}", task_id)
+                .replace("{operator_messages}", inject_str))
+    # Inline fallback
+    lines = [
+        f"## Operator Guidance: {task_id}",
+        "",
+        "The operator has interrupted with the following message(s):",
+    ]
+    lines += [f"- {m}" for m in injections]
+    lines += [
+        "",
+        "Incorporate this guidance and continue your work.",
+        "You were interrupted mid-task — review what you've already done,",
+        "then proceed with the operator's direction in mind.",
+    ]
+    return "\n".join(lines)
 
-    Uses a smaller budget and the retry-specific prompt.
+
+def _make_tool_checker(
+    config: LobsterConfig,
+    event_queue: asyncio.Queue | None,
+    inject_event: asyncio.Event | None,
+) -> Any:
+    """Wrap existing tool checker to emit events and check for pending injections."""
+    inner = create_tool_checker(config.lobster_type)
+
+    async def check_tool(tool_name: str, tool_input: dict, context: Any) -> Any:
+        await _emit(event_queue, "tool_start", {"tool": tool_name, "input": tool_input})
+
+        # Inject pending — interrupt at this tool boundary
+        if inject_event and inject_event.is_set():
+            logger.info("Injection pending — denying tool %s to interrupt episode", tool_name)
+            await _emit(event_queue, "tool_denied", {
+                "tool": tool_name,
+                "reason": "injection_interrupt",
+            })
+            return PermissionResultDeny(
+                message="The operator has provided new guidance. "
+                "Stop what you're doing and wrap up this turn. "
+                "You will receive the operator's message in the next prompt."
+            )
+
+        return await inner(tool_name, tool_input, context)
+
+    return check_tool
+
+
+async def run_task(
+    config: LobsterConfig,
+    task_body: str,
+    event_queue: asyncio.Queue | None = None,
+    inject_queue: asyncio.Queue | None = None,
+    inject_event: asyncio.Event | None = None,
+) -> dict:
+    """Execute a task via ClaudeSDKClient episode loop. Returns result summary.
+
+    Each episode (outer turn) is a persistent client.query() call. Between episodes
+    the agent verifies completion and continues if steps are missing. Operator
+    injections interrupt the current episode at the next tool boundary.
     """
-    system_prompt = _load_retry_prompt(missing)
+    system_prompt = _load_system_prompt(config)
     model = resolve_model(config.model)
 
-    prompt = (
-        f"## Retry for task: {config.task_id}\n\n"
-        f"Complete the missing steps listed in your system prompt.\n"
-        f"Vault path: {config.vault_path}\n"
-    )
-
-    # Match allowed tools to lobster type (same logic as run_task)
+    # Determine allowed tools based on type
     allowed_tools = ["Read", "Glob", "Grep"]
     if config.lobster_type in ("swe", "research", "system"):
         allowed_tools.extend(["Edit", "Write", "Bash"])
@@ -104,76 +182,7 @@ async def run_retry(config: LobsterConfig, missing: list[str]) -> dict:
     elif config.lobster_type == "image-gen":
         allowed_tools.extend(["Write", "Bash"])
 
-    options = ClaudeAgentOptions(
-        system_prompt=system_prompt,
-        model=model,
-        allowed_tools=allowed_tools,
-        permission_mode="acceptEdits",
-        max_turns=15,
-        max_budget_usd=2.0,
-        cwd=os.environ.get("WORKSPACE", "/workspace"),
-        can_use_tool=create_tool_checker(config.lobster_type),
-        stderr=lambda line: logger.debug("CLI (retry): %s", line.rstrip()),
-    )
-
-    result = {
-        "task_id": config.task_id,
-        "model": model,
-        "responses": [],
-        "cost_usd": None,
-        "num_turns": 0,
-        "is_error": False,
-        "session_id": None,
-    }
-
-    try:
-        async for message in query(prompt=_as_stream(prompt), options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        result["responses"].append(block.text)
-            elif isinstance(message, ResultMessage):
-                result["cost_usd"] = message.total_cost_usd
-                result["num_turns"] = message.num_turns
-                result["is_error"] = message.is_error
-                result["session_id"] = message.session_id
-                if message.is_error:
-                    logger.error("Retry agent error: %s", message.result)
-                else:
-                    logger.info(
-                        "Retry for %s complete: %d turns, $%.4f",
-                        config.task_id,
-                        message.num_turns,
-                        message.total_cost_usd or 0,
-                    )
-    except Exception:
-        logger.exception("Retry query failed for task %s", config.task_id)
-        result["is_error"] = True
-
-    return result
-
-
-async def run_task(config: LobsterConfig, task_body: str) -> dict:
-    """Execute a task via Agent SDK query(). Returns result summary.
-
-    Uses one-shot query() since lobsters are ephemeral.
-    """
-    system_prompt = _load_system_prompt(config)
-    model = resolve_model(config.model)
-
-    # Build the full prompt with task context
-    prompt = f"## Task: {config.task_id}\n\n{task_body}"
-
-    # Determine allowed tools based on type
-    allowed_tools = ["Read", "Glob", "Grep"]
-    if config.lobster_type in ("swe", "research", "system"):
-        allowed_tools.extend(["Edit", "Write", "Bash"])
-    elif config.lobster_type == "qa":
-        allowed_tools.append("Bash")  # read-only bash (enforced by hooks)
-    elif config.lobster_type == "image-gen":
-        allowed_tools.extend(["Write", "Bash"])  # save images, run git for vault
-
-    # MCP servers for specialized types
+    # MCP servers for specialized types — preserve from prior run_task()
     mcp_servers = []
     if config.lobster_type == "image-gen":
         from lobster.mcp_gemini import gemini_mcp
@@ -187,45 +196,132 @@ async def run_task(config: LobsterConfig, task_body: str) -> dict:
         max_turns=50,
         max_budget_usd=10.0,
         cwd=os.environ.get("WORKSPACE", "/workspace"),
-        can_use_tool=create_tool_checker(config.lobster_type),
+        can_use_tool=_make_tool_checker(config, event_queue, inject_event),
         mcp_servers=mcp_servers or None,
         stderr=lambda line: logger.debug("CLI: %s", line.rstrip()),
     )
 
-    result = {
+    result: dict = {
         "task_id": config.task_id,
         "model": model,
         "responses": [],
-        "cost_usd": None,
+        "cost_usd": 0,
         "num_turns": 0,
         "is_error": False,
         "session_id": None,
     }
 
+    client = ClaudeSDKClient(options=options)
+    await client.connect()
     try:
-        async for message in query(prompt=_as_stream(prompt), options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        result["responses"].append(block.text)
+        prompt = f"## Task: {config.task_id}\n\n{task_body}"
+        missing: list[str] = []
 
-            elif isinstance(message, ResultMessage):
-                result["cost_usd"] = message.total_cost_usd
-                result["num_turns"] = message.num_turns
-                result["is_error"] = message.is_error
-                result["session_id"] = message.session_id
-                if message.is_error:
-                    logger.error("Agent SDK error: %s", message.result)
-                else:
-                    logger.info(
-                        "Task %s complete: %d turns, $%.4f",
-                        config.task_id,
-                        message.num_turns,
-                        message.total_cost_usd or 0,
-                    )
+        for outer_turn in range(MAX_OUTER_TURNS):
+            if outer_turn > 0:
+                injections = _drain_inject_queue(inject_queue)
+                if injections and not missing:
+                    prompt = _build_inject_prompt(config.task_id, injections)
+                elif missing:
+                    prompt = _build_continue_prompt(config.task_id, missing, injections)
+                if injections:
+                    await _emit(event_queue, "inject", {"messages": injections})
 
-    except Exception:
-        logger.exception("Agent SDK query failed for task %s", config.task_id)
-        result["is_error"] = True
+            await _emit(event_queue, "turn_start", {"outer_turn": outer_turn})
+            await client.query(prompt)
 
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            result["responses"].append(block.text)
+                            await _emit(event_queue, "text", {"text": block.text})
+                elif isinstance(message, ResultMessage):
+                    result["cost_usd"] += message.total_cost_usd or 0
+                    result["num_turns"] += message.num_turns
+                    result["is_error"] = message.is_error
+                    result["session_id"] = message.session_id
+                    await _emit(event_queue, "turn_end", {
+                        "outer_turn": outer_turn,
+                        "inner_turns": message.num_turns,
+                        "cost_usd": message.total_cost_usd,
+                        "is_error": message.is_error,
+                    })
+                    if message.is_error:
+                        logger.error(
+                            "Agent SDK error on episode %d for task %s",
+                            outer_turn, config.task_id,
+                        )
+                        break
+
+            if result["is_error"]:
+                break
+
+            # Was this episode interrupted by an injection?
+            if inject_event and inject_event.is_set():
+                inject_event.clear()
+                await _emit(event_queue, "inject_abort", {"outer_turn": outer_turn})
+                # Skip verification — go to next episode with injected guidance
+                missing = []
+                continue
+
+            try:
+                await pull_vault(config.vault_path)
+            except Exception:
+                pass
+
+            missing = await verify_completion(
+                config.task_id, config.lobster_type, config.vault_path
+            )
+            await _emit(event_queue, "verify", {"outer_turn": outer_turn, "missing": missing})
+
+            if not missing:
+                logger.info(
+                    "Task %s verified complete after episode %d: %d turns, $%.4f",
+                    config.task_id, outer_turn, result["num_turns"], result["cost_usd"],
+                )
+                # Check for late-arriving injections before exiting
+                if inject_event and inject_event.is_set():
+                    inject_event.clear()
+                    continue
+                break
+            else:
+                logger.warning(
+                    "Episode %d: verification missing %d steps, continuing",
+                    outer_turn, len(missing),
+                )
+
+        else:
+            logger.error(
+                "Task %s: MAX_OUTER_TURNS (%d) exhausted without verification pass",
+                config.task_id, MAX_OUTER_TURNS,
+            )
+
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    await _emit(event_queue, "done", {
+        "is_error": result["is_error"],
+        "cost_usd": result["cost_usd"],
+    })
     return result
+
+
+async def run_retry(config: LobsterConfig, missing: list[str]) -> dict:
+    """Deprecated: superseded by episode loop in run_task(). Left intact for reference."""
+    logger.warning(
+        "run_retry() is deprecated — episode loop handles retries in-session. "
+        "This should not be called."
+    )
+    return {
+        "task_id": config.task_id,
+        "model": resolve_model(config.model),
+        "responses": [],
+        "cost_usd": 0,
+        "num_turns": 0,
+        "is_error": False,
+        "session_id": None,
+    }

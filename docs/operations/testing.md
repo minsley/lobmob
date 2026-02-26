@@ -4,15 +4,26 @@ Test scripts live in `tests/` and verify deployments and the task lifecycle.
 
 ## Quick Reference
 
-| Script | What it tests | Duration |
-|---|---|---|
-| `tests/push-task` | Push a task to the vault | ~5s |
-| `tests/await-task-pickup <id> [<id>...]` | Lobboss assigns queued tasks, k8s Job created | up to 10m |
-| `tests/await-task-completion <id>` | Full lifecycle: PR opened, merged, task completed | up to 15m |
-| `tests/e2e-task` | Full E2E: push → pickup → execution → PR → completion | configurable (default 10m) |
-| `tests/event-logging` | Event log+flush functions, vault export, event types | ~30s |
+| Script | What it tests | Duration | Requires cluster? |
+|---|---|---|---|
+| `tests/episode-loop` | Multi-turn episode loop (7 scenarios: pass, fail-retry, max turns, SDK error, inject) | ~2s | No (mocked) |
+| `tests/ipc-server` | LobsterIPC server (health, inject, SSE headers) | ~3s | No (local Python) |
+| `tests/push-task` | Push a task to the vault | ~5s | Yes |
+| `tests/await-task-pickup <id> [<id>...]` | Lobboss assigns queued tasks, k8s Job created | up to 10m | Yes |
+| `tests/await-task-completion <id>` | Full lifecycle: PR opened, merged, task completed | up to 15m | Yes |
+| `tests/e2e-task` | Full E2E: push → pickup → execution → PR → completion | configurable (default 10m) | Yes |
+| `tests/event-logging` | Event log+flush functions, vault export, event types | ~30s | Yes |
 
 All scripts exit 0 on success, 1 on failure. Use `LOBMOB_ENV=dev` to target the dev cluster.
+
+## Unit Tests (no cluster needed)
+
+```bash
+python3 tests/episode-loop   # multi-turn episode loop (mocks Agent SDK)
+tests/ipc-server              # IPC server smoke test (starts local Python process)
+```
+
+These run locally without a k8s cluster. `episode-loop` mocks `claude_agent_sdk` in `sys.modules` since the real SDK is only in containers.
 
 ## Task Lifecycle Tests
 
@@ -86,6 +97,31 @@ lobmob --env dev logs <job-name>
 ```
 
 The task poller in lobboss automatically picks up queued tasks and spawns lobster Jobs. No manual triggering needed.
+
+## Local Testing (k3d)
+
+For fast iteration without cloud costs:
+
+```bash
+# Set up local cluster
+lobmob --env local cluster-create
+lobmob --env local build all
+lobmob --env local apply
+lobmob --env local status
+
+# Create a test task via the lobwife API
+kubectl --context k3d-lobmob-local -n lobmob port-forward svc/lobwife 8081:8081 &
+curl -X POST http://localhost:8081/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Test task description", "type": "swe", "status": "queued"}'
+
+# Watch the lobster run
+lobmob --env local status              # see the job appear
+lobmob --env local logs <job-name>     # tail lobster logs
+lobmob --env local attach <job-name>   # live event stream + inject
+```
+
+The task poller picks up queued tasks within 60s and spawns a lobster Job. The multi-turn episode loop runs up to 5 episodes with verification between each.
 
 ## Event Logging
 

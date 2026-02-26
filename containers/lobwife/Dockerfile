@@ -1,6 +1,11 @@
 ARG BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest
 FROM ${BASE_IMAGE}
 
+# kubectl (task-manager needs it for job status checks)
+RUN curl -fsSLo /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/v1.31.4/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl
+
 # Ops tooling + SSH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server tmux vim less sudo \
@@ -10,13 +15,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY containers/lobwife/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
-# GitHub CLI
+# GitHub CLI (install, then move to gh-real for broker wrapper)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
     > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mv /usr/bin/gh /usr/bin/gh-real
+
+# gh-lobwife wrapper (fetches broker tokens, shadows gh-real)
+COPY scripts/gh-lobwife /usr/local/bin/gh
+RUN chmod +x /usr/local/bin/gh
 
 # lobmob source + CLI
 COPY . /opt/lobmob

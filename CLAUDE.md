@@ -6,22 +6,23 @@ Agent swarm management on DigitalOcean Kubernetes (DOKS). Manager (lobboss) coor
 ## Architecture Quick Reference
 - **Prod DOKS**: `lobmob-k8s` cluster, context `do-nyc3-lobmob-k8s`, vault=lobmob-vault
 - **Dev DOKS**: `lobmob-dev-k8s` cluster, context `do-nyc3-lobmob-dev-k8s`, vault=lobmob-vault-dev
+- **Local k3d**: `lobmob-local` cluster, context `k3d-lobmob-local`, vault=lobmob-vault-dev
 - **Git-flow**: `main`=production, `develop`=integration. SWE lobsters branch from develop.
 - **Three lobster types**: research (Sonnet), swe (Opus), qa (Sonnet)
 - **lobboss**: k8s Deployment, discord.py + Agent SDK (long-running, session rotation every 2-4h). Polls lobwife API for queued tasks, spawns lobsters
-- **lobsters**: k8s Jobs, Agent SDK `query()` (ephemeral, one task per container). Report status to lobwife API
+- **lobsters**: k8s Jobs, multi-turn episode loop (up to 5 episodes with verify-retry). IPC server on :8090 (SSE events, operator inject). Web sidecar on :8080
 - **lobwife**: k8s Deployment, central state store. SQLite DB (source of truth for task state) + REST API (`/api/v1/`) + token broker + vault sync daemon (DB→vault every 5min + on events) + APScheduler
 - **lobsigliere**: k8s Deployment, system task processor + SSH dev shell
-- **Images**: GHCR — lobmob-base, lobmob-lobboss, lobmob-lobster, lobmob-lobwife, lobmob-lobsigliere (all amd64)
+- **Images**: GHCR — lobmob-base, lobmob-lobboss, lobmob-lobster, lobmob-lobwife, lobmob-lobsigliere (amd64 for DOKS, native for local)
 
 ## Project Structure
 ```
 src/lobboss/                       — Bot + agent (Python, discord.py + Agent SDK)
-src/lobster/                       — Ephemeral task worker (Python, Agent SDK)
+src/lobster/                       — Multi-turn task worker (Python, Agent SDK + IPC)
 src/common/                        — Shared modules (vault, logging, health)
 containers/{base,lobboss,lobster,lobwife,lobsigliere}/ — Dockerfiles
 k8s/base/                          — Kubernetes manifests (Kustomize base)
-k8s/overlays/{dev,prod}/           — Environment-specific overlays
+k8s/overlays/{dev,prod,local}/     — Environment-specific overlays
 scripts/lobmob                     — CLI dispatcher
 scripts/commands/                  — CLI command modules
 scripts/server/                    — Server-side scripts (cron, web dashboard)
@@ -34,24 +35,29 @@ infra/                             — Terraform (DOKS clusters, prod.tfvars, de
 
 ## Key Commands
 ```bash
-# Deploy / manage
+# Deploy / manage (cloud)
 lobmob deploy                         # Deploy via Terraform + kubectl
 lobmob --env dev deploy               # Deploy to dev environment
 lobmob status                         # Fleet status (pods, jobs, PRs)
 lobmob connect                        # Port-forward to lobboss web dashboard
 lobmob connect <job-name>             # Port-forward to lobster sidecar
+lobmob attach <job-name>              # Live attach: SSE stream + inject prompt
 lobmob logs                           # Tail lobboss pod logs
 lobmob logs <job-name>                # Tail lobster pod logs
 
+# Local dev (k3d — auto-installs Docker, Colima, k3d via brew)
+lobmob --env local cluster-create     # Create k3d cluster with labeled nodes
+lobmob --env local build all          # Native build + k3d import (:local tag)
+lobmob --env local apply              # Deploy manifests + push secrets
+lobmob --env local status             # Verify fleet
+lobmob --env local cluster-delete     # Tear down k3d cluster
+
 # Build images (from Mac, amd64 for DOKS)
-docker buildx build --builder amd64-builder --platform linux/amd64 \
-  --build-arg BASE_IMAGE=ghcr.io/minsley/lobmob-base:latest \
-  -t ghcr.io/minsley/lobmob-lobboss:latest --push \
-  -f containers/lobboss/Dockerfile .
+lobmob build <target>                 # base|lobboss|lobwife|lobsigliere|lobster|all
 
 # Apply k8s manifests directly
-kubectl apply -k k8s/overlays/dev/
-kubectl apply -k k8s/overlays/prod/
+lobmob apply                          # current env
+lobmob apply --dry-run                # validate only
 
 # Validate
 kubectl apply -k k8s/overlays/dev/ --dry-run=client
@@ -90,8 +96,9 @@ cd infra && terraform validate
 
 ## Environment Selection
 - `LOBMOB_ENV=dev lobmob <cmd>` or `lobmob --env dev <cmd>`
-- Separate secrets: `secrets.env` (prod), `secrets-dev.env` (dev)
-- Separate Terraform workspaces and tfvars files
+- `lobmob --env local <cmd>` for local k3d development
+- Separate secrets: `secrets.env` (prod), `secrets-dev.env` (dev/staging), `secrets-local.env` (local)
+- Separate Terraform workspaces and tfvars files (prod/dev only; local uses k3d)
 
 ## Session Self-Maintenance
 

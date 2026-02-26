@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+"""episode-loop — unit test for the multi-turn episode loop in lobster/agent.py
+
+Tests the 7 scenarios from the multi-turn plan:
+  (a) Pass on first episode
+  (b) Fail then pass
+  (c) MAX_OUTER_TURNS exhaustion
+  (d) SDK error on episode 2
+  (e) Inject drain at episode boundary
+  (f) Mid-episode injection abort
+  (g) Injection at verification-pass boundary
+"""
+
+import asyncio
+import sys
+import os
+import types
+import unittest.mock as _mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+# Pre-populate claude_agent_sdk in sys.modules before any lobster imports.
+# The real SDK is only available inside containers.
+_sdk = types.ModuleType('claude_agent_sdk')
+
+class _StubBase:
+    def __init__(self, *a, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+_sdk.AssistantMessage = type('AssistantMessage', (_StubBase,), {})
+_sdk.ClaudeAgentOptions = type('ClaudeAgentOptions', (_StubBase,), {})
+_sdk.ClaudeSDKClient = type('ClaudeSDKClient', (_StubBase,), {})
+_sdk.PermissionResultAllow = type('PermissionResultAllow', (_StubBase,), {})
+_sdk.PermissionResultDeny = type('PermissionResultDeny', (_StubBase,), {})
+_sdk.ToolPermissionContext = type('ToolPermissionContext', (_StubBase,), {})
+_sdk.ResultMessage = type('ResultMessage', (_StubBase,), {})
+_sdk.TextBlock = type('TextBlock', (_StubBase,), {})
+sys.modules['claude_agent_sdk'] = _sdk
+
+PASS = 0
+FAIL = 0
+
+
+def check(desc, cond):
+    global PASS, FAIL
+    if cond:
+        print(f"  PASS: {desc}")
+        PASS += 1
+    else:
+        print(f"  FAIL: {desc}")
+        FAIL += 1
+
+
+# ---------------------------------------------------------------------------
+# Minimal stubs
+# ---------------------------------------------------------------------------
+
+class _TextBlock(_sdk.TextBlock):
+    def __init__(self, text): self.text = text
+
+class _AssistantMessage(_sdk.AssistantMessage):
+    def __init__(self, text): self.content = [_TextBlock(text)]
+
+class _ResultMessage(_sdk.ResultMessage):
+    def __init__(self, cost=0.01, turns=5, is_error=False, session_id="sess-1"):
+        self.total_cost_usd = cost
+        self.num_turns = turns
+        self.is_error = is_error
+        self.session_id = session_id
+        self.result = "error" if is_error else "ok"
+
+
+class MockClient:
+    """Configurable mock for ClaudeSDKClient.
+
+    episodes: list of (messages_list, result_message) per episode.
+    Raises if more episodes are called than configured.
+    """
+    def __init__(self, episodes):
+        self._episodes = list(episodes)
+        self._episode_idx = 0
+        self.connected = False
+        self.disconnected = False
+
+    async def connect(self): self.connected = True
+    async def disconnect(self): self.disconnected = True
+
+    async def query(self, prompt):
+        # Yield control so drain_events/trigger_at tasks can process turn_start
+        await asyncio.sleep(0.05)
+
+    async def receive_response(self):
+        if self._episode_idx >= len(self._episodes):
+            raise RuntimeError("More episodes called than configured")
+        msgs, result = self._episodes[self._episode_idx]
+        self._episode_idx += 1
+        for m in msgs:
+            await asyncio.sleep(0)
+            yield m
+        await asyncio.sleep(0)
+        yield result
+
+
+# ---------------------------------------------------------------------------
+# Patch helpers
+# ---------------------------------------------------------------------------
+
+def make_agent_module(
+    mock_client,
+    verify_sequence,   # list of missing-lists per verify call
+    pull_vault_raises=False,
+):
+    """Return a patched version of lobster.agent with mocked dependencies."""
+    import lobster.agent as agent_mod
+    import unittest.mock as mock
+
+    orig_ClaudeSDKClient = None
+    orig_pull_vault = None
+    orig_verify = None
+
+    class PatchedClient:
+        def __new__(cls, *a, **kw):
+            return mock_client
+
+    verify_calls = [0]
+
+    async def mock_pull_vault(path):
+        if pull_vault_raises:
+            raise RuntimeError("vault pull failed")
+
+    async def mock_verify(task_id, lobster_type, vault_path):
+        idx = verify_calls[0]
+        verify_calls[0] += 1
+        if idx < len(verify_sequence):
+            return verify_sequence[idx]
+        return []
+
+    return PatchedClient, mock_pull_vault, mock_verify
+
+
+async def run_scenario(mock_client, verify_sequence, task_body="do work",
+                       inject_msgs=None, set_inject_event_at_episode=None):
+    """Run run_task() with mocked internals. Returns (result, events)."""
+    import lobster.agent as agent_mod
+    import unittest.mock as mock
+    from lobster.config import LobsterConfig
+
+    PatchedClient, mock_pull, mock_verify = make_agent_module(
+        mock_client, verify_sequence
+    )
+
+    config = LobsterConfig()
+    config.task_id = "T99"
+    config.lobster_type = "swe"
+    config.model = "claude-opus-4-6"
+    config.vault_path = "/tmp/fake-vault"
+    config.workflow = "default"
+
+    event_queue = asyncio.Queue(maxsize=500)
+    inject_queue = asyncio.Queue(maxsize=100)
+    inject_event = asyncio.Event()
+
+    # Pre-load inject messages
+    if inject_msgs:
+        for m in inject_msgs:
+            inject_queue.put_nowait(m)
+
+    events = []
+
+    async def drain_events():
+        while True:
+            try:
+                e = event_queue.get_nowait()
+                events.append(e)
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(0.01)
+
+    drain_task = asyncio.create_task(drain_events())
+
+    with (
+        mock.patch.object(agent_mod, 'ClaudeSDKClient', PatchedClient),
+        mock.patch.object(agent_mod, 'pull_vault', mock_pull),
+        mock.patch.object(agent_mod, 'verify_completion', mock_verify),
+        mock.patch.object(agent_mod, 'create_tool_checker',
+                          return_value=lambda t, i, c: None),
+    ):
+        # If we need to trigger inject_event mid-episode, schedule it
+        if set_inject_event_at_episode is not None:
+            async def trigger_at(ep_num):
+                # Wait until we see the turn_start for that episode
+                while True:
+                    await asyncio.sleep(0.01)
+                    for e in list(events):
+                        if e.get('type') == 'turn_start' and e.get('outer_turn') == ep_num:
+                            inject_event.set()
+                            return
+            asyncio.create_task(trigger_at(set_inject_event_at_episode))
+
+        result = await agent_mod.run_task(
+            config, task_body,
+            event_queue=event_queue,
+            inject_queue=inject_queue,
+            inject_event=inject_event,
+        )
+
+    drain_task.cancel()
+    try:
+        await drain_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+    # Drain remaining events
+    while True:
+        try:
+            events.append(event_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+
+    return result, events
+
+
+def event_types(events):
+    return [e['type'] for e in events]
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+async def test_a_pass_on_first_episode():
+    """(a) Pass on first episode — loop exits after 1 iteration."""
+    client = MockClient([
+        ([_AssistantMessage("I did the work")], _ResultMessage(cost=0.05, turns=10)),
+    ])
+    result, events = await run_scenario(client, verify_sequence=[[]])  # empty = pass
+
+    check("(a) not is_error", not result["is_error"])
+    check("(a) cost accumulated", result["cost_usd"] == 0.05)
+    check("(a) turns counted", result["num_turns"] == 10)
+    check("(a) done event emitted", "done" in event_types(events))
+    check("(a) only one turn_start", event_types(events).count("turn_start") == 1)
+    check("(a) client connected", client.connected)
+    check("(a) client disconnected", client.disconnected)
+
+
+async def test_b_fail_then_pass():
+    """(b) Fail then pass — continue prompt used, loop exits after 2 episodes."""
+    client = MockClient([
+        ([_AssistantMessage("partial work")], _ResultMessage(cost=0.03, turns=8)),
+        ([_AssistantMessage("completed rest")], _ResultMessage(cost=0.02, turns=4)),
+    ])
+    result, events = await run_scenario(
+        client,
+        verify_sequence=[["step-1: fill Result section"], []],
+    )
+
+    check("(b) not is_error", not result["is_error"])
+    check("(b) cost accumulated across episodes", abs(result["cost_usd"] - 0.05) < 0.001)
+    check("(b) turns accumulated", result["num_turns"] == 12)
+    check("(b) two turn_starts", event_types(events).count("turn_start") == 2)
+    verify_events = [e for e in events if e["type"] == "verify"]
+    check("(b) first verify has missing", bool(verify_events[0]["missing"]))
+    check("(b) second verify passes", verify_events[1]["missing"] == [])
+
+
+async def test_c_max_outer_turns_exhaustion():
+    """(c) MAX_OUTER_TURNS exhaustion — all 5 episodes run."""
+    from lobster.agent import MAX_OUTER_TURNS
+    episodes = [
+        ([_AssistantMessage(f"ep{i}")], _ResultMessage(cost=0.01, turns=3))
+        for i in range(MAX_OUTER_TURNS)
+    ]
+    # Always fail verification (MAX_OUTER_TURNS - 1 checks; last episode also fails)
+    verify_seq = [["missing-step"] for _ in range(MAX_OUTER_TURNS)]
+    client = MockClient(episodes)
+    result, events = await run_scenario(client, verify_sequence=verify_seq)
+
+    check("(c) not is_error (MAX_TURNS exhaustion != SDK error)", not result["is_error"])
+    check("(c) all episodes ran", event_types(events).count("turn_start") == MAX_OUTER_TURNS)
+    check("(c) cost accumulated", abs(result["cost_usd"] - MAX_OUTER_TURNS * 0.01) < 0.001)
+
+
+async def test_d_sdk_error_on_episode_2():
+    """(d) SDK error on episode 2 — loop breaks, is_error=True, cost includes both."""
+    client = MockClient([
+        ([_AssistantMessage("ep0 ok")], _ResultMessage(cost=0.04, turns=7)),
+        ([_AssistantMessage("ep1 fail")], _ResultMessage(cost=0.02, turns=3, is_error=True)),
+    ])
+    result, events = await run_scenario(
+        client,
+        verify_sequence=[["missing-step"]],  # ep0 fails verify → ep1 triggered
+    )
+
+    check("(d) is_error True", result["is_error"])
+    check("(d) cost includes both episodes", abs(result["cost_usd"] - 0.06) < 0.001)
+    check("(d) only 2 episodes", event_types(events).count("turn_start") == 2)
+
+
+async def test_e_inject_drain_at_episode_boundary():
+    """(e) Inject drain at episode boundary — messages appear in continue prompt."""
+    client = MockClient([
+        ([_AssistantMessage("ep0")], _ResultMessage(cost=0.02, turns=5)),
+        ([_AssistantMessage("ep1 with injection")], _ResultMessage(cost=0.01, turns=3)),
+    ])
+    result, events = await run_scenario(
+        client,
+        verify_sequence=[["missing-step"], []],
+        inject_msgs=["also update the README"],
+    )
+
+    check("(e) not is_error", not result["is_error"])
+    check("(e) inject event emitted", "inject" in event_types(events))
+    inject_ev = next((e for e in events if e["type"] == "inject"), None)
+    check("(e) inject message preserved", inject_ev is not None and
+          "also update the README" in inject_ev.get("messages", []))
+
+
+async def test_f_mid_episode_injection_abort():
+    """(f) Mid-episode injection abort — inject_event triggers deny flow."""
+    # The mock client for this test uses a flag: on the second episode after abort,
+    # verify should pass. The inject_event is set during episode 0.
+    client = MockClient([
+        ([_AssistantMessage("ep0 partial")], _ResultMessage(cost=0.02, turns=5)),
+        ([_AssistantMessage("ep1 after inject")], _ResultMessage(cost=0.01, turns=3)),
+    ])
+    result, events = await run_scenario(
+        client,
+        verify_sequence=[[]],  # ep1 verify passes (ep0 was aborted, skipped verify)
+        set_inject_event_at_episode=0,
+        inject_msgs=["operator: please also add tests"],
+    )
+
+    check("(f) not is_error", not result["is_error"])
+    check("(f) inject_abort event emitted", "inject_abort" in event_types(events))
+    check("(f) two episodes ran", event_types(events).count("turn_start") == 2)
+    # verify should only appear once (for ep1, not ep0 which was aborted)
+    verify_events = [e for e in events if e["type"] == "verify"]
+    check("(f) verify only for non-aborted episode", len(verify_events) == 1)
+
+
+async def test_g_injection_at_verification_pass_boundary():
+    """(g) Injection at verification-pass boundary — loop continues instead of breaking."""
+    import lobster.agent as agent_mod
+    import unittest.mock as mock
+    from lobster.config import LobsterConfig
+
+    client = MockClient([
+        ([_AssistantMessage("ep0")], _ResultMessage(cost=0.02, turns=5)),
+        ([_AssistantMessage("ep1 with late inject")], _ResultMessage(cost=0.01, turns=3)),
+    ])
+
+    call_count = [0]
+    verify_events_seen = []
+
+    async def mock_verify(task_id, ltype, vpath):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return []  # pass — but we'll set inject_event before the break fires
+        return []  # ep1 also passes
+
+    async def mock_pull(path): pass
+
+    config = LobsterConfig()
+    config.task_id = "T99"
+    config.lobster_type = "swe"
+    config.model = "claude-opus-4-6"
+    config.vault_path = "/tmp/fake-vault"
+    config.workflow = "default"
+
+    event_queue = asyncio.Queue(maxsize=500)
+    inject_queue = asyncio.Queue(maxsize=100)
+    inject_event = asyncio.Event()
+    inject_queue.put_nowait("late injection after verify pass")
+
+    # Trigger inject_event after first verify call
+    orig_verify = mock_verify
+    async def inject_on_verify_pass(task_id, ltype, vpath):
+        result = await orig_verify(task_id, ltype, vpath)
+        if call_count[0] == 1:  # just returned from first verify
+            inject_event.set()
+        return result
+
+    PatchedClient, _, _ = make_agent_module(client, [])
+
+    class PatchedClient2:
+        def __new__(cls, *a, **kw): return client
+
+    with (
+        mock.patch.object(agent_mod, 'ClaudeSDKClient', PatchedClient2),
+        mock.patch.object(agent_mod, 'pull_vault', mock_pull),
+        mock.patch.object(agent_mod, 'verify_completion', inject_on_verify_pass),
+        mock.patch.object(agent_mod, 'create_tool_checker',
+                          return_value=lambda t, i, c: None),
+    ):
+        result = await agent_mod.run_task(
+            config, "do work",
+            event_queue=event_queue,
+            inject_queue=inject_queue,
+            inject_event=inject_event,
+        )
+
+    events = []
+    while True:
+        try: events.append(event_queue.get_nowait())
+        except asyncio.QueueEmpty: break
+
+    check("(g) not is_error", not result["is_error"])
+    check("(g) two episodes ran (late inject triggered continuation)",
+          event_types(events).count("turn_start") == 2)
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+async def main():
+    print("=== episode-loop unit tests ===\n")
+    await test_a_pass_on_first_episode()
+    await test_b_fail_then_pass()
+    await test_c_max_outer_turns_exhaustion()
+    await test_d_sdk_error_on_episode_2()
+    await test_e_inject_drain_at_episode_boundary()
+    await test_f_mid_episode_injection_abort()
+    await test_g_injection_at_verification_pass_boundary()
+    print(f"\nResults: {PASS} passed, {FAIL} failed")
+    return 0 if FAIL == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
