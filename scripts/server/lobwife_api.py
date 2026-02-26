@@ -3,6 +3,7 @@
 Extracted from lobwife-daemon.py. Contains all existing route handlers
 plus new /api/v1/tasks CRUD endpoints and DB-enriched /health.
 """
+from __future__ import annotations
 
 import json
 import logging

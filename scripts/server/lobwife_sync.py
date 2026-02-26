@@ -5,6 +5,7 @@ DB is the sole source of truth for task state; vault gets periodic updates.
 
 Runs as a background asyncio task inside lobwife-daemon.py alongside persist_loop.
 """
+from __future__ import annotations
 
 import asyncio
 import json

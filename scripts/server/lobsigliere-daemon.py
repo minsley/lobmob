@@ -5,6 +5,8 @@ lobsigliere autonomous task processor daemon.
 Polls vault every 30s for type=system tasks and executes them
 via Agent SDK. Runs as a background process in the lobsigliere container.
 """
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
